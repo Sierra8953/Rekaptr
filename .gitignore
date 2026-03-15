@@ -1,0 +1,49 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Build artifacts in tests
+/tests/**/target/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Luma Runtime Data (Recording storage)
+/temp_soak_test/
+/Clips/
+/Cache/
+/monitor/
+/test_game/
+*.mp4
+*.m4s
+*.m3u8
+*.ffconcat
+*.jpg
+
+# Binaries & Dependencies
+/bin/*.exe
+/bin/*.dll
+ffmpeg.exe
+libmpv-2.dll
+
+# Environments
+.env
+.env.local
+
+# Requested Exclusions
+.claude/
+/gst_local_docs/
+/reference/
+/examples/
+/deps/
+/tests/
+
+# NOTE: /crates/ MUST BE UPLOADED because it's a local dependency.
+# It is listed in Cargo.toml as gpui = { path = "crates/gpui" }

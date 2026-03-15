@@ -1,0 +1,17 @@
+# Set the default behavior to handle all files as text and normalize line endings to LF on commit.
+* text=auto
+
+# Explicitly declare text files you want to always be normalized and converted to native line endings on checkout.
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf
+
+# Denote all files that are truly binary and should not be modified.
+*.exe binary
+*.dll binary
+*.jpg binary
+*.png binary
+*.svg binary
+*.ico binary

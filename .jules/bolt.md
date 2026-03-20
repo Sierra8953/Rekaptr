@@ -1,0 +1,3 @@
+## 2024-03-20 - Window Enumeration Bottleneck
+**Learning:** In Windows UI programming with EnumWindows, filtering invisible/nameless windows *before* fetching process IDs or querying process trees (like sysinfo) is critical. Doing expensive OS queries on countless background/hidden/nameless windows causes severe performance degradation, especially during rapid window switching or foreground events. Furthermore, duplicating PID lookups within the same callback is wasteful.
+**Action:** Always fetch inexpensive properties like WindowText length early to short-circuit, and cache/reuse the result of expensive PID/sysinfo lookups within the function scope rather than querying the OS twice.

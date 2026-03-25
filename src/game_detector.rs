@@ -133,49 +133,52 @@ struct WindowEnumState<'a> {
 unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     let state = &mut *(lparam.0 as *mut WindowEnumState);
 
-    if IsWindowVisible(hwnd).as_bool() {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    // ⚡ Bolt Optimization: Early rejection
+    // Filtering nameless windows *before* expensive OS queries (PID lookup + process tree)
+    // prevents performance degradation by bypassing sysinfo queries for background windows.
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
 
-        if pid != 0 {
-            if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
-                let proc_name = process.name().to_string().to_lowercase();
-                if state.blacklist.contains(&proc_name.as_str()) {
-                    return true.into();
-                }
-            }
-        }
+    let mut text = [0u16; 512];
+    let len = GetWindowTextW(hwnd, &mut text);
 
-        let mut text = [0u16; 512];
-        let len = GetWindowTextW(hwnd, &mut text);
+    if len == 0 {
+        return true.into();
+    }
 
-        if len > 0 {
-            let title = String::from_utf16_lossy(&text[..len as usize]);
+    let title = String::from_utf16_lossy(&text[..len as usize]);
 
-            if title == "Program Manager"
-                || title == "Settings"
-                || title == "Microsoft Text Input Application"
-            {
+    if title == "Program Manager"
+        || title == "Settings"
+        || title == "Microsoft Text Input Application"
+    {
+        return true.into();
+    }
+
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+    let proc_name = if pid != 0 {
+        if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
+            let name = process.name().to_string();
+            if state.blacklist.contains(&name.to_lowercase().as_str()) {
                 return true.into();
             }
-
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            let proc_name = if pid != 0 {
-                state.sys.process(sysinfo::Pid::from_u32(pid))
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            } else {
-                "Unknown".to_string()
-            };
-
-            state.windows.push(WindowInfo {
-                title,
-                hwnd: hwnd.0 as u64,
-                process_name: proc_name,
-            });
+            name
+        } else {
+            "Unknown".to_string()
         }
-    }
+    } else {
+        "Unknown".to_string()
+    };
+
+    state.windows.push(WindowInfo {
+        title,
+        hwnd: hwnd.0 as u64,
+        process_name: proc_name,
+    });
+
     true.into()
 }
 

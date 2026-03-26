@@ -1,0 +1,3 @@
+## 2024-11-20 - Fast Path Early in Win32 Window Enumeration
+**Learning:** During window enumeration with Win32 `EnumWindows`, calculating OS process ownership (`GetWindowThreadProcessId` + `sysinfo` lookup) and string allocation for EVERY window creates significant overhead, since the system has hundreds of invisible or nameless windows.
+**Action:** Always filter out invisible and nameless windows early using length checks on `GetWindowTextW` BEFORE performing expensive OS-level operations (e.g. PID queries and process tree lookups). This significantly minimizes string allocations and system calls.

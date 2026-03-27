@@ -1,0 +1,3 @@
+## 2024-05-18 - Early exit on invisible/nameless windows in EnumWindows
+**Learning:** In Windows UI programming using `EnumWindows`, filtering invisible or nameless windows early (by checking the length from `GetWindowTextW` first) prevents severe performance degradation before performing expensive OS operations like PID lookups (`GetWindowThreadProcessId`) or process tree queries.
+**Action:** When implementing window enumeration on Windows, always prioritize checking basic window attributes (visibility and text length) before making kernel/process-level calls.

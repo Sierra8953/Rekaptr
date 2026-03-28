@@ -1,0 +1,3 @@
+## 2024-05-15 - Add tooltips to icon-only buttons in the video player
+**Learning:** Icon-only playback controls (like play, pause, seek) lack immediate clarity for some users and screen readers, leading to lower discoverability. Wrapping them in a Tooltip component improves accessibility without cluttering the UI.
+**Action:** Always wrap icon-only buttons with `Tooltip::new(...).child(Button::new(...))` to ensure accessibility and discoverability.

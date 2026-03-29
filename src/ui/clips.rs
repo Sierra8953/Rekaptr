@@ -5,6 +5,7 @@ use crate::state::Clip;
 use std::collections::BTreeMap;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 
 impl LumaWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -616,14 +617,16 @@ impl LumaWorkspace {
                             .opacity(if controls_visible { 1.0 } else { 0.0 })
                             .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(gpui::white()).child(clip.title.clone()))
                             .child(
-                                div()
-                                    .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.clip_to_preview = None;
-                                        this.preview_video_source = None;
-                                        cx.notify();
-                                    }))
-                                    .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                Tooltip::new("Close Preview").placement(TooltipPlacement::Left).child(
+                                    div()
+                                        .cursor_pointer()
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.clip_to_preview = None;
+                                            this.preview_video_source = None;
+                                            cx.notify();
+                                        }))
+                                        .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                )
                             )
                     )
                     // 2. Bottom HUD Overlay
@@ -678,46 +681,52 @@ impl LumaWorkspace {
                                         HStack::new()
                                             .gap_12()
                                             .child(
-                                                div()
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            let target = (v.position().as_secs_f64() - 5.0).max(0.0);
-                                                            let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new("rotate-ccw").size(px(32.0)).color(theme.tokens.primary))
+                                                Tooltip::new("Rewind 5s").placement(TooltipPlacement::Top).child(
+                                                    div()
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                            if let Some(v) = &this.preview_video_source {
+                                                                let target = (v.position().as_secs_f64() - 5.0).max(0.0);
+                                                                let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
+                                                                cx.notify();
+                                                            }
+                                                        }))
+                                                        .child(Icon::new("rotate-ccw").size(px(32.0)).color(theme.tokens.primary))
+                                                )
                                             )
                                             .child({
                                                 let is_paused = self.preview_video_source.as_ref().map_or(true, |v| v.paused());
-                                                div()
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
-                                                                let _ = v.seek(std::time::Duration::ZERO, false);
-                                                                v.set_paused(false);
-                                                            } else {
-                                                                v.set_paused(!v.paused());
+                                                Tooltip::new(if is_paused { "Play" } else { "Pause" }).placement(TooltipPlacement::Top).child(
+                                                    div()
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                            if let Some(v) = &this.preview_video_source {
+                                                                if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
+                                                                    let _ = v.seek(std::time::Duration::ZERO, false);
+                                                                    v.set_paused(false);
+                                                                } else {
+                                                                    v.set_paused(!v.paused());
+                                                                }
+                                                                cx.notify();
                                                             }
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(40.0)).color(theme.tokens.primary))
+                                                        }))
+                                                        .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(40.0)).color(theme.tokens.primary))
+                                                )
                                             })
                                             .child(
-                                                div()
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            let duration = v.duration().as_secs_f64();
-                                                            let target = (v.position().as_secs_f64() + 5.0).min(duration);
-                                                            let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
+                                                Tooltip::new("Fast Forward 5s").placement(TooltipPlacement::Top).child(
+                                                    div()
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                            if let Some(v) = &this.preview_video_source {
+                                                                let duration = v.duration().as_secs_f64();
+                                                                let target = (v.position().as_secs_f64() + 5.0).min(duration);
+                                                                let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
+                                                                cx.notify();
+                                                            }
+                                                        }))
+                                                        .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
+                                                )
                                             )
                                     )
                                     .child(div().w(px(100.0))) // Spacer to balance timestamp

@@ -1,0 +1,3 @@
+## 2024-05-24 - Optimize EnumWindows callback early returns
+**Learning:** In Windows UI programming within this repository (e.g., `src/game_detector.rs`), a key performance pattern when using `EnumWindows` is to filter invisible/nameless windows early using `GetWindowTextW` length checks *before* performing expensive OS queries like PID lookups or process tree queries. This prevents performance degradation when iterating through hundreds of top-level windows.
+**Action:** When filtering OS collections or GUI hierarchies, apply the cheapest attribute checks (like title length or visibility) before delegating to heavier subsystems (like `sysinfo` or process/registry queries).

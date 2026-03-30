@@ -1,6 +1,7 @@
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::LumaWorkspace;
 
 impl LumaWorkspace {
@@ -216,7 +217,11 @@ impl LumaWorkspace {
                                 .child(
                                     div()
                                         .id("add-plus-icon")
-                                        .child(Icon::new("plus").size(px(32.0)).color(theme.tokens.muted_foreground))
+                                        .child(
+                                            Tooltip::new("Add Game Source")
+                                                .placement(TooltipPlacement::Top)
+                                                .child(Icon::new("plus").size(px(32.0)).color(theme.tokens.muted_foreground))
+                                        )
                                 )
                                 .child(div().text_color(theme.tokens.muted_foreground).font_weight(FontWeight::MEDIUM).mt_2().child("Add Source"))
                         )

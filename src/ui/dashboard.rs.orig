@@ -1,7 +1,6 @@
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
-use adabraka_ui::components::tooltip::Tooltip;
 use crate::ui::LumaWorkspace;
 
 impl LumaWorkspace {
@@ -97,67 +96,52 @@ impl LumaWorkspace {
                                                 HStack::new()
                                                     .gap_2()
                                                     .child(
-                                                        Tooltip::new(if is_recording { "Stop Recording" } else { "Start Recording" })
-                                                            .child(
-                                                                Button::new("btn-record", "")
-                                                                    .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
-                                                                    .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
-                                                                    .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                        this.toggle_recording(window, cx);
-                                                                    }))
-                                                            )
+                                                        Button::new("btn-record", "")
+                                                            .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
+                                                            .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
+                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                this.toggle_recording(window, cx);
+                                                            }))
                                                     )
                                                     .child(
-                                                        Tooltip::new("Seek Back 10s")
-                                                            .child(
-                                                                Button::new("btn-back", "")
-                                                                    .icon(IconSource::Named("rotate-ccw".to_string()))
-                                                                    .variant(ButtonVariant::Outline)
-                                                                    .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                        if let Some(v) = &this.video_source {
-                                                                            let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
-                                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                        }
-                                                                    }))
-                                                            )
+                                                        Button::new("btn-back", "")
+                                                            .icon(IconSource::Named("rotate-ccw".to_string()))
+                                                            .variant(ButtonVariant::Outline)
+                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                if let Some(v) = &this.video_source {
+                                                                    let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
+                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                }
+                                                            }))
                                                     )
                                                     .child({
                                                         let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
-                                                        Tooltip::new(if is_paused { "Play" } else { "Pause" })
-                                                            .child(
-                                                                Button::new("btn-play", "")
-                                                                    .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
-                                                                    .variant(ButtonVariant::Outline)
-                                                                    .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                        this.toggle_play_pause(cx);
-                                                                    }))
-                                                            )
+                                                        Button::new("btn-play", "")
+                                                            .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
+                                                            .variant(ButtonVariant::Outline)
+                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
+                                                                this.toggle_play_pause(cx);
+                                                            }))
                                                     })
                                                     .child(
-                                                        Tooltip::new("Seek Forward 30s")
-                                                            .child(
-                                                                Button::new("btn-fwd", "")
-                                                                    .icon(IconSource::Named("rotate-cw".to_string()))
-                                                                    .variant(ButtonVariant::Outline)
-                                                                    .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                        if let Some(v) = &this.video_source {
-                                                                            let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
-                                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                        }
-                                                                    }))
-                                                            )
+                                                        Button::new("btn-fwd", "")
+                                                            .icon(IconSource::Named("rotate-cw".to_string()))
+                                                            .variant(ButtonVariant::Outline)
+                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                if let Some(v) = &this.video_source {
+                                                                    let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
+                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                }
+                                                            }))
                                                     )
                                                     .child(
-                                                        Tooltip::new("Reload Source")
-                                                            .child(
-                                                                Button::new("btn-refresh", "")
-                                                                    .icon(IconSource::Named("rotate-cw".to_string()))
-                                                                    .variant(ButtonVariant::Secondary)
-                                                                    .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                        let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-                                                                        this.load_video(&source, window, cx);
-                                                                    }))
-                                                            )
+                                                        Button::new("btn-refresh", "")
+                                                            .icon(IconSource::Named("rotate-cw".to_string()))
+                                                            .variant(ButtonVariant::Secondary)
+                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                                                                this.load_video(&source, window, cx);
+                                                            }))
                                                     )
                                                     .child(div().w(px(10.0)))
                                                     .child(
@@ -204,7 +188,7 @@ impl LumaWorkspace {
     pub fn render_game_gallery(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = &self.app_state.manual_sessions;
         let theme = use_theme();
-        
+
         let mut gallery = div()
             .id("source-gallery")
             .flex()
@@ -293,7 +277,7 @@ impl LumaWorkspace {
                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.advanced_settings_source = Some("monitor".to_string());
-                                    
+
                                     // Refresh window list for audio routing asynchronously
                                     this.refresh_available_windows(cx);
 
@@ -317,7 +301,7 @@ impl LumaWorkspace {
                                     this.form_audio_tracks = config.global_audio_tracks.clone();
                                     this.form_active_tab = 0;
                                     this.form_editing_track_index = None;
-                                    
+
                                     cx.notify();
                                 }))
                         )
@@ -334,10 +318,10 @@ impl LumaWorkspace {
         for session in sessions.iter() {
             let title = session.value().title.to_string();
             let is_selected = self.selected_source.as_deref() == Some(title.as_str());
-            
+
             // Check cache
             let cached_path = self.app_state.artwork_cache.get(&title).map(|v| v.value().clone()).flatten();
-            
+
             if cached_path.is_none() && !self.app_state.artwork_cache.contains_key(&title) {
                 let artwork_url_or_path = crate::utils::find_steam_artwork(&title);
                 if let Some(source) = artwork_url_or_path {
@@ -351,7 +335,7 @@ impl LumaWorkspace {
                         let handle = cx.weak_entity();
                         let title_cache = title.clone();
                         let title_log = title.clone();
-                        
+
                         // Mark as None to prevent redundant spawns
                         app_state.insert_artwork(title_cache.clone(), None);
 
@@ -378,7 +362,7 @@ impl LumaWorkspace {
                                         eprintln!("[UI] Saved artwork for '{}' to {:?}", title_log, local_path);
                                         let path_str = local_path.to_string_lossy().replace('\\', "/");
                                         app_state.insert_artwork(title_cache, Some(path_str));
-                                        
+
                                         let _ = handle.update(&mut cx, |_, cx| {
                                             cx.notify();
                                         });
@@ -478,7 +462,7 @@ impl LumaWorkspace {
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.advanced_settings_source = Some(title_settings.clone());
-                                        
+
                                         // Refresh window list for audio routing asynchronously
                                         this.refresh_available_windows(cx);
 
@@ -510,7 +494,7 @@ impl LumaWorkspace {
                                         }
                                         this.form_active_tab = 0;
                                         this.form_editing_track_index = None;
-                                        
+
                                         cx.notify();
                                     }))
                             })

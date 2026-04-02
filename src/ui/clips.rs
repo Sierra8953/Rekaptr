@@ -5,6 +5,7 @@ use crate::state::Clip;
 use std::collections::BTreeMap;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 
 impl LumaWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -623,7 +624,11 @@ impl LumaWorkspace {
                                         this.preview_video_source = None;
                                         cx.notify();
                                     }))
-                                    .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                    .child(
+                                        Tooltip::new("Close Preview")
+                                            .placement(TooltipPlacement::Bottom)
+                                            .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                    )
                             )
                     )
                     // 2. Bottom HUD Overlay
@@ -687,7 +692,11 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new("rotate-ccw").size(px(32.0)).color(theme.tokens.primary))
+                                                    .child(
+                                                        Tooltip::new("Back 5s")
+                                                            .placement(TooltipPlacement::Top)
+                                                            .child(Icon::new("rotate-ccw").size(px(32.0)).color(theme.tokens.primary))
+                                                    )
                                             )
                                             .child({
                                                 let is_paused = self.preview_video_source.as_ref().map_or(true, |v| v.paused());
@@ -704,7 +713,11 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(40.0)).color(theme.tokens.primary))
+                                                    .child(
+                                                        Tooltip::new(if is_paused { "Play" } else { "Pause" })
+                                                            .placement(TooltipPlacement::Top)
+                                                            .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(40.0)).color(theme.tokens.primary))
+                                                    )
                                             })
                                             .child(
                                                 div()
@@ -717,7 +730,11 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
+                                                    .child(
+                                                        Tooltip::new("Forward 5s")
+                                                            .placement(TooltipPlacement::Top)
+                                                            .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
+                                                    )
                                             )
                                     )
                                     .child(div().w(px(100.0))) // Spacer to balance timestamp
@@ -799,7 +816,11 @@ impl LumaWorkspace {
                                         this.selected_clip_for_details = None;
                                         cx.notify();
                                     }))
-                                    .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
+                                    .child(
+                                        Tooltip::new("Close Details")
+                                            .placement(TooltipPlacement::Bottom)
+                                            .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
+                                    )
                             )
                     )
                     .child(

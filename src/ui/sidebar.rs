@@ -1,5 +1,6 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::{ActiveView, LumaWorkspace};
 
 impl LumaWorkspace {
@@ -16,13 +17,13 @@ impl LumaWorkspace {
             .p_3()
             .gap_4()
             .child(
-                self.render_nav_item("nav-dash", "layout-dashboard", ActiveView::Dashboard, active, cx)
+                self.render_nav_item("nav-dash", "layout-dashboard", "Dashboard", ActiveView::Dashboard, active, cx)
             )
             .child(
-                self.render_nav_item("nav-clips", "video", ActiveView::Clips, active, cx)
+                self.render_nav_item("nav-clips", "video", "Clips", ActiveView::Clips, active, cx)
             )
             .child(
-                self.render_nav_item("nav-settings", "settings", ActiveView::Settings, active, cx)
+                self.render_nav_item("nav-settings", "settings", "Settings", ActiveView::Settings, active, cx)
             )
             .child(Spacer::new())
             .child(
@@ -46,6 +47,7 @@ impl LumaWorkspace {
         &self,
         id: &'static str,
         icon_name: &'static str,
+        label: &'static str,
         view: ActiveView,
         active: ActiveView,
         cx: &mut Context<Self>,
@@ -53,7 +55,10 @@ impl LumaWorkspace {
         let theme = use_theme();
         let is_active = active == view;
 
-        div()
+        Tooltip::new(label)
+            .placement(TooltipPlacement::Right)
+            .child(
+                div()
             .id(id)
             .relative()
             .w_full()
@@ -80,5 +85,6 @@ impl LumaWorkspace {
                 )
             })
             .child(Icon::new(icon_name).size(px(24.0)))
+            )
     }
 }

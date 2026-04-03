@@ -2,6 +2,7 @@ use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
 use crate::ui::LumaWorkspace;
+use adabraka_ui::components::tooltip::Tooltip;
 
 impl LumaWorkspace {
     pub fn render_dashboard(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -96,52 +97,63 @@ impl LumaWorkspace {
                                                 HStack::new()
                                                     .gap_2()
                                                     .child(
-                                                        Button::new("btn-record", "")
-                                                            .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
-                                                            .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                this.toggle_recording(window, cx);
-                                                            }))
+                                                        Tooltip::new("Toggle Recording").child(
+                                                            Button::new("btn-record", "")
+                                                                .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
+                                                                .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
+                                                                .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                    this.toggle_recording(window, cx);
+                                                                }))
+                                                        )
                                                     )
                                                     .child(
-                                                        Button::new("btn-back", "")
-                                                            .icon(IconSource::Named("rotate-ccw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
+                                                        Tooltip::new("Back 10s").child(
+                                                            Button::new("btn-back", "")
+                                                                .icon(IconSource::Named("rotate-ccw".to_string()))
+                                                                .variant(ButtonVariant::Outline)
+                                                                .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                    if let Some(v) = &this.video_source {
+                                                                        let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
+                                                                        let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                    }
+                                                                }))
+                                                        )
                                                     )
                                                     .child({
                                                         let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
-                                                        Button::new("btn-play", "")
-                                                            .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                this.toggle_play_pause(cx);
-                                                            }))
+                                                        let tooltip_text = if is_paused { "Play" } else { "Pause" };
+                                                        Tooltip::new(tooltip_text).child(
+                                                            Button::new("btn-play", "")
+                                                                .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
+                                                                .variant(ButtonVariant::Outline)
+                                                                .on_click(cx.listener(|this: &mut Self, _, _, cx| {
+                                                                    this.toggle_play_pause(cx);
+                                                                }))
+                                                        )
                                                     })
                                                     .child(
-                                                        Button::new("btn-fwd", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
+                                                        Tooltip::new("Forward 30s").child(
+                                                            Button::new("btn-fwd", "")
+                                                                .icon(IconSource::Named("rotate-cw".to_string()))
+                                                                .variant(ButtonVariant::Outline)
+                                                                .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                    if let Some(v) = &this.video_source {
+                                                                        let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
+                                                                        let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                    }
+                                                                }))
+                                                        )
                                                     )
                                                     .child(
-                                                        Button::new("btn-refresh", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-                                                                this.load_video(&source, window, cx);
-                                                            }))
+                                                        Tooltip::new("Refresh Source").child(
+                                                            Button::new("btn-refresh", "")
+                                                                .icon(IconSource::Named("rotate-cw".to_string()))
+                                                                .variant(ButtonVariant::Secondary)
+                                                                .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                    let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                                                                    this.load_video(&source, window, cx);
+                                                                }))
+                                                        )
                                                     )
                                                     .child(div().w(px(10.0)))
                                                     .child(
@@ -269,10 +281,12 @@ impl LumaWorkspace {
                             div()
                                 .id("monitor-settings-btn-hitbox")
                                 .child(
-                                    Button::new("monitor-settings-btn", "")
-                                        .icon(IconSource::Named("settings".to_string()))
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Sm)
+                                    Tooltip::new("Monitor Settings").child(
+                                        Button::new("monitor-settings-btn", "")
+                                            .icon(IconSource::Named("settings".to_string()))
+                                            .variant(ButtonVariant::Ghost)
+                                            .size(ButtonSize::Sm)
+                                    )
                                 )
                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
@@ -454,10 +468,12 @@ impl LumaWorkspace {
                                 div()
                                     .id(("session-settings-btn-hitbox", session_key))
                                     .child(
-                                        Button::new(("session-settings-btn", session_key), "")
-                                            .icon(IconSource::Named("settings".to_string()))
-                                            .variant(ButtonVariant::Ghost)
-                                            .size(ButtonSize::Sm)
+                                        Tooltip::new("Session Settings").child(
+                                            Button::new(("session-settings-btn", session_key), "")
+                                                .icon(IconSource::Named("settings".to_string()))
+                                                .variant(ButtonVariant::Ghost)
+                                                .size(ButtonSize::Sm)
+                                        )
                                     )
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();

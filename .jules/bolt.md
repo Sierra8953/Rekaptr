@@ -1,0 +1,3 @@
+## 2024-05-24 - Early return for nameless windows in EnumWindows
+**Learning:** In Windows UI programming (specifically when using `EnumWindows`), querying process information via `GetWindowThreadProcessId` or resolving process names using `sysinfo` is extremely expensive (~5ms+). Because Windows spawns hundreds of hidden, nameless, and system-level windows, these queries cause performance degradation.
+**Action:** Always filter invisible and nameless windows early in the `EnumWindows` callback using `IsWindowVisible` and `GetWindowTextW` length checks before making more expensive OS API calls or process lookups.

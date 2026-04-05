@@ -134,18 +134,8 @@ unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM)
     let state = &mut *(lparam.0 as *mut WindowEnumState);
 
     if IsWindowVisible(hwnd).as_bool() {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-
-        if pid != 0 {
-            if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
-                let proc_name = process.name().to_string().to_lowercase();
-                if state.blacklist.contains(&proc_name.as_str()) {
-                    return true.into();
-                }
-            }
-        }
-
+        // Fast path: get window text first. Most windows are nameless,
+        // and querying sysinfo for them is a massive performance bottleneck.
         let mut text = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut text);
 
@@ -161,18 +151,30 @@ unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM)
 
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            let proc_name = if pid != 0 {
-                state.sys.process(sysinfo::Pid::from_u32(pid))
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            } else {
-                "Unknown".to_string()
-            };
+
+            if pid != 0 {
+                if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
+                    let proc_name = process.name().to_string();
+                    let proc_name_lower = proc_name.to_lowercase();
+
+                    if state.blacklist.contains(&proc_name_lower.as_str()) {
+                        return true.into();
+                    }
+
+                    state.windows.push(WindowInfo {
+                        title,
+                        hwnd: hwnd.0 as u64,
+                        process_name: proc_name,
+                    });
+
+                    return true.into();
+                }
+            }
 
             state.windows.push(WindowInfo {
                 title,
                 hwnd: hwnd.0 as u64,
-                process_name: proc_name,
+                process_name: "Unknown".to_string(),
             });
         }
     }

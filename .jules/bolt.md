@@ -1,0 +1,3 @@
+## 2024-05-14 - Optimize Window Enumeration
+**Learning:** In Windows UI programming (specifically `src/game_detector.rs`), when using `EnumWindows`, it's critical to filter out invisible and nameless windows early. `GetWindowTextW` returns 0 for nameless windows or errors, so performing a simple length check before doing any expensive OS queries like `GetWindowThreadProcessId` or `sysinfo` process lookups avoids massive performance degradation on the hundreds of background/nameless windows that exist in a typical Windows session.
+**Action:** Always filter window handles by title length (`GetWindowTextW`) before querying process information during window enumeration.

@@ -123,6 +123,10 @@ impl Video {
                 OPENGL32_DLL = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("opengl32.dll")).map_err(|e| Error::OpenGL(format!("LoadLibrary opengl32.dll failed: {:?}", e)))?;
             }
 
+            // SAFETY: The D3D11 device pointer in AppState has an AddRef'd reference (see main.rs)
+            // and lives for the entire app lifetime. transmute_copy creates a second reference
+            // without AddRef — this is safe because the device outlives all Video instances
+            // (Videos are destroyed before the window closes).
             let d3d_device: ID3D11Device = std::mem::transmute_copy(&d3d11_device_ptr.ok_or(Error::Lock)?);
             
             unsafe extern "system" fn dummy_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -195,7 +199,7 @@ impl Video {
             let interop_device = (interop.open_device)(d3d_device.as_raw());
             if interop_device.is_invalid() { return Err(Error::Interop("wglDXOpenDeviceNV failed".into())); }
 
-            let width = 1920; let height = 1080;
+            let width = 2560; let height = 1440;
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: width, Height: height, MipLevels: 1, ArraySize: 1, Format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, Usage: D3D11_USAGE_DEFAULT,
@@ -204,7 +208,7 @@ impl Video {
             };
             let mut d3d_texture = None;
             d3d_device.CreateTexture2D(&desc, None, Some(&mut d3d_texture)).map_err(|_| Error::Lock)?;
-            let d3d_texture = d3d_texture.unwrap();
+            let d3d_texture = d3d_texture.ok_or_else(|| Error::OpenGL("CreateTexture2D returned None".into()))?;
 
             let mut gl_texture = 0;
             glGenTextures(1, &mut gl_texture);
@@ -397,5 +401,38 @@ impl Video {
     pub fn set_frame_buffer_capacity(&self, _: usize) {}
     pub fn set_volume(&self, volume: f64) {
         let _ = self.read().mpv.set_property("volume", volume);
+    }
+
+    /// Returns list of audio tracks: (track_id, title/label)
+    pub fn audio_tracks(&self) -> Vec<(i64, String)> {
+        let inner = self.read();
+        let count = inner.mpv.get_property::<i64>("track-list/count").unwrap_or(0);
+        let mut tracks = Vec::new();
+        for i in 0..count {
+            let track_type = inner.mpv.get_property::<String>(&format!("track-list/{}/type", i)).unwrap_or_default();
+            if track_type != "audio" { continue; }
+            let id = inner.mpv.get_property::<i64>(&format!("track-list/{}/id", i)).unwrap_or(0);
+            let title = inner.mpv.get_property::<String>(&format!("track-list/{}/title", i)).unwrap_or_default();
+            let lang = inner.mpv.get_property::<String>(&format!("track-list/{}/lang", i)).unwrap_or_default();
+            let label = if !title.is_empty() {
+                title
+            } else if !lang.is_empty() {
+                format!("Track {} ({})", id, lang)
+            } else {
+                format!("Track {}", id)
+            };
+            tracks.push((id, label));
+        }
+        tracks
+    }
+
+    /// Get currently active audio track ID (0 = none/disabled)
+    pub fn current_audio_track(&self) -> i64 {
+        self.read().mpv.get_property::<i64>("aid").unwrap_or(1)
+    }
+
+    /// Set active audio track by ID (0 to disable audio)
+    pub fn set_audio_track(&self, id: i64) {
+        let _ = self.read().mpv.set_property("aid", id);
     }
 }

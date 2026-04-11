@@ -1,0 +1,16 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+bindir=${prefix}/bin
+glib_genmarshal=${bindir}/glib-genmarshal
+gobject_query=${bindir}/gobject-query
+glib_mkenums=${bindir}/glib-mkenums
+
+Name: GLib
+Description: C Utility Library
+Version: 2.62.6
+Libs: -L${libdir} -lglib-2.0 -lintl
+Libs.private: -lws2_32 -lwinmm
+Cflags: -I${includedir}/glib-2.0 -I${libdir}/glib-2.0/include
+

@@ -2608,6 +2608,8 @@ impl Interactivity {
 
 /// The per-frame state of an interactive element. Used for tracking stateful interactions like clicks
 /// and scroll offsets.
+/// Persistent state for an interactive element across frames, including focus, hover,
+/// and scroll offsets.
 #[derive(Default)]
 pub struct InteractiveElementState {
     pub(crate) focus_handle: Option<FocusHandle>,

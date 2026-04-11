@@ -1,0 +1,11 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gstaudiobuffersplit
+Description: gst-plugins-bad: gstaudiobuffersplit
+Version: 1.20.7
+Requires.private: gstreamer-base-1.0 >=  1.20.0, gstreamer-audio-1.0 >=  1.20.0
+Libs: -L${prefix}/lib/gstreamer-1.0 -lgstaudiobuffersplit
+Cflags: -I${includedir}
+

@@ -1,0 +1,12 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+gmodule_supported=true
+
+Name: GModule
+Description: Dynamic module loader for GLib
+Version: 2.62.6
+Requires: gmodule-no-export-2.0, glib-2.0
+Cflags: -I${includedir}
+

@@ -50,7 +50,7 @@ impl LumaWorkspace {
                                                 .variant(ButtonVariant::Default)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.selected_game_filter = None;
-                                                    this.recalculate_library_items(cx);
+                                                    this.rebuild_library_items(cx);
                                                     cx.notify();
                                                 }))
                                         )
@@ -109,13 +109,20 @@ impl LumaWorkspace {
                                 match self.clips_view_mode {
                                     ClipsViewMode::Grid => {
                                         if self.library_items.is_empty() && !self.is_loading_clips {
-                                            div().p_20().text_center().text_color(theme.tokens.muted_foreground).child("No clips match your search.").into_any_element()
+                                            div().flex_1().flex().items_center().justify_center().py_20().child(
+                                                VStack::new()
+                                                    .items_center()
+                                                    .gap_4()
+                                                    .child(Icon::new("video").size(px(64.0)).color(theme.tokens.muted_foreground.opacity(0.5)))
+                                                    .child(div().text_xl().text_color(theme.tokens.muted_foreground).child("No clips found"))
+                                                    .child(div().text_sm().text_color(theme.tokens.muted_foreground.opacity(0.7)).child("Start recording to see your clips here"))
+                                            ).into_any_element()
                                         } else {
                                             let view_handle = cx.entity().downgrade();
+                                            let app_state = self.app_state.clone();
                                             list(self.clips_list_state.clone(), move |i, _window, cx| {
-                                                let view = match view_handle.upgrade() {
-                                                    Some(v) => v,
-                                                    None => return div().into_any_element(),
+                                                let Some(view) = view_handle.upgrade() else {
+                                                    return div().into_any_element();
                                                 };
                                                 let row = &view.read(cx).library_items[i];
                                                 
@@ -129,23 +136,27 @@ impl LumaWorkspace {
                                                     }
                                                     LibraryRow::ClipChunk(clips) => {
                                                         let chunk_view_handle = view_handle.clone();
-                                                        HStack::new()
-                                                            .px_8()
-                                                            .gap_6()
-                                                            .py_2()
-                                                            .children(clips.iter().map(|clip| {
-                                                                Self::render_clip_card_advanced(clip.clone(), &chunk_view_handle)
-                                                            }))
-                                                            .into_any_element()
+                                                        let mut row = HStack::new().px_8().gap_6().py_2();
+                                                        // Get selection state from view.read(cx)
+                                                        let is_selected_map: Vec<bool> = clips.iter().map(|c| {
+                                                            let path = c.path.to_string_lossy().to_string();
+                                                            view.read(cx).selected_clips.contains(&path)
+                                                        }).collect();
+
+                                                        for (idx, clip) in clips.iter().enumerate() {
+                                                            row = row.child(Self::render_clip_card_advanced(clip.clone(), &chunk_view_handle, is_selected_map[idx]));
+                                                        }
+                                                        row.into_any_element()
                                                     }
                                                     LibraryRow::GameChunk(games) => {
                                                         let chunk_view_handle = view_handle.clone();
+                                                        let chunk_app_state = app_state.clone();
                                                         HStack::new()
                                                             .px_8()
                                                             .gap_6()
                                                             .py_3()
-                                                            .children(games.iter().map(|(title, count, cached_path)| {
-                                                                Self::render_game_card_vertical(title.clone(), *count, cached_path.clone(), chunk_view_handle.clone())
+                                                            .children(games.iter().map(|(title, count)| {
+                                                                Self::render_game_card_vertical(title.clone(), *count, &chunk_app_state, chunk_view_handle.clone())
                                                             }))
                                                             .into_any_element()
                                                     }
@@ -201,7 +212,7 @@ impl LumaWorkspace {
 pub enum LibraryRow {
     SectionHeader(String),
     ClipChunk(Vec<Clip>),
-    GameChunk(Vec<(String, usize, Option<String>)>),
+    GameChunk(Vec<(String, usize)>),
 }
 
 impl LumaWorkspace {
@@ -214,19 +225,17 @@ impl LumaWorkspace {
             let game_clips: Vec<Clip> = clips.into_iter().filter(|c| &c.title == game_title).collect();
 
             // Use a chunked approach for the grid to keep the element tree manageable
-            return VStack::new()
-                .gap_4()
-                .pb_8()
-                .children(game_clips.chunks(4).map(|chunk| {
-                    let view_handle = view_handle.clone();
-                    let chunk_vec = chunk.to_vec();
-                    HStack::new()
-                        .px_8()
-                        .gap_6()
-                        .children(chunk_vec.into_iter().map(move |clip| {
-                            Self::render_clip_card_advanced(clip, &view_handle)
-                        }))
-                }));
+            let mut list = VStack::new().gap_4().pb_8();
+            for chunk in game_clips.chunks(4) {
+                let mut row = HStack::new().px_8().gap_6();
+                for clip in chunk {
+                    let path = clip.path.to_string_lossy().to_string();
+                    let is_selected = self.selected_clips.contains(&path);
+                    row = row.child(Self::render_clip_card_advanced(clip.clone(), &view_handle, is_selected));
+                }
+                list = list.child(row);
+            }
+            return list;
         }
 
         // Dashboard Style: Recent + Game Groups
@@ -240,19 +249,19 @@ impl LumaWorkspace {
         // 1. Most Recent Section (Top 4)
         if !clips.is_empty() {
             let recent_clips: Vec<Clip> = clips.iter().take(4).cloned().collect();
+            let mut recent_row = HStack::new().px_8().gap_6();
+            for clip in recent_clips {
+                let path = clip.path.to_string_lossy().to_string();
+                let is_selected = self.selected_clips.contains(&path);
+                recent_row = recent_row.child(Self::render_clip_card_advanced(clip, &view_handle, is_selected));
+            }
+            
             content = content.child(
                 div()
                     .px_8()
                     .py_3()
                     .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(use_theme().tokens.muted_foreground).child("MOST RECENT"))
-            ).child(
-                HStack::new()
-                    .px_8()
-                    .gap_6()
-                    .children(recent_clips.into_iter().map(|clip| {
-                        Self::render_clip_card_advanced(clip, &view_handle)
-                    }))
-            );
+            ).child(recent_row);
         }
 
         // 2. Games Section
@@ -269,70 +278,24 @@ impl LumaWorkspace {
             let view_handle = view_handle.clone();
             let app_state = app_state.clone();
             
-            // Map the chunk to a vec of (title, count, cached_path)
-            let titles_with_data: Vec<(String, usize, Option<String>)> = chunk.iter()
+            // Map the chunk to a vec of (title, count)
+            let titles_with_data: Vec<(String, usize)> = chunk.iter()
                 .map(|title| {
                     let count = game_groups.get(title).map_or(0, |v| v.len());
-                    
-                    // Check cache and trigger fetch if needed
-                    let cached_path = app_state.artwork_cache.get(title).map(|v| v.value().clone()).flatten();
-                    
-                    if cached_path.is_none() && !app_state.artwork_cache.contains_key(title) {
-                        let artwork_url_or_path = crate::utils::find_steam_artwork(title);
-                        if let Some(source) = artwork_url_or_path {
-                            if !source.starts_with("http") {
-                                app_state.artwork_cache.insert(title.clone(), Some(source));
-                            } else {
-                                let url = source.clone();
-                                let handle = cx.weak_entity();
-                                let title_cache = title.clone();
-                                let app_state_spawn = app_state.clone();
-
-                                app_state.artwork_cache.insert(title_cache.clone(), None);
-
-                                cx.spawn(move |_, cx: &mut AsyncApp| {
-                                    let app_state = app_state_spawn.clone();
-                                    let handle = handle.clone();
-                                    let mut cx = cx.clone();
-                                    let url = url.clone();
-                                    let title_cache = title_cache.clone();
-                                    async move {
-                                        let result = if let Ok(resp) = reqwest::get(&url).await {
-                                            if let Ok(bytes) = resp.bytes().await {
-                                                Some(bytes)
-                                            } else { None }
-                                        } else { None };
-
-                                        if let Some(bytes) = result {
-                                            let app_id = url.split('/').nth(5).unwrap_or("unknown");
-                                            let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
-                                            let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
-                                            if std::fs::write(&local_path, bytes).is_ok() {
-                                                let path_str = local_path.to_string_lossy().replace('\\', "/");
-                                                app_state.artwork_cache.insert(title_cache, Some(path_str));
-                                                let _ = handle.update(&mut cx, |_, cx| {
-                                                    cx.notify();
-                                                });
-                                            }
-                                        }
-                                    }
-                                }).detach();
-                            }
-                        } else {
-                            app_state.artwork_cache.insert(title.clone(), None);
-                        }
-                    }
-                    
-                    (title.clone(), count, cached_path)
+                    (title.clone(), count)
                 })
                 .collect();
+
+            // Trigger portrait artwork fetches for this chunk
+            let chunk_titles: Vec<String> = titles_with_data.iter().map(|(t, _)| t.clone()).collect();
+            self.fetch_portrait_artwork(&chunk_titles, cx);
 
             let row = HStack::new()
                 .px_8()
                 .gap_6()
                 .py_3()
-                .children(titles_with_data.into_iter().map(move |(title, count, cached_path)| {
-                    Self::render_game_card_vertical(title, count, cached_path, view_handle.clone())
+                .children(titles_with_data.into_iter().map(move |(title, count)| {
+                    Self::render_game_card_vertical(title, count, &app_state, view_handle.clone())
                 }));
             content = content.child(row);
         }
@@ -340,17 +303,85 @@ impl LumaWorkspace {
         content
     }
 
-    fn render_game_card_vertical(title: String, clip_count: usize, cached_path: Option<String>, view_handle: WeakEntity<Self>) -> impl IntoElement {
+    /// Trigger portrait artwork fetches for a list of game titles.
+    /// Everything runs off the UI thread — app_id resolution, local cache check, and download.
+    pub fn fetch_portrait_artwork(&self, titles: &[String], cx: &mut Context<Self>) {
+        let app_state = self.app_state.clone();
+        for title in titles {
+            // Already fetched or fetch in progress
+            if app_state.portrait_cache.contains_key(title) {
+                continue;
+            }
+
+            // Mark as in-progress immediately so we don't double-fetch
+            app_state.portrait_cache.insert(title.clone(), None);
+
+            let handle = cx.weak_entity();
+            let title_cache = title.clone();
+            let app_state_spawn = app_state.clone();
+
+            cx.spawn(move |_, cx: &mut gpui::AsyncApp| {
+                let app_state = app_state_spawn;
+                let handle = handle;
+                let mut cx = cx.clone();
+                let title = title_cache;
+                async move {
+                    // Run the blocking app_id resolution + local cache check off the UI thread
+                    let resolved = cx.background_executor().spawn({
+                        let title = title.clone();
+                        async move {
+                            crate::utils::find_steam_artwork_portrait(&title)
+                        }
+                    }).await;
+
+                    let Some(source) = resolved else {
+                        // No artwork found — leave None in cache
+                        return;
+                    };
+
+                    if !source.starts_with("http") {
+                        // Local file already cached on disk
+                        app_state.portrait_cache.insert(title, Some(source));
+                        let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                        return;
+                    }
+
+                    // Download from CDN
+                    let result = if let Ok(resp) = reqwest::get(&source).await {
+                        if let Ok(bytes) = resp.bytes().await {
+                            Some(bytes)
+                        } else { None }
+                    } else { None };
+
+                    if let Some(bytes) = result {
+                        let app_id = source.split('/').nth(5).unwrap_or("unknown");
+                        let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                        let _ = std::fs::create_dir_all(&cache_dir);
+                        let local_path = cache_dir.join(format!("{}_portrait.jpg", app_id));
+                        if std::fs::write(&local_path, &bytes).is_ok() {
+                            let path_str = local_path.to_string_lossy().replace('\\', "/");
+                            app_state.portrait_cache.insert(title, Some(path_str));
+                            let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                        }
+                    }
+                }
+            }).detach();
+        }
+    }
+
+    fn render_game_card_vertical(title: String, clip_count: usize, app_state: &std::sync::Arc<crate::state::AppState>, view_handle: WeakEntity<Self>) -> impl IntoElement {
         let theme = use_theme();
         let title_for_click = title.clone();
-        
+
+        // Read from portrait cache (fetch was triggered earlier)
+        let cached_path = app_state.portrait_cache.get(&title).map(|v| v.value().clone()).flatten();
         let final_image_path: Option<std::path::PathBuf> = cached_path.map(std::path::PathBuf::from);
 
         div()
             .group("game-card")
             .relative()
-            .w(px(280.0))
-            .h(px(320.0))
+            .w(px(200.0))
+            .h(px(300.0))
             .bg(theme.tokens.card)
             .border_1()
             .border_color(theme.tokens.border)
@@ -361,7 +392,7 @@ impl LumaWorkspace {
                 let title = title_for_click.clone();
                 let _ = view_handle.update(cx, |this, cx| {
                     this.selected_game_filter = Some(title);
-                    this.recalculate_library_items(cx);
+                    this.rebuild_library_items(cx);
                     cx.notify();
                 });
             })
@@ -392,7 +423,8 @@ impl LumaWorkspace {
                     )
             )
     }
-    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>) -> impl IntoElement {
+
+    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
         let view_handle_actions = view_handle.clone();
@@ -404,12 +436,13 @@ impl LumaWorkspace {
             .flex()
             .flex_col()
             .w(px(280.0))
-            .bg(theme.tokens.card)
-            .border_1()
-            .border_color(theme.tokens.border)
+            .bg(if is_selected { theme.tokens.primary.opacity(0.1) } else { theme.tokens.card })
+            .border(if is_selected { px(2.0) } else { px(1.0) })
+            .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
             .rounded_xl()
             .overflow_hidden()
             .cursor_pointer()
+            .hover(|s| s.shadow_lg())
             .on_mouse_down(MouseButton::Left, {
                 let view_handle_click = view_handle_click.clone();
                 let clip_for_mouse = clip_for_mouse.clone();
@@ -435,53 +468,55 @@ impl LumaWorkspace {
                 div()
                     .relative()
                     .w_full()
-                    .h(px(157.0))
+                    .h(px(158.0))
                     .bg(rgb(0x000000))
                     .when_some(clip.thumbnail_path.as_ref(), |this, path| {
                         this.child(
                             img(path.to_string_lossy().to_string())
                                 .size_full()
+                                .object_fit(ObjectFit::Cover)
                         )
                     })
                     .child(
                         div()
+                            .id(("play-overlay", clip.timestamp))
                             .absolute()
                             .inset_0()
-                            .bg(gpui::rgba(0x000000_66))
                             .flex()
                             .items_center()
                             .justify_center()
                             .opacity(0.0)
                             .group_hover("clip-card", |this| this.opacity(1.0))
+                            .group("play-btn")
+                            .text_color(gpui::rgba(0xffffffaa))
+                            .hover(|this| this.text_color(gpui::white()))
                             .child(
-                                Button::new(("preview-btn", clip.timestamp), "")
-                                    .icon(IconSource::Named("play".to_string()))
-                                    .variant(ButtonVariant::Default)
-                                    .on_click({
+                                Icon::new(IconSource::Named("play".to_string()))
+                                    .size(px(32.0))
+                            )
+                            .on_mouse_down(MouseButton::Left, {
                                         let clip = clip.clone();
                                         let view_handle = view_handle_click.clone();
                                         move |_, _, cx| {
+                                            cx.stop_propagation();
                                             let _ = view_handle.update(cx, |this, cx| {
                                                 this.clip_to_preview = Some(clip.clone());
                                                 this.last_preview_mouse_move = std::time::Instant::now();
                                                 this.show_preview_controls = true;
                                                 let url = clip.path.to_string_lossy().to_string();
-                                                let d3d_device_handle = match this.app_state.d3d11_device.lock().as_ref() {
-                                                    Some(h) => h.0,
-                                                    None => return,
-                                                };
+                                                let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
                                                 if let Ok(video) = crate::video_player::Video::new_with_options(
                                                     &url,
                                                     crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
-                                                    Some(d3d_device_handle.0),
+                                                    d3d_device_ptr,
                                                 ) {
                                                     this.preview_video_source = Some(video);
+                                                    this.init_preview_audio_tracks();
                                                 }
                                                 cx.notify();
                                             });
                                         }
                                     })
-                            )
                     )
             )
             .child(
@@ -526,7 +561,36 @@ impl LumaWorkspace {
 
     fn render_mini_player(&self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        
+
+        if self.preview_volume_dragging {
+            let view_handle = cx.entity().downgrade();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        let bounds = this.preview_volume_bounds;
+                        if bounds.size.width > px(0.0) {
+                            let rel_x = (event.position.x - bounds.left()).max(px(0.0));
+                            let frac = (rel_x / bounds.size.width).clamp(0.0, 1.0);
+                            this.preview_volume = (frac * 150.0) as f64;
+                            if let Some(v) = &this.preview_video_source {
+                                v.set_volume(this.preview_volume);
+                            }
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+            let view_handle = cx.entity().downgrade();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                    let _ = view_handle.update(cx, |this, cx| {
+                        this.preview_volume_dragging = false;
+                        cx.notify();
+                    });
+                }
+            });
+        }
+
         let (pos, dur) = if let Some(v) = &self.preview_video_source {
             (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
         } else {
@@ -542,11 +606,17 @@ impl LumaWorkspace {
         let progress = (display_pos / dur) as f32;
         let controls_visible = self.show_preview_controls;
 
-        let format_time = |s: f64| {
-            let total_seconds = s as i64;
-            let minutes = total_seconds / 60;
-            let seconds = total_seconds % 60;
-            format!("{}:{:02}", minutes, seconds)
+        let show_hours = dur >= 3600.0;
+        let format_time = move |s: f64| {
+            let total = s.max(0.0) as u64;
+            let h = total / 3600;
+            let m = (total % 3600) / 60;
+            let sec = total % 60;
+            if show_hours {
+                format!("{:01}:{:02}:{:02}", h, m, sec)
+            } else {
+                format!("{:01}:{:02}", m, sec)
+            }
         };
 
         let player_width = 1120.0;
@@ -564,6 +634,7 @@ impl LumaWorkspace {
                 this.clip_to_preview = None;
                 this.preview_video_source = None;
                 this.is_scrubbing_preview = false;
+                this.preview_audio_enabled.clear();
                 cx.notify();
             }))
             .child(
@@ -586,6 +657,7 @@ impl LumaWorkspace {
                         }
                         cx.notify();
                     }))
+                    .id("mini-player-container")
                     .w(px(player_width))
                     .h(px(630.0))
                     .bg(theme.tokens.card)
@@ -593,7 +665,7 @@ impl LumaWorkspace {
                     .border_1()
                     .border_color(theme.tokens.border)
                     .overflow_hidden()
-                    .relative() 
+                    .relative()
                     .child(
                         div()
                             .size_full()
@@ -621,6 +693,7 @@ impl LumaWorkspace {
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.clip_to_preview = None;
                                         this.preview_video_source = None;
+                                        this.preview_audio_enabled.clear();
                                         cx.notify();
                                     }))
                                     .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
@@ -720,7 +793,131 @@ impl LumaWorkspace {
                                                     .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
                                             )
                                     )
-                                    .child(div().w(px(100.0))) // Spacer to balance timestamp
+                                    .child({
+                                        let audio_tracks = self.preview_video_source.as_ref()
+                                            .map(|v| v.audio_tracks())
+                                            .unwrap_or_default();
+                                        let theme = use_theme();
+                                        let vol_frac = (self.preview_volume / 100.0).clamp(0.0, 1.5) as f32;
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .gap_3()
+                                            .items_center()
+                                            // Volume slider
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new("speaker").size(px(16.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.67))
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("preview-vol-slider")
+                                                            .w(px(80.0))
+                                                            .h(px(16.0))
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                                this.preview_volume_dragging = true;
+                                                                let bounds = this.preview_volume_bounds;
+                                                                if bounds.size.width > px(0.0) {
+                                                                    let rel_x = (event.position.x - bounds.left()).max(px(0.0));
+                                                                    let frac = (rel_x / bounds.size.width).clamp(0.0, 1.0);
+                                                                    this.preview_volume = (frac * 150.0) as f64;
+                                                                    if let Some(v) = &this.preview_video_source {
+                                                                        v.set_volume(this.preview_volume);
+                                                                    }
+                                                                }
+                                                                cx.notify();
+                                                            }))
+                                                            .child(
+                                                                canvas(
+                                                                    move |_, window, cx| {
+                                                                        let layout_id = window.request_layout(Style {
+                                                                            size: size(px(80.0).into(), px(4.0).into()),
+                                                                            ..Default::default()
+                                                                        }, [], cx);
+                                                                        (layout_id, ())
+                                                                    },
+                                                                    {
+                                                                        let view_handle = cx.entity().downgrade();
+                                                                        let theme = theme.clone();
+                                                                        move |bounds, _, window, cx| {
+                                                                            let _ = view_handle.update(cx, |this, _cx| {
+                                                                                this.preview_volume_bounds = bounds;
+                                                                            });
+                                                                            // Background
+                                                                            window.paint_quad(fill(bounds, theme.tokens.muted).corner_radii(px(2.0)));
+                                                                            // Fill
+                                                                            let fill_frac = (vol_frac / 1.5).clamp(0.0, 1.0);
+                                                                            let fill_w = bounds.size.width * fill_frac;
+                                                                            let fill_rect = Bounds::new(bounds.origin, size(fill_w, bounds.size.height));
+                                                                            window.paint_quad(fill(fill_rect, theme.tokens.primary).corner_radii(px(2.0)));
+                                                                            // Thumb
+                                                                            let thumb_x = (bounds.left() + fill_w - px(4.0)).max(bounds.left());
+                                                                            let thumb_rect = Bounds::new(
+                                                                                point(thumb_x, bounds.top() - px(3.0)),
+                                                                                size(px(8.0), px(10.0))
+                                                                            );
+                                                                            window.paint_quad(fill(thumb_rect, gpui::white()).corner_radii(px(4.0)));
+                                                                        }
+                                                                    }
+                                                                )
+                                                            )
+                                                    )
+                                            )
+                                            // Track toggle buttons
+                                            .when(audio_tracks.len() > 1, |this| {
+                                                let audio_tracks = self.preview_video_source.as_ref()
+                                                    .map(|v| v.audio_tracks())
+                                                    .unwrap_or_default();
+                                                let theme = use_theme();
+                                                this.child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .gap_1()
+                                                        .items_center()
+                                                        .children(audio_tracks.into_iter().enumerate().map(|(idx, _)| {
+                                                            let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
+                                                            let theme = theme.clone();
+                                                            div()
+                                                                .id(("track-toggle", idx))
+                                                                .cursor_pointer()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .w(px(22.0))
+                                                                .h(px(22.0))
+                                                                .rounded(px(4.0))
+                                                                .text_xs()
+                                                                .font_weight(FontWeight::BOLD)
+                                                                .when(enabled, |this| {
+                                                                    this.bg(theme.tokens.primary)
+                                                                        .text_color(theme.tokens.primary_foreground)
+                                                                        .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
+                                                                })
+                                                                .when(!enabled, |this| {
+                                                                    this.bg(theme.tokens.muted)
+                                                                        .text_color(theme.tokens.muted_foreground)
+                                                                        .hover(|s| s.text_color(gpui::white()))
+                                                                })
+                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                                    this.init_preview_audio_tracks();
+                                                                    if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
+                                                                        *v = !*v;
+                                                                    }
+                                                                    this.update_preview_audio_mix();
+                                                                    cx.notify();
+                                                                }))
+                                                                .child(format!("{}", idx + 1))
+                                                        }))
+                                                )
+                                            })
+                                    })
                             )
                     )
             )
@@ -749,7 +946,7 @@ impl LumaWorkspace {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.selected_clips.clear();
                                 cx.notify();
-                            }))
+                              }))
                     )
             )
             .child(
@@ -839,16 +1036,14 @@ impl LumaWorkspace {
                                             this.last_preview_mouse_move = std::time::Instant::now();
                                             this.show_preview_controls = true;
                                             let url = clip.path.to_string_lossy().to_string();
-                                            let d3d_device_handle = match this.app_state.d3d11_device.lock().as_ref() {
-                                                    Some(h) => h.0,
-                                                    None => return,
-                                                };
+                                            let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
                                             if let Ok(video) = crate::video_player::Video::new_with_options(
                                                 &url,
                                                 crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
-                                                Some(d3d_device_handle.0),
+                                                d3d_device_ptr,
                                             ) {
                                                 this.preview_video_source = Some(video);
+                                                this.init_preview_audio_tracks();
                                             }
                                             cx.notify();
                                         }

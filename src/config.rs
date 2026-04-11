@@ -1,26 +1,7 @@
-//! Application configuration backed by SQLite.
-//!
-//! Config is stored as a single JSON blob in a SQLite row (id=1). This gives us:
-//! - **Atomic writes**: SQLite's WAL journaling prevents config corruption on crash,
-//!   which happened regularly with plain JSON when the app was killed mid-write during
-//!   recording. A game crash + recording stop + config save is a common simultaneous event.
-//! - **No file locking headaches**: SQLite handles concurrent access from the UI thread
-//!   and background cleanup thread gracefully.
-//! - **Migration path**: on first launch after the switch, we auto-migrate any existing
-//!   `config.json` into the database and delete the old file.
-//!
-//! The config includes global video/audio defaults, per-game overrides (the "game
-//! registry"), and mic processing settings. Per-game overrides are keyed by the game's
-//! display title and can selectively override encoder, bitrate, retention, and audio
-//! routing.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// A single audio track in the recording. Up to 6 tracks can be configured, each
-/// capturing from a different source (system audio, mic, or a specific application).
-/// Tracks are muxed as separate streams in the fMP4 output.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AudioRouting {
     pub name: String,
@@ -54,10 +35,6 @@ pub struct VideoSettings {
     pub artwork_path: Option<String>,
 }
 
-/// Per-game overrides. When a game has custom settings, these take precedence over
-/// the global defaults. `video_overrides` and `audio_routing` are `Option` so that
-/// `None` means "inherit from global" — only fields the user explicitly customized
-/// are stored.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameSettings {
     pub title: String,
@@ -70,9 +47,6 @@ pub struct GameSettings {
     pub artwork_path: Option<String>,
 }
 
-/// Microphone capture and processing chain. These settings feed into the shared
-/// `MicProvider` which runs independently of recording sessions so that mic audio
-/// is always warmed up and ready — no cold-start delay when recording begins.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MicSettings {
     pub device_name: String,
@@ -92,8 +66,6 @@ pub struct MicSettings {
     pub force_mono: bool,
 }
 
-/// Top-level configuration. Serialized as JSON into a single SQLite row.
-/// The `game_registry` maps display titles to per-game overrides.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub global_video: VideoSettings,
@@ -106,29 +78,87 @@ pub struct AppConfig {
     #[serde(default = "default_storage_path")]
     pub storage_path: String,
     #[serde(default)]
-    pub window_bounds: Option<WindowBounds>,
-    #[serde(default = "default_instant_replay_secs")]
-    pub instant_replay_secs: i32,
+    pub first_run_completed: bool,
+    #[serde(default)]
+    pub startup_with_windows: bool,
+    #[serde(default = "default_hotkeys")]
+    pub hotkeys: HotkeyConfig,
+    #[serde(default)]
+    pub minimize_to_tray: bool,
+    #[serde(default)]
+    pub check_for_updates: bool,
+    #[serde(default)]
+    pub auto_delete_clips_days: Option<i32>,
+    #[serde(default = "default_export_format")]
+    pub default_export_format: String,
 }
 
-fn default_instant_replay_secs() -> i32 { 30 }
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct WindowBounds {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
+pub struct HotkeyConfig {
+    /// Virtual key code for toggle recording (default: F9 = 0x78)
+    pub toggle_recording_vk: u32,
+    /// Modifier flags for toggle recording (MOD_CONTROL=2, MOD_ALT=1, MOD_SHIFT=4)
+    pub toggle_recording_mod: u32,
+    /// Virtual key code for save clip (default: F10 = 0x79)
+    pub save_clip_vk: u32,
+    pub save_clip_mod: u32,
+    /// Virtual key code for toggle mic mute (default: F11 = 0x7A)
+    pub toggle_mic_vk: u32,
+    pub toggle_mic_mod: u32,
+    /// Push-to-talk key
+    #[serde(default)]
+    pub push_to_talk_vk: u32,
+    #[serde(default)]
+    pub push_to_talk_mod: u32,
+    /// Marker hotkeys
+    #[serde(default)]
+    pub marker_flag_vk: u32,
+    #[serde(default)]
+    pub marker_flag_mod: u32,
+    #[serde(default)]
+    pub marker_kill_vk: u32,
+    #[serde(default)]
+    pub marker_kill_mod: u32,
+    #[serde(default)]
+    pub marker_death_vk: u32,
+    #[serde(default)]
+    pub marker_death_mod: u32,
+    #[serde(default)]
+    pub marker_highlight_vk: u32,
+    #[serde(default)]
+    pub marker_highlight_mod: u32,
+}
+
+fn default_hotkeys() -> HotkeyConfig {
+    HotkeyConfig {
+        toggle_recording_vk: 0x78, // F9
+        toggle_recording_mod: 0,   // No modifier
+        save_clip_vk: 0x79,        // F10
+        save_clip_mod: 0,
+        toggle_mic_vk: 0x7A,       // F11
+        toggle_mic_mod: 0,
+        push_to_talk_vk: 0,
+        push_to_talk_mod: 0,
+        marker_flag_vk: 0,
+        marker_flag_mod: 0,
+        marker_kill_vk: 0,
+        marker_kill_mod: 0,
+        marker_death_vk: 0,
+        marker_death_mod: 0,
+        marker_highlight_vk: 0,
+        marker_highlight_mod: 0,
+    }
 }
 
 fn default_max_buffer_size() -> i32 { 50 }
+fn default_export_format() -> String { "mp4".to_string() }
 
 fn default_storage_path() -> String {
-    // Default to %USERPROFILE%\Videos\LumaRecordings, falling back to C:\LumaRecordings
-    let base = std::env::var("USERPROFILE")
-        .map(|p| PathBuf::from(p).join("Videos"))
-        .unwrap_or_else(|_| PathBuf::from("C:\\"));
-    base.join("LumaRecordings").to_string_lossy().to_string()
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let path = PathBuf::from(local_app_data).join("Luma").join("Recordings");
+        return path.to_string_lossy().to_string();
+    }
+    PathBuf::from("C:\\LumaRecordings").to_string_lossy().to_string()
 }
 
 impl Default for AppConfig {
@@ -223,26 +253,75 @@ impl Default for AppConfig {
             game_registry: HashMap::new(),
             max_buffer_size_gb: 50,
             storage_path: default_storage_path(),
-            window_bounds: None,
-            instant_replay_secs: 30,
+            first_run_completed: false,
+            startup_with_windows: false,
+            hotkeys: default_hotkeys(),
+            minimize_to_tray: false,
+            check_for_updates: false,
+            auto_delete_clips_days: None,
+            default_export_format: default_export_format(),
         }
     }
 }
 
 impl AppConfig {
+    pub fn is_first_run(&self) -> bool {
+        !self.first_run_completed
+    }
+
+    /// Ensure the configured encoder is actually available on this system.
+    /// If not, fall back to the best available encoder and persist the change.
+    pub fn validate_and_fix_encoder(&mut self) {
+        use gstreamer as gst;
+        let _ = gst::init();
+
+        let gst_element = match self.global_video.encoder.as_str() {
+            "nvav1enc" => "nvd3d11av1enc",
+            "nvh264enc" => "nvd3d11h264enc",
+            "nvh265enc" => "nvd3d11h265enc",
+            other => other,
+        };
+
+        if gst::ElementFactory::find(gst_element).is_some() {
+            return; // configured encoder is available
+        }
+
+        log::warn!(
+            "[Config] Configured encoder '{}' (element '{}') not found, auto-selecting fallback",
+            self.global_video.encoder, gst_element
+        );
+
+        // Priority: NVENC H.264 > NVENC H.265 > NVENC AV1 > x264
+        let fallbacks = [
+            ("nvd3d11h264enc", "nvh264enc"),
+            ("nvd3d11h265enc", "nvh265enc"),
+            ("nvd3d11av1enc", "nvav1enc"),
+            ("x264enc", "x264enc"),
+        ];
+
+        for (element, config_id) in &fallbacks {
+            if gst::ElementFactory::find(element).is_some() {
+                log::info!("[Config] Auto-selected encoder: {} ({})", config_id, element);
+                self.global_video.encoder = config_id.to_string();
+                self.save();
+                return;
+            }
+        }
+
+        log::error!("[Config] No supported encoders found on this system!");
+    }
+
     pub fn get_db_path() -> PathBuf {
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|dir| dir.join("luma.db")))
+            .and_then(|p| p.parent().map(|d| d.join("luma.db")))
             .unwrap_or_else(|| PathBuf::from("luma.db"))
     }
 
-    /// Initializes the config database with WAL journaling for crash safety.
-    /// WAL mode allows concurrent readers (UI) and writers (config save) without blocking.
-    /// SYNCHRONOUS=NORMAL trades a tiny durability window for significantly less fsync overhead.
     pub fn init_db() -> rusqlite::Result<()> {
         let conn = rusqlite::Connection::open(Self::get_db_path())?;
-
+        
+        // Use execute for PRAGMAs that we don't need the return value from
         let _ = conn.execute("PRAGMA journal_mode=WAL", []);
         let _ = conn.execute("PRAGMA synchronous=NORMAL", []);
         let _ = conn.execute("PRAGMA cache_size=-2000", []);
@@ -254,11 +333,9 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Loads config with a three-tier fallback: SQLite -> JSON migration -> defaults.
-    /// The JSON migration path exists for users upgrading from the pre-SQLite version.
     pub fn load() -> Self {
         if let Err(e) = Self::init_db() {
-            eprintln!(
+            log::warn!(
                 "[Config] Database init failed: {}. Falling back to defaults.",
                 e
             );
@@ -281,11 +358,11 @@ impl AppConfig {
         // Fallback to JSON migration
         let json_path = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|dir| dir.join("config.json")))
+            .and_then(|p| p.parent().map(|d| d.join("config.json")))
             .unwrap_or_else(|| PathBuf::from("config.json"));
 
         if json_path.exists() {
-            println!("[Config] Migrating config.json to SQLite...");
+            log::info!("[Config] Migrating config.json to SQLite...");
             let content = std::fs::read_to_string(&json_path).unwrap_or_default();
             if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
                 config.save();
@@ -304,7 +381,7 @@ impl AppConfig {
             let json = match serde_json::to_string(self) {
                 Ok(j) => j,
                 Err(e) => {
-                    eprintln!("[Config] Failed to serialize config: {}", e);
+                    log::error!("[Config] Failed to serialize config: {}", e);
                     return;
                 }
             };
@@ -313,5 +390,91 @@ impl AppConfig {
                 [&json],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        let config = AppConfig::default();
+        let json = serde_json::to_string(&config).expect("serialize");
+        let loaded: AppConfig = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(loaded.global_video.encoder, config.global_video.encoder);
+        assert_eq!(loaded.global_video.fps, config.global_video.fps);
+        assert_eq!(loaded.global_video.resolution, config.global_video.resolution);
+        assert_eq!(loaded.global_video.bitrate_kbps, config.global_video.bitrate_kbps);
+        assert_eq!(loaded.max_buffer_size_gb, config.max_buffer_size_gb);
+        assert_eq!(loaded.storage_path, config.storage_path);
+        assert_eq!(loaded.first_run_completed, config.first_run_completed);
+        assert_eq!(loaded.hotkeys.toggle_recording_vk, config.hotkeys.toggle_recording_vk);
+        assert_eq!(loaded.global_audio_tracks.len(), 6);
+    }
+
+    #[test]
+    fn test_config_deserialize_with_missing_fields() {
+        // Simulate a config from an older version with missing new fields
+        let minimal_json = r#"{
+            "global_video": {
+                "encoder": "nvav1enc",
+                "rate_control_index": 0,
+                "bitrate_kbps": 15000,
+                "cq_level": 20,
+                "resolution": "1920x1080",
+                "fps": 60,
+                "retention_minutes": 10,
+                "gop_size": 60,
+                "bframes": 0,
+                "preset": "p4",
+                "zero_latency": true,
+                "lookahead": true,
+                "lookahead_frames": 32,
+                "spatial_aq": true,
+                "temporal_aq": true,
+                "artwork_path": null
+            },
+            "selected_adapter_index": -1,
+            "global_audio_tracks": [],
+            "mic_settings": {
+                "device_name": "Default",
+                "noise_suppression": false,
+                "noise_gate_enabled": false,
+                "noise_gate_threshold": -40.0,
+                "noise_gate_attack": 5,
+                "noise_gate_release": 50,
+                "compressor_enabled": false,
+                "compressor_threshold": -20.0,
+                "compressor_ratio": 4.0,
+                "compressor_attack": 10,
+                "compressor_release": 100,
+                "limiter_enabled": false,
+                "limiter_threshold": -1.0,
+                "gain_db": 0.0,
+                "force_mono": false
+            },
+            "game_registry": {}
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(minimal_json).expect("deserialize minimal config");
+        // Fields with #[serde(default)] should get their defaults
+        assert_eq!(config.first_run_completed, false);
+        assert_eq!(config.startup_with_windows, false);
+        assert_eq!(config.max_buffer_size_gb, 50);
+        assert_eq!(config.hotkeys.toggle_recording_vk, 0x78); // F9
+    }
+
+    #[test]
+    fn test_default_config_values() {
+        let config = AppConfig::default();
+        assert_eq!(config.global_video.encoder, "nvav1enc");
+        assert_eq!(config.global_video.fps, 60);
+        assert_eq!(config.global_video.resolution, "1920x1080");
+        assert_eq!(config.max_buffer_size_gb, 50);
+        assert!(!config.first_run_completed);
+        assert!(!config.startup_with_windows);
+        assert_eq!(config.global_audio_tracks.len(), 6);
     }
 }

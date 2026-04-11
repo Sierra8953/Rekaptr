@@ -1,0 +1,12 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gstpcapparse
+Description: gst-plugins-bad: gstpcapparse
+Version: 1.20.7
+Requires.private: gstreamer-base-1.0 >=  1.20.0
+Libs: -L${prefix}/lib/gstreamer-1.0 -lgstpcapparse
+Libs.private: -lws2_32
+Cflags: -I${includedir}
+

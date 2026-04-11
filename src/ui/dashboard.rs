@@ -23,10 +23,35 @@ impl LumaWorkspace {
                     .child(video(v_clone).id("main-video"))
                     .into_any_element()
             }
-            None => div().w_full().h_full().bg(rgb(0x000000)).flex().items_center().justify_center().child(div().text_color(theme.tokens.muted_foreground).child("No video source loaded")).into_any_element(),
+            None => div().w_full().h_full().bg(rgb(0x000000)).flex().items_center().justify_center().child(
+                VStack::new()
+                    .items_center()
+                    .gap_3()
+                    .child(Icon::new("info").size(px(40.0)).color(theme.tokens.muted_foreground))
+                    .child(div().text_color(theme.tokens.muted_foreground).font_weight(FontWeight::MEDIUM).child("Select a source to begin previewing"))
+            ).into_any_element(),
         };
 
-        let is_recording = self.app_state.is_recording.load(std::sync::atomic::Ordering::SeqCst);
+        let is_recording = self.app_state.recording.phase.lock().is_recording();
+
+        // Collect recording stats for overlay
+        let rec_elapsed = self.recording_start_time
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        let rec_bitrate = *self.app_state.recording.rec_stats.bitrate_kbps.lock();
+        let rec_dropped = self.app_state.recording.rec_stats.dropped_frames.load(std::sync::atomic::Ordering::Relaxed);
+        let rec_disk_rate = *self.app_state.recording.rec_stats.disk_write_mbps.lock();
+        let rec_segments = self.app_state.recording.rec_stats.segments_written.load(std::sync::atomic::Ordering::Relaxed);
+
+        // Size the video so header + video + controls card all fit in viewport.
+        // Controls card: 32px padding + 16px gap + 44px button bar + 48px video track
+        //   + (36px per audio track) = ~140 + n*36
+        // Header row ~48px, outer padding p_8 top+bottom = 64px, gap_6 *2 = 48px
+        let audio_tracks = self.get_current_audio_tracks();
+        let enabled_track_count = audio_tracks.iter().filter(|t| t.enabled).count();
+        let controls_h = px(140.0 + (enabled_track_count as f32 * 36.0));
+        let chrome_h = px(160.0); // header + padding + gaps
+        let video_h = (window.viewport_size().height - chrome_h - controls_h).max(px(150.0));
 
         div()
             .id("dashboard-scroll-area")
@@ -37,57 +62,169 @@ impl LumaWorkspace {
                     .p_8()
                     .gap_6()
                     .w_full()
-                    .child(
-                        HStack::new()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                HStack::new()
-                                    .gap_4()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_2xl()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme.tokens.foreground)
-                                            .child("Dashboard")
-                                    )
-                                    .when(is_recording, |this| {
-                                        this.child(
-                                            HStack::new()
-                                                .items_center()
-                                                .gap_1_5()
-                                                .px_2()
-                                                .py_0p5()
-                                                .child(div().w_1_5().h_1_5().rounded_full().bg(theme.tokens.destructive))
-                                                .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.destructive).child("Recording"))
-                                        )
-                                    })
-                            )
-                            .child(
-                                div()
-                                    .text_color(theme.tokens.muted_foreground)
-                                    .child(format!("Source: {}", self.selected_source.as_deref().unwrap_or("monitor")))
-                            )
-                    )
-                    .child(
+                    .child({
+                        // Fetch logo for game sources (used as overlay on video)
+                        let source = self.selected_source.as_deref().unwrap_or("monitor");
+                        let logo_path = if source != "monitor" {
+                            let lp = self.app_state.logo_cache.get(source).and_then(|v| v.value().clone()).map(std::path::PathBuf::from);
+                            if !self.app_state.logo_cache.contains_key(source) {
+                                self.app_state.logo_cache.insert(source.to_string(), None);
+                                let app_state = self.app_state.clone();
+                                let handle = cx.weak_entity();
+                                let title = source.to_string();
+                                cx.spawn(move |_, cx: &mut AsyncApp| {
+                                    let mut cx = cx.clone();
+                                    async move {
+                                        let resolved = cx.background_executor().spawn({
+                                            let title = title.clone();
+                                            async move { crate::utils::find_steam_logo(&title) }
+                                        }).await;
+                                        let Some(source_url) = resolved else { return; };
+                                        if !source_url.starts_with("http") {
+                                            app_state.logo_cache.insert(title, Some(source_url));
+                                            let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                                            return;
+                                        }
+                                        if let Ok(resp) = reqwest::get(&source_url).await {
+                                            if let Ok(bytes) = resp.bytes().await {
+                                                let app_id = source_url.split('/').nth(5).unwrap_or("unknown");
+                                                let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                                                let _ = std::fs::create_dir_all(&cache_dir);
+                                                let local_path = cache_dir.join(format!("{}_logo.png", app_id));
+                                                if std::fs::write(&local_path, &bytes).is_ok() {
+                                                    let path_str = local_path.to_string_lossy().replace('\\', "/");
+                                                    app_state.logo_cache.insert(title, Some(path_str));
+                                                    let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }).detach();
+                            }
+                            lp
+                        } else {
+                            None
+                        };
+
                         div()
+                            .relative()
                             .w_full()
-                            .h(px(600.0)) // Set a large base height that can grow
-                            .flex_grow()
+                            .h(video_h)
+                            .rounded_lg()
+                            .overflow_hidden()
                             .child(if self.is_loading_video {
                                 div().w_full().h_full().bg(rgb(0x000000)).flex().items_center().justify_center().child(div().text_color(theme.tokens.muted_foreground).child("Scanning recording segments...")).into_any_element()
                             } else {
                                 video_element
                             })
-                    )
+                            .when(is_recording, |el| {
+                                let elapsed_h = rec_elapsed / 3600;
+                                let elapsed_m = (rec_elapsed % 3600) / 60;
+                                let elapsed_s = rec_elapsed % 60;
+                                let time_str = if elapsed_h > 0 {
+                                    format!("{:02}:{:02}:{:02}", elapsed_h, elapsed_m, elapsed_s)
+                                } else {
+                                    format!("{:02}:{:02}", elapsed_m, elapsed_s)
+                                };
+
+                                let bitrate_str = if rec_bitrate >= 1000.0 {
+                                    format!("{:.1} Mbps", rec_bitrate / 1000.0)
+                                } else if rec_bitrate > 0.0 {
+                                    format!("{:.0} kbps", rec_bitrate)
+                                } else {
+                                    "-- kbps".to_string()
+                                };
+
+                                let disk_str = if rec_disk_rate > 0.0 {
+                                    format!("{:.1} MB/s", rec_disk_rate)
+                                } else {
+                                    "-- MB/s".to_string()
+                                };
+
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .top_3()
+                                        .right_3()
+                                        .py_2()
+                                        .px_3()
+                                        .rounded(px(8.0))
+                                        .bg(gpui::rgba(0x000000_bb))
+                                        .child(
+                                            VStack::new()
+                                                .gap_1()
+                                                .child(
+                                                    HStack::new()
+                                                        .items_center()
+                                                        .gap_1_5()
+                                                        .child(div().w_1_5().h_1_5().rounded_full().bg(theme.tokens.destructive))
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .font_weight(FontWeight::BOLD)
+                                                                .text_color(theme.tokens.destructive)
+                                                                .child("REC")
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(gpui::rgb(0xffffff))
+                                                                .child(time_str)
+                                                        )
+                                                )
+                                                .child(
+                                                    HStack::new()
+                                                        .gap_3()
+                                                        .child(
+                                                            div().text_xs().text_color(gpui::rgb(0xaaaaaa))
+                                                                .child(bitrate_str)
+                                                        )
+                                                        .child(
+                                                            div().text_xs().text_color(gpui::rgb(0xaaaaaa))
+                                                                .child(disk_str)
+                                                        )
+                                                )
+                                                .child(
+                                                    HStack::new()
+                                                        .gap_3()
+                                                        .child(
+                                                            div().text_xs().text_color(
+                                                                if rec_dropped > 0 { gpui::rgb(0xff9500) } else { gpui::rgb(0xaaaaaa) }
+                                                            ).child(format!("Dropped: {}", rec_dropped))
+                                                        )
+                                                        .child(
+                                                            div().text_xs().text_color(gpui::rgb(0xaaaaaa))
+                                                                .child(format!("Segments: {}", rec_segments))
+                                                        )
+                                                )
+                                        )
+                                )
+                            })
+                            .when_some(logo_path, |el, path| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .top_3()
+                                        .left_3()
+                                        .w(px(32.0))
+                                        .h(px(32.0))
+                                        .rounded_full()
+                                        .overflow_hidden()
+                                        .child(
+                                            img(path)
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover)
+                                        )
+                                )
+                            })
+                    })
                     .child(
                         Card::new()
                             .p_4()
                             .content(
                                 VStack::new()
                                     .gap_4()
-                                    .child(self.render_timeline(window, cx))
                                     .child(
                                         HStack::new()
                                             .justify_between()
@@ -144,6 +281,16 @@ impl LumaWorkspace {
                                                             }))
                                                     )
                                                     .child(div().w(px(10.0)))
+                                                    .children(crate::state::MarkerKind::ALL.iter().map(|&kind| {
+                                                        Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
+                                                            .icon(IconSource::Named(kind.icon_name().to_string()))
+                                                            .variant(ButtonVariant::Secondary)
+                                                            .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
+                                                                this.add_marker_with_kind(kind, cx);
+                                                            }))
+                                                            .into_any_element()
+                                                    }))
+                                                    .child(div().w(px(6.0)))
                                                     .child(
                                                         Button::new("btn-in", "IN")
                                                             .variant(ButtonVariant::Secondary)
@@ -171,9 +318,24 @@ impl LumaWorkspace {
                                                     .text_color(theme.tokens.muted_foreground)
                                                     .text_sm()
                                                     .font_family("Consolas")
-                                                    .child(format!("{:.1}s / {:.1}s", position, duration))
+                                                    .child({
+                                                        let show_hours = duration >= 3600.0;
+                                                        let fmt = |s: f64| {
+                                                            let total = s.max(0.0) as u64;
+                                                            let h = total / 3600;
+                                                            let m = (total % 3600) / 60;
+                                                            let sec = total % 60;
+                                                            if show_hours {
+                                                                format!("{:01}:{:02}:{:02}", h, m, sec)
+                                                            } else {
+                                                                format!("{:01}:{:02}", m, sec)
+                                                            }
+                                                        };
+                                                        format!("{} / {}", fmt(position), fmt(duration))
+                                                    })
                                             )
                                     )
+                                    .child(self.render_timeline(window, cx))
                             )
                     )
                     .child(
@@ -201,15 +363,16 @@ impl LumaWorkspace {
                 .child(
                     div()
                         .w(px(240.0))
-                        .h(px(140.0))
+                        .h(px(135.0))
                         .bg(theme.tokens.card)
                         .border_2()
                         .border_color(theme.tokens.border)
                         .border_dashed()
-                        .rounded_lg()
+                        .rounded_xl()
                         .flex()
                         .items_center()
                         .justify_center()
+                        .hover(|s| s.bg(theme.tokens.muted).border_color(theme.tokens.primary))
                         .child(
                             VStack::new()
                                 .items_center()
@@ -235,11 +398,12 @@ impl LumaWorkspace {
                 .id("monitor-source-wrap")
                 .relative()
                 .w(px(240.0))
-                .h(px(140.0))
+                .h(px(135.0))
                 .border_color(if monitor_selected { theme.tokens.primary } else { theme.tokens.border })
                 .border(if monitor_selected { px(2.0) } else { px(1.0) })
-                .rounded_lg()
+                .rounded_xl()
                 .overflow_hidden()
+                .hover(|s| s.shadow_lg())
                 .child(
                     div()
                         .size_full()
@@ -268,11 +432,12 @@ impl LumaWorkspace {
                         .child(
                             div()
                                 .id("monitor-settings-btn-hitbox")
+                                .cursor_pointer()
+                                .p_1()
+                                .text_color(theme.tokens.muted_foreground)
+                                .hover(|s| s.text_color(theme.tokens.primary))
                                 .child(
-                                    Button::new("monitor-settings-btn", "")
-                                        .icon(IconSource::Named("settings".to_string()))
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Sm)
+                                    svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
                                 )
                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
@@ -308,7 +473,7 @@ impl LumaWorkspace {
                 )
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, window, cx| {
-                    eprintln!("[UI] Monitor card clicked");
+                    log::debug!("[UI] Monitor card clicked");
                     this.selected_source = Some("monitor".to_string());
                     this.load_video("monitor", window, cx);
                     cx.notify();
@@ -322,59 +487,54 @@ impl LumaWorkspace {
             // Check cache
             let cached_path = self.app_state.artwork_cache.get(&title).map(|v| v.value().clone()).flatten();
             
-            if cached_path.is_none() && !self.app_state.artwork_cache.contains_key(&title) {
-                let artwork_url_or_path = crate::utils::find_steam_artwork(&title);
-                if let Some(source) = artwork_url_or_path {
-                    if !source.starts_with("http") {
-                        // Found local file, cache immediately
-                        self.app_state.insert_artwork(title.clone(), Some(source));
-                    } else {
-                        // URL, download in background
-                        let url = source.clone();
-                        let app_state = self.app_state.clone();
-                        let handle = cx.weak_entity();
-                        let title_cache = title.clone();
-                        let title_log = title.clone();
-                        
-                        // Mark as None to prevent redundant spawns
-                        app_state.insert_artwork(title_cache.clone(), None);
+            if !self.app_state.artwork_cache.contains_key(&title) {
+                // Mark as in-progress immediately
+                self.app_state.artwork_cache.insert(title.clone(), None);
 
-                        cx.spawn(move |_, cx: &mut AsyncApp| {
-                            let app_state = app_state.clone();
-                            let handle = handle.clone();
-                            let mut cx = cx.clone();
-                            let url = url.clone();
-                            let title_cache = title_cache.clone();
-                            let title_log = title_log.clone();
+                let app_state = self.app_state.clone();
+                let handle = cx.weak_entity();
+                let title_cache = title.clone();
+
+                cx.spawn(move |_, cx: &mut AsyncApp| {
+                    let app_state = app_state;
+                    let handle = handle;
+                    let mut cx = cx.clone();
+                    let title = title_cache;
+                    async move {
+                        // Resolve app_id + check local cache off UI thread
+                        let resolved = cx.background_executor().spawn({
+                            let title = title.clone();
                             async move {
-                                eprintln!("[UI] Starting download for '{}' from {}", title_log, url);
-                                let result = if let Ok(resp) = reqwest::get(&url).await {
-                                    if let Ok(bytes) = resp.bytes().await {
-                                        Some(bytes)
-                                    } else { None }
-                                } else { None };
-
-                                if let Some(bytes) = result {
-                                    let app_id = url.split('/').nth(5).unwrap_or("unknown");
-                                    let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
-                                    let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
-                                    if std::fs::write(&local_path, bytes).is_ok() {
-                                        eprintln!("[UI] Saved artwork for '{}' to {:?}", title_log, local_path);
-                                        let path_str = local_path.to_string_lossy().replace('\\', "/");
-                                        app_state.insert_artwork(title_cache, Some(path_str));
-                                        
-                                        let _ = handle.update(&mut cx, |_, cx| {
-                                            cx.notify();
-                                        });
-                                    }
-                                }
+                                crate::utils::find_steam_artwork(&title)
                             }
-                        }).detach();
+                        }).await;
+
+                        let Some(source) = resolved else { return; };
+
+                        if !source.starts_with("http") {
+                            app_state.artwork_cache.insert(title, Some(source));
+                            let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                            return;
+                        }
+
+                        // Download from CDN
+                        let result = if let Ok(resp) = reqwest::get(&source).await {
+                            if let Ok(bytes) = resp.bytes().await { Some(bytes) } else { None }
+                        } else { None };
+
+                        if let Some(bytes) = result {
+                            let app_id = source.split('/').nth(5).unwrap_or("unknown");
+                            let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                            let _ = std::fs::create_dir_all(&cache_dir);
+                            let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
+                            if std::fs::write(&local_path, &bytes).is_ok() {
+                                let path_str = local_path.to_string_lossy().replace('\\', "/");
+                                app_state.artwork_cache.insert(title, Some(path_str));
+                                let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                            }
+                        }
                     }
-                } else {
-                    // Cache that we found nothing to stop re-checking
-                    self.app_state.insert_artwork(title.clone(), None);
-                }
+                }).detach();
             }
 
             let final_image_path = cached_path.map(std::path::PathBuf::from);
@@ -386,12 +546,13 @@ impl LumaWorkspace {
                     .id(("session-wrap", session_key))
                     .relative()
                     .w(px(240.0))
-                    .h(px(140.0))
+                    .h(px(135.0))
                     .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
                     .border(if is_selected { px(2.0) } else { px(1.0) })
-                    .rounded_lg()
+                    .rounded_xl()
                     .overflow_hidden()
                     .cursor_pointer()
+                    .hover(|s| s.shadow_lg())
                     .on_mouse_down(MouseButton::Left, cx.listener({
                         let title = title.clone();
                         move |this: &mut Self, _, window, cx| {
@@ -453,11 +614,12 @@ impl LumaWorkspace {
                                 let title_settings = title.clone();
                                 div()
                                     .id(("session-settings-btn-hitbox", session_key))
+                                    .cursor_pointer()
+                                    .p_1()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .hover(|s| s.text_color(theme.tokens.primary))
                                     .child(
-                                        Button::new(("session-settings-btn", session_key), "")
-                                            .icon(IconSource::Named("settings".to_string()))
-                                            .variant(ButtonVariant::Ghost)
-                                            .size(ButtonSize::Sm)
+                                        svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
                                     )
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
@@ -491,6 +653,7 @@ impl LumaWorkspace {
                                             } else {
                                                 this.form_audio_tracks = config.global_audio_tracks.clone();
                                             }
+                                            this.form_auto_record = settings.auto_record;
                                         }
                                         this.form_active_tab = 0;
                                         this.form_editing_track_index = None;

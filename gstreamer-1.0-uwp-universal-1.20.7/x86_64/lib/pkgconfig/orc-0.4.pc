@@ -1,0 +1,17 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+exec_prefix=c:/projects/repos/cerbero.git/1.20/build/dist/uwp_universal/x86_64
+libdir=c:/projects/repos/cerbero.git/1.20/build/dist/uwp_universal/x86_64/lib
+includedir=c:/projects/repos/cerbero.git/1.20/build/dist/uwp_universal/x86_64/include/orc-0.4
+toolsdir=${exec_prefix}/bin
+
+
+Name: orc-0.4
+Description: Library of Optimized Inner Loops Runtime Compiler
+Version: 0.4.31
+Libs: -L${libdir} -lorc-0.4
+Libs.private:   
+Cflags: -I${includedir}
+
+orcc=${toolsdir}/orcc.exe
+
+

@@ -1,0 +1,12 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gst-editing-services-1.0
+Description: GStreamer Editing Services
+Version: 1.20.7
+Requires: gstreamer-1.0 >=  1.20.0, gstreamer-base-1.0 >=  1.20.0, gstreamer-pbutils-1.0 >=  1.20.0, gstreamer-controller-1.0 >=  1.20.0
+Requires.private: gstreamer-video-1.0 >=  1.20.0, gio-2.0 >=  2.56.0, gst-validate-1.0 >=  1.20.0
+Libs: -L${libdir} -lges-1.0
+Cflags: -I${includedir}/gstreamer-1.0
+

@@ -1,0 +1,20 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+exec_prefix=${prefix}
+toolsdir=${exec_prefix}/bin
+pluginsdir=${libdir}/gstreamer-1.0
+datarootdir=${prefix}/share
+datadir=${datarootdir}
+girdir=${datadir}/gir-1.0
+typelibdir=${libdir}/girepository-1.0
+libexecdir=${prefix}/libexec
+libraries=allocators app audio fft pbutils riff rtp rtsp sdp tag video gl
+
+Name: gstreamer-plugins-base-1.0
+Description: Streaming media framework, base plugins libraries
+Version: 1.20.7
+Requires: gstreamer-1.0 >=  1.20.4
+Cflags: -I${includedir}/gstreamer-1.0
+

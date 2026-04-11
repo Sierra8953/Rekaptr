@@ -1,0 +1,11 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gstapp
+Description: gst-plugins-base: gstapp
+Version: 1.20.7
+Requires.private: gstreamer-app-1.0, gstreamer-tag-1.0, gstreamer-base-1.0 >=  1.20.4, zlib
+Libs: -L${prefix}/lib/gstreamer-1.0 -lgstapp
+Cflags: -I${includedir}
+

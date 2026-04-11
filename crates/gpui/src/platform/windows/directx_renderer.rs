@@ -1,6 +1,7 @@
 use std::{
     mem::ManuallyDrop,
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use ::util::ResultExt;
@@ -46,6 +47,8 @@ pub(crate) struct DirectXRenderer {
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
     last_pipeline: Option<*const ()>,
+    consecutive_draw_failures: u32,
+    draw_cooldown_until: Option<Instant>,
 }
 
 /// Direct3D objects
@@ -166,6 +169,8 @@ impl DirectXRenderer {
             direct_composition,
             font_info: Self::get_font_info(),
             last_pipeline: None,
+            consecutive_draw_failures: 0,
+            draw_cooldown_until: None,
         })
     }
 
@@ -287,6 +292,69 @@ impl DirectXRenderer {
     }
 
     pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
+        // If we're in a cooldown period after repeated failures, skip this frame
+        // to let the system recover resources. The window stays responsive because
+        // the message loop isn't blocked by a failing D3D call.
+        if let Some(cooldown_until) = self.draw_cooldown_until {
+            if Instant::now() < cooldown_until {
+                return Ok(());
+            }
+            log::info!("Draw cooldown expired, resuming rendering");
+            self.draw_cooldown_until = None;
+        }
+
+        match self.draw_inner(scene) {
+            Ok(()) => {
+                if self.consecutive_draw_failures > 0 {
+                    log::info!(
+                        "Draw recovered after {} consecutive failures",
+                        self.consecutive_draw_failures
+                    );
+                }
+                self.consecutive_draw_failures = 0;
+                Ok(())
+            }
+            Err(e) => {
+                self.consecutive_draw_failures += 1;
+
+                if self.consecutive_draw_failures == 1 {
+                    // First failure: retry once after a brief pause
+                    std::thread::sleep(Duration::from_millis(50));
+                    if self.draw_inner(scene).is_ok() {
+                        self.consecutive_draw_failures = 0;
+                        return Ok(());
+                    }
+                }
+
+                if self.consecutive_draw_failures >= 5 {
+                    // Persistent failures: enter cooldown to stop hammering the GPU
+                    // and keep the window message loop responsive.
+                    let cooldown = Duration::from_secs(2);
+                    log::error!(
+                        "Draw failed {} consecutive times, pausing rendering for {}s: {}",
+                        self.consecutive_draw_failures,
+                        cooldown.as_secs(),
+                        e
+                    );
+                    self.draw_cooldown_until = Some(Instant::now() + cooldown);
+                    // Flush any pending GPU work that might be holding resources
+                    unsafe {
+                        self.devices.device_context.Flush();
+                    }
+                } else {
+                    log::warn!(
+                        "Draw failed ({} consecutive): {}",
+                        self.consecutive_draw_failures,
+                        e
+                    );
+                }
+
+                Err(e)
+            }
+        }
+    }
+
+    fn draw_inner(&mut self, scene: &Scene) -> Result<()> {
         self.pre_draw()?;
         for batch in scene.batches() {
             match batch {

@@ -1,19 +1,3 @@
-//! GStreamer pipeline construction and per-application audio capture.
-//!
-//! The recording pipeline captures the screen via D3D11 (DXGI/WGC), encodes on
-//! the GPU, and writes fragmented MP4 segments to disk via `splitmuxsink`. Each
-//! segment is independently decodable — a hard requirement for HLS playback and
-//! the rolling buffer architecture.
-//!
-//! Audio is captured separately per source type:
-//! - **System**: WASAPI loopback (captures desktop audio)
-//! - **Mic**: fed from a shared `MicProvider` via `appsrc` (see `audio` module)
-//! - **App**: per-process WASAPI loopback via `start_app_capture`
-//!
-//! The WASAPI-to-GStreamer bridge uses a lock-free ring buffer to decouple the
-//! WASAPI capture thread's timing from GStreamer's clock. Without this, WASAPI
-//! packet timing jitter would cause GStreamer queue underruns and audible glitches.
-
 use crate::config::{AudioRouting, MicSettings, VideoSettings};
 use sysinfo::System;
 use gstreamer as gst;
@@ -25,6 +9,177 @@ use ringbuf::HeapRb;
 use ringbuf::traits::{Split, Producer, Consumer, Observer};
 use std::time::Duration;
 
+// D3DKMT GPU scheduling priority classes
+#[allow(dead_code)]
+#[repr(i32)]
+enum D3DKmtSchedulingPriorityClass {
+    Idle = 0,
+    BelowNormal = 1,
+    Normal = 2,
+    AboveNormal = 3,
+    High = 4,
+    Realtime = 5,
+}
+
+/// Boosts the process-level GPU scheduling priority so the encoder gets
+/// preferential access to GPU compute/video-engine resources over games.
+///
+/// Uses two mechanisms:
+/// 1. `D3DKMTSetProcessSchedulingPriorityClass` — tells the Windows GPU
+///    scheduler to prioritise this process's GPU work (HIGH priority).
+/// 2. `IDXGIDevice::SetGPUThreadPriority(7)` — raises the per-device
+///    thread priority to maximum on the D3D11 device shared with GStreamer.
+pub fn boost_gpu_priority() {
+    // --- Process-level GPU priority via D3DKMT (gdi32.dll) ---
+    unsafe {
+        use windows::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        use windows::Win32::Foundation::HANDLE;
+
+        let lib = LoadLibraryW(windows::core::w!("gdi32.dll"));
+        let lib = match lib {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("[GPU Priority] Failed to load gdi32.dll: {}", e);
+                return;
+            }
+        };
+
+        type SetPriorityFn = unsafe extern "system" fn(
+            handle: HANDLE,
+            priority: i32,
+        ) -> i32;
+
+        let proc = GetProcAddress(
+            lib.into(),
+            windows::core::s!("D3DKMTSetProcessSchedulingPriorityClass"),
+        );
+        if let Some(func) = proc {
+            let set_priority: SetPriorityFn = std::mem::transmute(func);
+            let current_process = HANDLE(GetCurrentProcess().0);
+
+            // Try Realtime first (requires admin), fall back to High
+            let status = set_priority(
+                current_process,
+                D3DKmtSchedulingPriorityClass::Realtime as i32,
+            );
+            if status == 0 {
+                log::info!("[GPU Priority] Process GPU scheduling priority set to REALTIME (admin)");
+            } else {
+                let status = set_priority(
+                    current_process,
+                    D3DKmtSchedulingPriorityClass::High as i32,
+                );
+                if status == 0 {
+                    log::info!("[GPU Priority] Process GPU scheduling priority set to HIGH");
+                } else {
+                    log::warn!(
+                        "[GPU Priority] D3DKMTSetProcessSchedulingPriorityClass returned 0x{:08x}",
+                        status
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Sets GPU thread priority to maximum (7) on the D3D11 device used by the
+/// GStreamer encoder pipeline. Call this after obtaining the D3D11 device handle.
+///
+/// # Safety
+/// `d3d11_device_ptr` must be a valid `ID3D11Device` pointer. This function borrows
+/// the pointer without taking ownership (no AddRef/Release). The caller must ensure
+/// the device remains alive for the duration of this call.
+pub fn boost_device_gpu_priority(d3d11_device_ptr: *mut std::ffi::c_void) {
+    if d3d11_device_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+        use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+        use windows::core::Interface;
+
+        // Wrap the raw pointer without taking ownership. ManuallyDrop prevents
+        // the Drop impl from calling Release on the borrowed pointer.
+        let d3d11_device = ID3D11Device::from_raw(d3d11_device_ptr);
+        let d3d11_ref = std::mem::ManuallyDrop::new(d3d11_device);
+
+        match d3d11_ref.cast::<IDXGIDevice>() {
+            Ok(dxgi_device) => {
+                // Priority range: -7 (lowest) to 7 (highest)
+                if let Err(e) = dxgi_device.SetGPUThreadPriority(7) {
+                    log::warn!("[GPU Priority] SetGPUThreadPriority failed: {}", e);
+                } else {
+                    log::info!("[GPU Priority] D3D11 device GPU thread priority set to 7 (maximum)");
+                }
+            }
+            Err(e) => {
+                log::warn!("[GPU Priority] Failed to cast D3D11Device to IDXGIDevice: {}", e);
+            }
+        }
+    }
+}
+
+/// Enumerate available audio devices via WASAPI.
+/// Returns a list of (device_id, friendly_name) tuples.
+pub fn enumerate_audio_devices(capture: bool) -> Vec<(String, String)> {
+    let mut devices = vec![("Default".to_string(), "Default".to_string())];
+
+    let direction = if capture {
+        wasapi::Direction::Capture
+    } else {
+        wasapi::Direction::Render
+    };
+
+    if wasapi::initialize_mta().is_err() {
+        return devices;
+    }
+
+    let enumerator = match wasapi::DeviceEnumerator::new() {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("[Audio] Failed to create device enumerator: {}", e);
+            return devices;
+        }
+    };
+
+    match enumerator.get_device_collection(&direction) {
+        Ok(collection) => {
+            let count = collection.get_nbr_devices().unwrap_or(0);
+            for i in 0..count {
+                if let Ok(device) = collection.get_device_at_index(i) {
+                    let name = device.get_friendlyname().unwrap_or_else(|_| format!("Device {}", i));
+                    let id = device.get_id().unwrap_or_else(|_| format!("device_{}", i));
+                    devices.push((id, name));
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("[Audio] Failed to enumerate devices: {}", e);
+        }
+    }
+
+    devices
+}
+
+/// Resolve a device identifier to a WASAPI device ID.
+/// If the value is already a device ID (contains '{'), returns it as-is.
+/// Otherwise treats it as a friendly name and looks up the matching ID.
+pub fn resolve_device_id(value: &str, capture: bool) -> String {
+    if value.is_empty() || value == "Default" || value.contains('{') {
+        return value.to_string();
+    }
+    // Legacy config stored friendly name — find the matching device ID
+    let devices = enumerate_audio_devices(capture);
+    if let Some((id, _)) = devices.iter().find(|(_, name)| name == value) {
+        log::info!("[Audio] Resolved device name '{}' to ID '{}'", value, id);
+        id.clone()
+    } else {
+        log::warn!("[Audio] Could not resolve device name '{}' to an ID, using as-is", value);
+        value.to_string()
+    }
+}
+
 pub fn parse_res(res: &str) -> (i32, i32) {
     let parts: Vec<&str> = res.split('x').collect();
     if parts.len() == 2 {
@@ -35,11 +190,6 @@ pub fn parse_res(res: &str) -> (i32, i32) {
     (1920, 1080)
 }
 
-/// Resolves a process name to a PID, picking the instance with the highest memory
-/// usage. This is a deliberate heuristic: games often spawn child processes (crash
-/// reporters, launchers, anti-cheat) that share the same executable name. The main
-/// game process almost always has the largest working set because it holds textures,
-/// meshes, and audio buffers in memory.
 pub fn resolve_pid(app_name: &str) -> u32 {
     if app_name.is_empty() || app_name == "Default" {
         return 0;
@@ -70,22 +220,14 @@ pub fn resolve_pid(app_name: &str) -> u32 {
     }
 
     // Pick the process with the highest memory usage as a heuristic for the main process
+    // Safety: matching_processes is non-empty (checked above)
     match matching_processes.iter().max_by_key(|p| p.memory()) {
         Some(best) => best.pid().as_u32(),
         None => 0,
     }
 }
 
-/// Validates that the selected encoder is available as a GStreamer element.
-///
-/// Encoder names are remapped from the generic `nv*enc` names to their `nvd3d11*enc`
-/// counterpart. The D3D11 variants operate directly on GPU memory (D3D11 textures),
-/// avoiding a costly GPU->CPU->GPU roundtrip that the non-D3D11 encoders would require.
-/// This is critical for recording at high resolutions — a 4K NV12 frame is ~12MB, and
-/// transferring that across the PCIe bus twice per frame would saturate bandwidth.
 pub fn validate_encoder(v: &VideoSettings) -> Result<()> {
-    crate::utils::init_gstreamer();
-
     let encoder_element = match v.encoder.as_str() {
         "nvav1enc" => "nvd3d11av1enc",
         "nvh264enc" => "nvd3d11h264enc",
@@ -102,29 +244,6 @@ pub fn validate_encoder(v: &VideoSettings) -> Result<()> {
     Ok(())
 }
 
-/// Builds a GStreamer pipeline description string for screen recording.
-///
-/// The pipeline follows this data flow:
-/// ```text
-/// d3d11screencapturesrc -> videorate -> d3d11convert -> nvd3d11*enc -> parser -> splitmuxsink
-///                                                                                  ^
-///                          wasapi2src / appsrc -> audioconvert -> audioresample ----+
-/// ```
-///
-/// Key design decisions in the muxer/sink configuration:
-/// - `reset-muxer=true`: forces `isofmp4mux` to reset between segments, making each
-///   `.m4s` file independently decodable. Without this, segments share state and can
-///   only be played in sequence — breaking HLS and the rolling buffer delete strategy.
-/// - `send-keyframe-requests=true` + `strict-gop=true`: forces the encoder to emit an
-///   IDR frame at each segment boundary. HLS players can only start decoding from an
-///   IDR frame, so without this, seeking to a segment boundary would show corruption
-///   until the next natural keyframe.
-/// - `decode-time-offset`: offsets DTS/PTS timestamps so that segments from multiple
-///   recording sessions have monotonically increasing timestamps. This prevents the
-///   HLS player from getting confused by timestamp discontinuities when sessions are
-///   concatenated into a single playlist.
-/// - `start-index`: continues segment numbering from existing files on disk so that
-///   restarting a recording session doesn't overwrite previous segments.
 pub fn generate_pipeline_string(
     v: &VideoSettings,
     game_path: &str,
@@ -133,17 +252,16 @@ pub fn generate_pipeline_string(
     target_hwnd: Option<u64>,
     _target_pid: Option<u32>,
     adapter_index: i32,
-    _session_id: u64,
-    ts_offset_ns: i64,
+    session_id: u64,
+    ts_offset_ns: i64, 
 ) -> String {
     let adapter_str = if adapter_index >= 0 {
-        format!("adapter-index={}", adapter_index)
+        format!("adapter={}", adapter_index)
     } else {
         "".to_string()
     };
 
     let use_hardware = v.encoder.starts_with("nv");
-    // Remap to D3D11 variants — see validate_encoder() for rationale.
     let encoder_element = match v.encoder.as_str() {
         "nvav1enc" => "nvd3d11av1enc",
         "nvh264enc" => "nvd3d11h264enc",
@@ -163,10 +281,17 @@ pub fn generate_pipeline_string(
             adapter_str
         );
         match v.rate_control_index {
-            0 => format!(
-                "rc-mode=constqp qp-const-i={} qp-const-p={} qp-const-b={} {}",
-                v.cq_level, v.cq_level, v.cq_level, base
-            ),
+            0 => if v.encoder == "nvav1enc" {
+                format!(
+                    "rc-mode=vbr const-quality={} bitrate=0 {}",
+                    v.cq_level, base
+                )
+            } else {
+                format!(
+                    "rc-mode=constqp qp-const-i={} qp-const-p={} qp-const-b={} {}",
+                    v.cq_level, v.cq_level, v.cq_level, base
+                )
+            },
             1 => format!("rc-mode=vbr bitrate={} {}", v.bitrate_kbps, base),
             _ => format!("bitrate={} {}", v.bitrate_kbps, base),
         }
@@ -190,8 +315,6 @@ pub fn generate_pipeline_string(
         format!("x264enc {} speed-preset=ultrafast", encoder_settings)
     };
 
-    // Hardware encoders consume D3D11Memory directly (zero-copy). Software encoders
-    // (x264) need system memory, so we must d3d11download to pull frames off the GPU.
     let conversion_and_download = if use_hardware {
         format!(
             "d3d11convert method=nearest-neighbour add-borders=false msaa=disabled ! video/x-raw(memory:D3D11Memory),format=NV12,width={},height={}",
@@ -211,7 +334,7 @@ pub fn generate_pipeline_string(
     } else {
         "h264parse config-interval=-1"
     };
-    
+
     let source = if let Some(hwnd) = target_hwnd {
         format!(
             "d3d11screencapturesrc {} capture-api=wgc window-handle={} show-cursor=true do-timestamp=true",
@@ -225,7 +348,7 @@ pub fn generate_pipeline_string(
     };
 
     let mut pipeline = format!(
-        "{} ! videorate ! video/x-raw(memory:D3D11Memory),framerate={}/1 ! queue leaky=downstream max-size-time=100000000 ! {} ! queue max-size-time=200000000 ! {} ! {} ! identity ts-offset=0 ! queue max-size-time=200000000 ! sink.video",
+        "{} ! videorate ! video/x-raw(memory:D3D11Memory),framerate={}/1 ! queue leaky=downstream max-size-buffers=5 ! {} ! queue max-size-buffers=10 ! {} ! {} ! identity ts-offset=0 ! queue ! sink.video",
         source, v.fps, conversion_and_download, encoder_core, parser
     );
 
@@ -237,9 +360,11 @@ pub fn generate_pipeline_string(
         let src = if track.source_type == "System" {
             "wasapi2src loopback=true low-latency=true provide-clock=false ! level interval=100000000 post-messages=true".to_string()
         } else if track.source_type == "Mic" {
-            // Tier 2: Shared Context - The main app will feed this appsrc from the MicProvider
+            // Tier 2: Shared Context - The main app will feed this appsrc from the MicProvider.
+            // Caps must match the mic provider output (F32LE, 48kHz, stereo) so audioconvert
+            // can negotiate the conversion to S16LE downstream.
             format!(
-                "appsrc name=mic_src_{} format=time is-live=true do-timestamp=true",
+                "appsrc name=mic_src_{} format=time is-live=true do-timestamp=true caps=audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved",
                 i
             )
         } else if track.source_type == "App" {
@@ -278,9 +403,10 @@ pub fn generate_pipeline_string(
     let start_index = if found_any { highest_index + 1 } else { 0 };
 
     pipeline.push_str(&format!(
-        " splitmuxsink name=sink muxer=\"isofmp4mux fragment-duration=1000000000 decode-time-offset={}\" location=\"{}/seg_%010d.m4s\" max-size-time=6000000000 start-index={} send-keyframe-requests=true reset-muxer=true",
+        " splitmuxsink name=sink muxer=\"isofmp4mux fragment-duration=1000000000 decode-time-offset={}\" location=\"{}/seg_%010d_{}.m4s\" max-size-time=6000000000 start-index={} send-keyframe-requests=true reset-muxer=true",
         ts_offset_ns,
         game_path.trim_end_matches(&['\\', '/'][..]),
+        session_id,
         start_index
     ));
 
@@ -289,21 +415,6 @@ pub fn generate_pipeline_string(
     pipeline
 }
 
-/// Captures audio from a specific application via WASAPI process loopback and feeds
-/// it into a GStreamer `appsrc`.
-///
-/// Architecture: WASAPI -> ring buffer -> appsrc
-///
-/// WASAPI delivers audio in variable-size packets at its own cadence (typically 10ms
-/// intervals, but timing is not guaranteed). GStreamer expects a steady stream of
-/// samples aligned to its internal clock. The lock-free ring buffer bridges this gap:
-/// - The WASAPI side pushes packets as they arrive (producer)
-/// - The GStreamer side pulls accumulated samples each iteration (consumer)
-/// - If WASAPI goes silent for >20ms (e.g., the app pauses audio), we inject silence
-///   frames to prevent GStreamer from starving and dropping the audio stream entirely
-///
-/// The silence injection threshold (20ms) matches WASAPI's typical packet interval
-/// so we only inject when there's a genuine gap, not just normal timing jitter.
 pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: AppSrc) -> Result<()> {
     if wasapi::initialize_mta().is_err() {
         let _ = appsrc.end_of_stream();
@@ -374,7 +485,7 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
     let fallback_format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
 
     let mut client = AudioClient::new_application_loopback_client(target_pid, true)
-        .map_err(|e| anyhow::anyhow!("Failed to create loopback client: {}", e))?;
+        .context("Failed to create loopback client")?;
 
     let (fmt, _) = match client.get_mixformat() {
         Ok(f) => (f, false),
@@ -390,7 +501,7 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
                 buffer_duration_hns: 1000000,
             },
         )
-        .map_err(|e| anyhow::anyhow!("Failed to initialize audio client: {}", e))?;
+        .context("Failed to initialize audio client")?;
 
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
@@ -417,10 +528,8 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
     appsrc.set_caps(Some(&caps));
     appsrc.set_format(gst::Format::Time);
 
-    // Lock-free ring buffer sized for 1 second of audio. This is generous — typical
-    // WASAPI latency is 10-20ms — but protects against GC pauses or scheduling delays
-    // in the game process that could cause a burst of late packets.
-    let rb = HeapRb::<u8>::new(rate as usize * channels as usize * 4);
+    // Tier 1: Lock-Free Ring Buffer
+    let rb = HeapRb::<u8>::new(rate as usize * channels as usize * 4); // 1 second buffer
     let (mut prod, mut cons) = rb.split();
 
     let (silence_interval, silence_bytes) = (
@@ -458,17 +567,13 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
             let read = cons.pop_slice(&mut buf);
             if read > 0 {
                 let mut gst_buf = match gst::Buffer::with_size(read) {
-                    Ok(buf) => buf,
-                    Err(_) => { log::warn!("[Audio] Failed to allocate GStreamer buffer"); continue; }
+                    Ok(b) => b,
+                    Err(_) => continue,
                 };
                 if let Some(buf_ref) = gst_buf.get_mut() {
                     if let Ok(mut map) = buf_ref.map_writable() {
                         map.copy_from_slice(&buf[..read]);
-                    } else {
-                        continue;
                     }
-                } else {
-                    continue;
                 }
                 if appsrc.push_buffer(gst_buf).is_err() {
                     break;
@@ -485,117 +590,32 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
     Ok(())
 }
 
-/// Exports the last `seconds` of the current recording as an instant replay clip.
-///
-/// Called from the tray hotkey thread — has no access to UI state, so it reads
-/// `recording_source` from `AppState` and performs the export entirely via FFmpeg.
-/// Shows a tray balloon notification on success/failure.
-pub fn export_instant_replay(
-    app_state: &std::sync::Arc<crate::state::AppState>,
-    seconds: i32,
-) {
-    let source_name = match app_state.recording_source.lock().clone() {
-        Some(s) => s,
-        None => {
-            log::warn!("[InstantReplay] No active recording source");
-            return;
-        }
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let safe_title = crate::utils::clean_title(&source_name);
-    let storage_root = crate::utils::get_storage_root();
-
-    // Regenerate ffconcat so it includes the very latest segments
-    if crate::utils::generate_ffconcat_playlist(&source_name).is_none() {
-        log::error!("[InstantReplay] No segments found for '{}'", source_name);
-        crate::tray::show_notification("Instant Replay Failed", "No recording segments found.");
-        return;
+    #[test]
+    fn test_parse_res_standard() {
+        assert_eq!(parse_res("1920x1080"), (1920, 1080));
+        assert_eq!(parse_res("2560x1440"), (2560, 1440));
+        assert_eq!(parse_res("3840x2160"), (3840, 2160));
+        assert_eq!(parse_res("1280x720"), (1280, 720));
     }
 
-    let playlist_path = storage_root.join(&safe_title).join("view.ffconcat");
-    if !playlist_path.exists() {
-        crate::tray::show_notification("Instant Replay Failed", "Playlist not found.");
-        return;
+    #[test]
+    fn test_parse_res_fallback() {
+        // Invalid formats should fall back to 1920x1080
+        assert_eq!(parse_res(""), (1920, 1080));
+        assert_eq!(parse_res("invalid"), (1920, 1080));
+        assert_eq!(parse_res("1920"), (1920, 1080));
+        assert_eq!(parse_res("axb"), (1920, 1080));
+        assert_eq!(parse_res("1920x"), (1920, 1080));
+        assert_eq!(parse_res("x1080"), (1920, 1080));
     }
 
-    // Calculate total duration from the current recording to determine the start point
-    let total_duration = *app_state.current_recording_duration.lock();
-    let start = (total_duration - seconds as f64).max(0.0);
-    let end = total_duration;
-
-    if end - start < 0.5 {
-        crate::tray::show_notification("Instant Replay", "Not enough recording data yet.");
-        return;
-    }
-
-    let clips_dir = storage_root.join("Clips").join(&safe_title);
-    let _ = std::fs::create_dir_all(&clips_dir);
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let output_path = clips_dir.join(format!("replay_{}_{}.mp4", safe_title, timestamp));
-
-    let ffmpeg_path = crate::utils::get_ffmpeg_path();
-    if !ffmpeg_path.exists() {
-        crate::tray::show_notification("Instant Replay Failed", "ffmpeg.exe not found.");
-        return;
-    }
-
-    log::info!(
-        "[InstantReplay] Exporting {:.1}s clip ({:.1} - {:.1}) from '{}'",
-        end - start, start, end, source_name
-    );
-
-    let result = std::process::Command::new(&ffmpeg_path)
-        .arg("-y")
-        .arg("-ss").arg(format!("{:.3}", start))
-        .arg("-to").arg(format!("{:.3}", end))
-        .arg("-f").arg("concat")
-        .arg("-safe").arg("0")
-        .arg("-i").arg(&playlist_path)
-        .arg("-map").arg("0:v:0")
-        .arg("-map").arg("0:a?")
-        .arg("-c:v").arg("copy")
-        .arg("-c:a").arg("aac")
-        .arg("-b:a").arg("320k")
-        .arg("-movflags").arg("+faststart")
-        .arg(&output_path)
-        .output();
-
-    match result {
-        Ok(output) if output.status.success() => {
-            // Extract thumbnail
-            let mut thumb_path = output_path.clone();
-            thumb_path.set_extension("jpg");
-            let thumb_time = start + (end - start) / 2.0;
-            let _ = std::process::Command::new(&ffmpeg_path)
-                .arg("-y")
-                .arg("-ss").arg(format!("{:.3}", thumb_time))
-                .arg("-f").arg("concat")
-                .arg("-safe").arg("0")
-                .arg("-i").arg(&playlist_path)
-                .arg("-vframes").arg("1")
-                .arg("-q:v").arg("2")
-                .arg(&thumb_path)
-                .output();
-
-            let duration_str = format!("{}s", seconds);
-            crate::tray::show_notification(
-                "Instant Replay Saved",
-                &format!("Last {} saved to Clips/{}", duration_str, safe_title),
-            );
-            log::info!("[InstantReplay] Saved to {:?}", output_path);
-        }
-        Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr);
-            log::error!("[InstantReplay] FFmpeg failed: {}", err);
-            crate::tray::show_notification("Instant Replay Failed", "FFmpeg returned an error.");
-        }
-        Err(e) => {
-            log::error!("[InstantReplay] Could not run FFmpeg: {}", e);
-            crate::tray::show_notification("Instant Replay Failed", "Could not run ffmpeg.exe");
-        }
+    #[test]
+    fn test_resolve_pid_empty_input() {
+        assert_eq!(resolve_pid(""), 0);
+        assert_eq!(resolve_pid("Default"), 0);
     }
 }

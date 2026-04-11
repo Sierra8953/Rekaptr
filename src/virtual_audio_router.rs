@@ -1,23 +1,3 @@
-//! Per-application audio capture using the Windows 11 Application Loopback API.
-//!
-//! Captures audio output from a single process (identified by PID) without
-//! hearing other apps or the desktop mixer. This is the modern replacement for
-//! the old "stereo mix" approach and requires Windows 11 22H2+.
-//!
-//! ## Two-thread architecture
-//!
-//! WASAPI and GStreamer have fundamentally different timing models, so we
-//! decouple them with a lock-free ring buffer:
-//!
-//! - **Capture thread**: Polls the WASAPI `AudioCaptureClient` at ~1ms intervals
-//!   and pushes raw PCM into the ring buffer. Injects silence when no frames are
-//!   available to maintain a continuous audio stream — without this, GStreamer's
-//!   audio encoder would see timing gaps and produce audible pops at splice points.
-//!
-//! - **Push thread**: Drains the ring buffer and pushes timestamped `gst::Buffer`s
-//!   into the GStreamer `appsrc`. Computes PTS from byte counts to keep the
-//!   audio clock monotonic regardless of WASAPI jitter.
-
 use anyhow::{anyhow, Context, Result};
 use gstreamer::prelude::*;
 use gstreamer_app::AppSrc;
@@ -29,11 +9,7 @@ use std::thread;
 use std::time::Duration;
 use wasapi::{Direction, WaveFormat, SampleType, StreamMode};
 
-// WASAPI COM objects (`AudioClient`, `AudioCaptureClient`) don't implement `Send`
-// because COM has apartment-threading rules. However, we initialize MTA (multi-
-// threaded apartment) and only access these from their owning thread, so the
-// cross-thread move during `thread::spawn` is safe. These wrappers make Rust's
-// type system accept the move.
+// Wrapper structs to safely move WASAPI COM objects between threads
 struct SendClient { inner: wasapi::AudioClient }
 unsafe impl Send for SendClient {}
 impl std::ops::Deref for SendClient {
@@ -48,30 +24,21 @@ impl std::ops::Deref for SendCaptureClient {
     fn deref(&self) -> &Self::Target { &self.inner }
 }
 
-/// Captures audio from a single application and feeds it into a GStreamer pipeline.
-///
-/// Owns the capture and push threads; dropping this struct signals both threads
-/// to stop and joins the capture thread.
 pub struct VirtualAudioRouter {
     running: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
 impl VirtualAudioRouter {
-    /// Start capturing audio from `target_pid` and routing it to `app_src`.
-    ///
-    /// Spawns two background threads (capture + push) that run until `stop()`
-    /// is called or this struct is dropped.
     pub fn new(target_pid: u32, app_src: AppSrc) -> Result<Self> {
-        crate::utils::init_gstreamer();
         let _ = wasapi::initialize_mta();
 
         // 1. Initialize modern Windows 11 Application Loopback
         let mut client = wasapi::AudioClient::new_application_loopback_client(target_pid, true)
-            .map_err(|e| anyhow!("Failed to create loopback client: {}", e))?;
+            .context("Failed to create loopback client")?;
 
         let mix_format = client.get_mixformat()
-            .map_err(|e| anyhow!("Failed to get mix format: {}", e))?;
+            .context("Failed to get mix format")?;
 
         // Use Polling Shared mode for lowest latency and stability
         client.initialize_client(
@@ -81,13 +48,13 @@ impl VirtualAudioRouter {
                 autoconvert: true,
                 buffer_duration_hns: 10000000,
             },
-        ).map_err(|e| anyhow!("Failed to init WASAPI client: {}", e))?;
+        ).context("Failed to init WASAPI client")?;
 
         let capture_client = client.get_audiocaptureclient()
-            .map_err(|e| anyhow!("Failed to get capture client: {}", e))?;
-        
+            .context("Failed to get capture client")?;
+
         client.start_stream()
-            .map_err(|e| anyhow!("Failed to start WASAPI stream: {}", e))?;
+            .context("Failed to start WASAPI stream")?;
 
         // 2. Configure GStreamer AppSrc to match WASAPI's internal format
         let sample_rate = mix_format.get_samplespersec();
@@ -113,18 +80,13 @@ impl VirtualAudioRouter {
         app_src.set_caps(Some(&caps));
 
         let bytes_per_frame = (bits_per_sample / 8) * channels;
-        // 10ms of silence — injected when WASAPI has no frames available.
-        // This keeps the GStreamer audio stream continuous; without it, the encoder
-        // sees timing gaps that manifest as pops/clicks at segment boundaries.
-        let silence_frames = (sample_rate / 100) as usize;
+        let silence_frames = (sample_rate / 100) as usize; // 10ms of silence
 
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
 
-        // Lock-free ring buffer decouples WASAPI's timing from GStreamer's.
-        // 4MB holds ~5.5 seconds of 48kHz stereo F32 — enough headroom for
-        // GStreamer pipeline stalls without dropping audio.
-        let rb = HeapRb::<u8>::new(1024 * 1024 * 4);
+        // 3. Ring buffer for thread decoupling
+        let rb = HeapRb::<u8>::new(1024 * 1024 * 4); // 4MB
         let (mut producer, mut consumer) = rb.split();
 
         let send_client = SendClient { inner: client };

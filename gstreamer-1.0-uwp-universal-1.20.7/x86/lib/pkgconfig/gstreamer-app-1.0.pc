@@ -1,0 +1,20 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+exec_prefix=${prefix}
+toolsdir=${exec_prefix}/bin
+pluginsdir=${libdir}/gstreamer-1.0
+datarootdir=${prefix}/share
+datadir=${datarootdir}
+girdir=${datadir}/gir-1.0
+typelibdir=${libdir}/girepository-1.0
+libexecdir=${prefix}/libexec
+
+Name: gstreamer-app-1.0
+Description: Helper functions and base classes for application integration
+Version: 1.20.7
+Requires: gstreamer-1.0 >=  1.20.4, gstreamer-base-1.0 >=  1.20.4
+Libs: -L${libdir} -lgstapp-1.0
+Cflags: -I${includedir}/gstreamer-1.0
+

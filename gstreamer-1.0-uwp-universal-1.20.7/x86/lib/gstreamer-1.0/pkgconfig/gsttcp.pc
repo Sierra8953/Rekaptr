@@ -1,0 +1,11 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gsttcp
+Description: gst-plugins-base: gsttcp
+Version: 1.20.7
+Requires.private: gio-2.0, gstreamer-base-1.0 >=  1.20.4, gstreamer-net-1.0 >=  1.20.4
+Libs: -L${prefix}/lib/gstreamer-1.0 -lgsttcp
+Cflags: -I${includedir}
+

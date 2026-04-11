@@ -1,0 +1,12 @@
+prefix=C:/non_existent_on_purpose/please_use_MSI_pkg-config/or_pass_--define-prefix_to_your_pkg-config
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: gstnvcodec
+Description: gst-plugins-bad: gstnvcodec
+Version: 1.20.7
+Requires.private: gstreamer-codecparsers-1.0, gstreamer-video-1.0 >=  1.20.0, gstreamer-base-1.0 >=  1.20.0, gstreamer-pbutils-1.0 >=  1.20.0, gstreamer-gl-1.0 >=  1.20.0, gstreamer-gl-prototypes-1.0 >=  1.20.0, gmodule-2.0
+Libs: -L${prefix}/lib/gstreamer-1.0 -lgstnvcodec
+Libs.private: -L${libdir} -lgstcodecs-1.0
+Cflags: -I${includedir}
+

@@ -1,0 +1,3 @@
+## 2024-04-11 - Fast-path nameless window filtering in GameDetector
+**Learning:** In Windows UI programming using `EnumWindows`, many visible top-level windows do not have titles. Performing expensive OS queries like `GetWindowThreadProcessId` and `sys.process()` on every visible window creates a massive bottleneck.
+**Action:** When working with `EnumWindows` and `GetWindowTextW` from the `windows-rs` crate, always filter out invisible/nameless windows early using `GetWindowTextW` length checks (`len == 0`) *before* performing expensive OS queries. A value of `0` indicates either a failure or an empty string, meaning a single `len == 0` check safely filters out both nameless windows and API errors.

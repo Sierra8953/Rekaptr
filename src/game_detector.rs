@@ -134,18 +134,9 @@ unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM)
     let state = &mut *(lparam.0 as *mut WindowEnumState);
 
     if IsWindowVisible(hwnd).as_bool() {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-
-        if pid != 0 {
-            if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
-                let proc_name = process.name().to_string().to_lowercase();
-                if state.blacklist.contains(&proc_name.as_str()) {
-                    return true.into();
-                }
-            }
-        }
-
+        // ⚡ Bolt: Fast-path optimization
+        // Filter nameless windows early using GetWindowTextW length check (len == 0 filters empty and errors)
+        // before performing expensive OS queries like PID lookups or process tree queries.
         let mut text = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut text);
 
@@ -161,13 +152,20 @@ unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM)
 
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            let proc_name = if pid != 0 {
-                state.sys.process(sysinfo::Pid::from_u32(pid))
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            } else {
-                "Unknown".to_string()
-            };
+
+            let mut proc_name = "Unknown".to_string();
+
+            if pid != 0 {
+                if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
+                    let raw_name = process.name().to_string();
+                    let proc_name_lower = raw_name.to_lowercase();
+
+                    if state.blacklist.contains(&proc_name_lower.as_str()) {
+                        return true.into();
+                    }
+                    proc_name = raw_name;
+                }
+            }
 
             state.windows.push(WindowInfo {
                 title,

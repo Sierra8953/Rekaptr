@@ -356,7 +356,7 @@ impl LumaWorkspace {
         &self,
         step: usize,
         view: &WeakEntity<Self>,
-        theme: &Theme,
+        _theme: &Theme,
     ) -> impl IntoElement {
         let total_steps: usize = 4;
         let view_back = view.clone();

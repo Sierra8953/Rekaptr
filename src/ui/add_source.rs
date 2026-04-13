@@ -338,7 +338,7 @@ impl LumaWorkspace {
                                                     .gap_2()
                                                     .children(
                                                         self.form_audio_tracks.iter().enumerate().map(|(i, track)| {
-                                                            let is_app = track.source_type == "app";
+                                                            let _is_app = track.source_type == "app";
                                                             HStack::new()
                                                                 .justify_between()
                                                                 .p_3()

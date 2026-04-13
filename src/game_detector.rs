@@ -32,6 +32,7 @@ impl GameDetector {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_process_name_from_hwnd(&mut self, hwnd: u64) -> Option<String> {
         let mut pid = 0u32;
         unsafe {

@@ -1,5 +1,4 @@
-use anyhow::{anyhow, Context, Result};
-use gstreamer::prelude::*;
+use anyhow::{Context, Result};
 use gstreamer_app::AppSrc;
 use ringbuf::traits::{Consumer, Observer, Split, Producer};
 use ringbuf::HeapRb;
@@ -7,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use wasapi::{Direction, WaveFormat, SampleType, StreamMode};
+use wasapi::{Direction, SampleType, StreamMode};
 
 // Wrapper structs to safely move WASAPI COM objects between threads
 struct SendClient { inner: wasapi::AudioClient }

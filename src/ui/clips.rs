@@ -2,7 +2,6 @@ use gpui::*;
 use adabraka_ui::prelude::*;
 use crate::ui::{LumaWorkspace, ClipsViewMode};
 use crate::state::Clip;
-use std::collections::BTreeMap;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
 
@@ -216,93 +215,6 @@ pub enum LibraryRow {
 }
 
 impl LumaWorkspace {
-    fn render_clips_grid_new_style(&self, clips: Vec<Clip>, cx: &mut Context<Self>) -> impl IntoElement {
-        let view_handle = cx.entity().downgrade();
-        let app_state = self.app_state.clone();
-
-        // If a game is selected, we only show clips for that game
-        if let Some(game_title) = &self.selected_game_filter {
-            let game_clips: Vec<Clip> = clips.into_iter().filter(|c| &c.title == game_title).collect();
-
-            // Use a chunked approach for the grid to keep the element tree manageable
-            let mut list = VStack::new().gap_4().pb_8();
-            for chunk in game_clips.chunks(4) {
-                let mut row = HStack::new().px_8().gap_6();
-                for clip in chunk {
-                    let path = clip.path.to_string_lossy().to_string();
-                    let is_selected = self.selected_clips.contains(&path);
-                    row = row.child(Self::render_clip_card_advanced(clip.clone(), &view_handle, is_selected));
-                }
-                list = list.child(row);
-            }
-            return list;
-        }
-
-        // Dashboard Style: Recent + Game Groups
-        let mut game_groups: BTreeMap<String, Vec<Clip>> = BTreeMap::new();
-        for clip in clips.iter() {
-            game_groups.entry(clip.title.clone()).or_default().push(clip.clone());
-        }
-
-        let mut content = VStack::new().gap_0().pb_8();
-
-        // 1. Most Recent Section (Top 4)
-        if !clips.is_empty() {
-            let recent_clips: Vec<Clip> = clips.iter().take(4).cloned().collect();
-            let mut recent_row = HStack::new().px_8().gap_6();
-            for clip in recent_clips {
-                let path = clip.path.to_string_lossy().to_string();
-                let is_selected = self.selected_clips.contains(&path);
-                recent_row = recent_row.child(Self::render_clip_card_advanced(clip, &view_handle, is_selected));
-            }
-            
-            content = content.child(
-                div()
-                    .px_8()
-                    .py_3()
-                    .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(use_theme().tokens.muted_foreground).child("MOST RECENT"))
-            ).child(recent_row);
-        }
-
-        // 2. Games Section
-        content = content.child(
-            div()
-                .px_8()
-                .pt_8()
-                .pb_3()
-                .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(use_theme().tokens.muted_foreground).child("GAMES"))
-        );
-
-        let game_titles: Vec<String> = game_groups.keys().cloned().collect();
-        for chunk in game_titles.chunks(4) {
-            let view_handle = view_handle.clone();
-            let app_state = app_state.clone();
-            
-            // Map the chunk to a vec of (title, count)
-            let titles_with_data: Vec<(String, usize)> = chunk.iter()
-                .map(|title| {
-                    let count = game_groups.get(title).map_or(0, |v| v.len());
-                    (title.clone(), count)
-                })
-                .collect();
-
-            // Trigger portrait artwork fetches for this chunk
-            let chunk_titles: Vec<String> = titles_with_data.iter().map(|(t, _)| t.clone()).collect();
-            self.fetch_portrait_artwork(&chunk_titles, cx);
-
-            let row = HStack::new()
-                .px_8()
-                .gap_6()
-                .py_3()
-                .children(titles_with_data.into_iter().map(move |(title, count)| {
-                    Self::render_game_card_vertical(title, count, &app_state, view_handle.clone())
-                }));
-            content = content.child(row);
-        }
-
-        content
-    }
-
     /// Trigger portrait artwork fetches for a list of game titles.
     /// Everything runs off the UI thread — app_id resolution, local cache check, and download.
     pub fn fetch_portrait_artwork(&self, titles: &[String], cx: &mut Context<Self>) {

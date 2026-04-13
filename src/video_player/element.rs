@@ -3,7 +3,6 @@ use windows::core::Interface;
 use gpui::{
     Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Window,
 };
-use std::sync::Arc;
 
 pub struct VideoElement {
     video: Video,

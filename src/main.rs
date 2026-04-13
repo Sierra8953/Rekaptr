@@ -18,7 +18,6 @@ use crate::state::AppState;
 use crate::ui::LumaWorkspace;
 use anyhow::Result;
 use gpui::*;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::path::PathBuf;
 use tray_icon::{
@@ -120,7 +119,6 @@ async fn main() -> Result<()> {
             let config = crate::config::AppConfig::load();
             let provider_storage = app_state.mic_provider.clone();
             let device_name = config.mic_settings.device_name.clone();
-            // In a real app we'd map name to ID, for now we use "Default" or the name directly
             crate::audio::start_mic_provider(provider_storage, device_name);
         }
 
@@ -139,6 +137,9 @@ async fn main() -> Result<()> {
         let stop_item = MenuItem::new("Stop Recording", false, None); // Disabled by default
         let quit_item = MenuItem::new("Quit", true, None);
 
+        let tray_icon_path = std::path::Path::new("crates/gpui/examples/image/app-icon.png");
+        let icon = tray_icon::Icon::from_path(tray_icon_path, Some((32, 32))).ok();
+
         let _ = tray_menu.append_items(&[
             &show_item,
             &PredefinedMenuItem::separator(),
@@ -147,19 +148,28 @@ async fn main() -> Result<()> {
             &quit_item,
         ]);
 
-        let tray_icon = TrayIconBuilder::new()
+        let mut tray_builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Luma Recording")
-            .build()
-            .unwrap();
+            .with_tooltip("Luma Recording");
 
+        if let Some(icon) = icon {
+            tray_builder = tray_builder.with_icon(icon);
+        }
+
+        let tray_icon = match tray_builder.build() {
+            Ok(icon) => icon,
+            Err(e) => {
+                log::error!("[TrayIcon] Failed to create system tray: {}", e);
+                panic!("System tray is required for Luma to run");
+            }
+        };
         let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
         *app_state.tray_tx.lock() = Some(tray_tx);
 
         // --- Tray Event Loop ---
         let workspace_handle_tray = workspace_handle.clone();
         cx.spawn(|cx: &mut gpui::AsyncApp| {
-            let mut cx = cx.clone();
+            let cx = cx.clone();
             async move {
                 let menu_channel = MenuEvent::receiver();
                 let _tray_channel = TrayIconEvent::receiver();
@@ -191,7 +201,7 @@ async fn main() -> Result<()> {
                         } else if event.id == stop_item.id() {
                             if let Some(workspace_weak) = workspace_handle {
                                 let _ = cx.update(|cx| {
-                                    if let Some(workspace_entity) = workspace_weak.upgrade() {
+                                    if workspace_weak.upgrade().is_some() {
                                         if let Some(window_handle) = cx.windows().first().cloned() {
                                             let _ = window_handle.update(cx, |view: AnyView, window: &mut Window, cx: &mut App| {
                                                 if let Ok(view) = view.downcast::<LumaWorkspace>() {
@@ -210,22 +220,17 @@ async fn main() -> Result<()> {
                             cx.update(|cx| cx.quit()).ok();
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
                 }
             }
         }).detach();
-        // Keep tray_icon alive by moving it into the background task (effectively)
-        // or just dropping it at the end of the run closure might be okay if run() blocks,
-        // but GPUI's run() actually enters the event loop and might not block in a way that
-        // prevents the closure's local variables from being dropped if not captured.
-        // Capturing it in the spawn above is best.
-        let _keep_alive = tray_icon;
+        let _keep_alive = tray_icon; // prevent drop while event loop runs
 
         // --- Disk Space Monitoring ---
         let storage_root = crate::utils::get_storage_root();
         let workspace_handle_disk = workspace_handle.clone();
         cx.spawn(|cx: &mut gpui::AsyncApp| {
-            let mut cx = cx.clone();
+            let cx = cx.clone();
             async move {
                 use sysinfo::Disks;
                 let mut disks = Disks::new_with_refreshed_list();
@@ -237,7 +242,8 @@ async fn main() -> Result<()> {
                     if let Some(disk) = target_disk {
                         let free_gb = disk.available_space() as f64 / 1024.0 / 1024.0 / 1024.0;
 
-                        if free_gb < 1.0 || free_gb < 5.0 {
+                        const LOW_DISK_WARNING_GB: f64 = 5.0;
+                        if free_gb < LOW_DISK_WARNING_GB {
                             let workspace_handle = match workspace_handle_disk.lock() {
                                 Ok(h) => h.clone(),
                                 Err(_) => continue,
@@ -248,8 +254,8 @@ async fn main() -> Result<()> {
                                         if let Some(any_window_handle) = cx.windows().first().cloned() {
                                             let _ = any_window_handle.update(cx, |_, window: &mut Window, cx| {
                                                 workspace_entity.update(cx, |workspace, cx| {
-                                                    if free_gb < 1.0 {
-                                                        // CRITICAL: Stop recording
+                                                    const CRITICAL_DISK_GB: f64 = 1.0;
+                                                    if free_gb < CRITICAL_DISK_GB {
                                                         if workspace.app_state.recording.phase.lock().is_recording() {
                                                             workspace.show_toast(
                                                                 "Disk Full",
@@ -291,20 +297,13 @@ async fn main() -> Result<()> {
             if let Some(device) = window.direct3d11_device() {
                 use windows::Win32::Foundation::HANDLE;
                 crate::engine::boost_device_gpu_priority(device as *mut std::ffi::c_void);
-                // SAFETY: AddRef the D3D11 device so our stored handle keeps the device alive
-                // independently of the GPUI window's own reference. The device pointer comes from
-                // GPUI's window and is valid here. We call AddRef to take shared ownership;
-                // the matching Release happens when SendHandle is dropped (not currently
-                // implemented — acceptable because the device lives for the entire app lifetime
-                // alongside the single window).
-                // AddRef so our stored copy keeps the device alive
+                // AddRef the D3D11 device so our handle outlives the GPUI window's reference.
+                // No matching Release — the device lives for the entire app lifetime.
                 unsafe {
                     use windows::Win32::Graphics::Direct3D11::ID3D11Device;
                     use windows::core::Interface;
-                    // from_raw wraps the pointer; ManuallyDrop prevents Release on drop
                     let d3d = std::mem::ManuallyDrop::new(ID3D11Device::from_raw(device as *mut std::ffi::c_void));
-                    // Clone calls AddRef internally via the windows crate
-                    let _prevent_drop = std::mem::ManuallyDrop::new((*d3d).clone());
+                    let _prevent_drop = std::mem::ManuallyDrop::new((*d3d).clone()); // AddRef
                 }
                 *app_state.d3d11_device.lock() = Some(crate::video_player::SendHandle(HANDLE(device as _)));
             }
@@ -321,7 +320,7 @@ async fn main() -> Result<()> {
             let workspace_handle_hotkey = workspace_handle.clone();
 
             cx.spawn(|cx: &mut AsyncApp| {
-                let mut cx = cx.clone();
+                let cx = cx.clone();
                 async move {
                     loop {
                         // Check for hotkey events every 50ms
@@ -364,7 +363,15 @@ async fn main() -> Result<()> {
                                                             cx.notify();
                                                         }
                                                         crate::hotkeys::HotkeyAction::PushToTalk => {
-                                                            // TODO: implement push-to-talk hold/release
+                                                            // Push-to-talk acts as a toggle until hold/release is implemented
+                                                            log::debug!("[Hotkeys] Push-to-talk triggered (toggle mode)");
+                                                            for track in workspace.form_audio_tracks.iter_mut() {
+                                                                if track.source_type == "Mic" {
+                                                                    track.enabled = !track.enabled;
+                                                                    break;
+                                                                }
+                                                            }
+                                                            cx.notify();
                                                         }
                                                         crate::hotkeys::HotkeyAction::MarkerFlag => {
                                                             workspace.add_marker_with_kind(crate::state::MarkerKind::Flag, cx);
@@ -396,7 +403,7 @@ async fn main() -> Result<()> {
         let workspace_handle_auto = workspace_handle.clone();
         
         cx.spawn(|cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
+            let cx = cx.clone();
             async move {
                 use windows::Win32::UI::Accessibility::*;
                 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -441,7 +448,7 @@ async fn main() -> Result<()> {
                             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                                 DispatchMessageW(&msg);
                             }
-                            UnhookWinEvent(hook);
+                            let _ = UnhookWinEvent(hook);
                         }
                     }
                 });

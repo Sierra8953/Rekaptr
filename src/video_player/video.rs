@@ -123,10 +123,7 @@ impl Video {
                 OPENGL32_DLL = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("opengl32.dll")).map_err(|e| Error::OpenGL(format!("LoadLibrary opengl32.dll failed: {:?}", e)))?;
             }
 
-            // SAFETY: The D3D11 device pointer in AppState has an AddRef'd reference (see main.rs)
-            // and lives for the entire app lifetime. transmute_copy creates a second reference
-            // without AddRef — this is safe because the device outlives all Video instances
-            // (Videos are destroyed before the window closes).
+            // The D3D11 device in AppState is AddRef'd and outlives all Video instances.
             let d3d_device: ID3D11Device = std::mem::transmute_copy(&d3d11_device_ptr.ok_or(Error::Lock)?);
             
             unsafe extern "system" fn dummy_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -168,7 +165,7 @@ impl Video {
             wglMakeCurrent(h_dc, gl_context).ok();
 
             let load_ext = |name: &str| -> Result<*const c_void, Error> {
-                let cname = CString::new(name).unwrap();
+                let cname = CString::new(name).map_err(|_| Error::Interop(format!("Invalid extension name: {}", name)))?;
                 let addr = wglGetProcAddress(PCSTR(cname.as_ptr() as *const u8));
                 if let Some(p) = addr {
                     return Ok(p as *const c_void);
@@ -260,7 +257,7 @@ impl Video {
                 windows::Win32::System::LibraryLoader::GetProcAddress(OPENGL32_DLL, PCSTR(cname.as_ptr() as *const u8)).map_or(std::ptr::null_mut(), |p| p as *mut c_void)
             }
 
-            let api_type = CString::new("opengl").unwrap();
+            let api_type = CString::new("opengl").expect("static string");
             let mut params = [
                 mpv_render_param { type_: mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE, data: api_type.as_ptr() as *mut _ },
                 mpv_render_param { type_: mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut mpv_opengl_init_params {

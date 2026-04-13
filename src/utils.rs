@@ -6,6 +6,9 @@ use winreg::RegKey;
 const STARTUP_REG_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const STARTUP_REG_VALUE: &str = "Luma";
 
+/// Assumed segment length when ffprobe is unavailable or fails.
+const DEFAULT_SEGMENT_DURATION_SECS: f64 = 6.0;
+
 pub fn set_startup_with_windows(enable: bool) {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     match hkcu.open_subkey_with_flags(STARTUP_REG_KEY, KEY_SET_VALUE) {
@@ -82,6 +85,7 @@ pub fn get_dir_size(path: &Path) -> std::io::Result<u64> {
     Ok(size)
 }
 
+#[allow(dead_code)]
 pub fn clear_all_buffers() {
     let root = get_storage_root();
     if let Ok(entries) = std::fs::read_dir(&root) {
@@ -163,10 +167,12 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
     clips
 }
 
+#[allow(dead_code)]
 pub fn get_all_clips() -> Vec<crate::state::Clip> {
     fetch_all_clips()
 }
 
+#[allow(dead_code)]
 pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
     let root = get_storage_root();
     let config = crate::config::AppConfig::load();
@@ -196,7 +202,7 @@ pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
                 let seg_path = seg.path();
                 if seg_path.extension().map_or(false, |ext| ext == "m4s") {
                     segment_count += 1;
-                    total_duration += get_segment_duration(&seg_path).unwrap_or(6.0);
+                    total_duration += get_segment_duration(&seg_path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                     if let Ok(meta) = seg.metadata() {
                         let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                         if modified > latest_modified {
@@ -312,6 +318,7 @@ fn get_ffprobe_path() -> PathBuf {
     PathBuf::from("ffprobe")
 }
 
+#[allow(dead_code)]
 fn get_exact_duration(file_path: &std::path::Path) -> f64 {
     // Check duration cache first to avoid N+1 ffprobe spawns
     static DURATION_CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, f64>>> = std::sync::OnceLock::new();
@@ -541,48 +548,55 @@ fn get_segment_duration(path: &Path) -> Option<f64> {
     None
 }
 
-pub fn generate_session_playlist(game_title: &str, _active_session_id: Option<u64>) -> Option<(PathBuf, Vec<crate::state::SessionBlock>)> {
-    let safe_title = if game_title == "monitor" { "monitor".to_string() } else { clean_title(game_title) };
-    let root = get_storage_root();
-    let game_dir = root.join(&safe_title);
+/// Segment entry after deduplication: (modified_time, path, duration_secs, session_id)
+type SegmentEntry = (std::time::SystemTime, std::path::PathBuf, f64, Option<u64>);
 
-    if !game_dir.exists() { return None; }
-
-    // 1. Scan disk for segments, deduplicate by index (keep most recent per index)
-    let mut segment_map: std::collections::BTreeMap<u64, (std::time::SystemTime, std::path::PathBuf, f64, Option<u64>)> = std::collections::BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(&game_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "m4s") {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let duration = get_segment_duration(&path).or_else(|| ffprobe_segment_duration(&path));
-                
-                if let Some(duration) = duration {
-                    if let Ok(meta) = entry.metadata() {
-                        let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
-                        if let Some(idx) = parse_segment_index(&name) {
-                            let sid = parse_segment_session_id(&name);
-                            match segment_map.entry(idx) {
-                                std::collections::btree_map::Entry::Vacant(e) => { e.insert((modified, path, duration, sid)); }
-                                std::collections::btree_map::Entry::Occupied(mut e) => {
-                                    if modified > e.get().0 {
-                                        e.insert((modified, path, duration, sid));
-                                    }
-                                }
-                            }
-                        }
-                    }
+/// Scan a game directory for .m4s segments, deduplicate by index (keep most recent).
+/// Returns a BTreeMap sorted by segment index.
+fn scan_segments(game_dir: &Path) -> std::collections::BTreeMap<u64, SegmentEntry> {
+    let mut segment_map: std::collections::BTreeMap<u64, SegmentEntry> = std::collections::BTreeMap::new();
+    let entries = match std::fs::read_dir(game_dir) {
+        Ok(e) => e,
+        Err(_) => return segment_map,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.extension().map_or(false, |ext| ext == "m4s") { continue; }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let duration = match get_segment_duration(&path).or_else(|| ffprobe_segment_duration(&path)) {
+            Some(d) => d,
+            None => continue,
+        };
+        let modified = entry.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::now());
+        let Some(idx) = parse_segment_index(&name) else { continue };
+        let sid = parse_segment_session_id(&name);
+        match segment_map.entry(idx) {
+            std::collections::btree_map::Entry::Vacant(e) => { e.insert((modified, path, duration, sid)); }
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                if modified > e.get().0 {
+                    e.insert((modified, path, duration, sid));
                 }
             }
         }
     }
+    segment_map
+}
 
+fn game_dir_for(game_title: &str) -> PathBuf {
+    let safe_title = if game_title == "monitor" { "monitor".to_string() } else { clean_title(game_title) };
+    get_storage_root().join(safe_title)
+}
+
+pub fn generate_session_playlist(game_title: &str, _active_session_id: Option<u64>) -> Option<(PathBuf, Vec<crate::state::SessionBlock>)> {
+    let game_dir = game_dir_for(game_title);
+    if !game_dir.exists() { return None; }
+
+    let segment_map = scan_segments(&game_dir);
     if segment_map.is_empty() { return None; }
 
-    // 2. Calculate total duration from deduplicated segments
     let total_duration: f64 = segment_map.values().map(|s| s.2).sum();
-
-    // 3. Represent as one continuous block for the timeline
     let session_blocks = vec![crate::state::SessionBlock {
         start_timestamp: 0,
         duration_secs: total_duration,
@@ -595,121 +609,53 @@ pub fn generate_session_playlist(game_title: &str, _active_session_id: Option<u6
 }
 
 pub fn generate_master_playlist(game_title: &str) -> Option<PathBuf> {
-    let safe_title = if game_title == "monitor" { "monitor".to_string() } else { clean_title(game_title) };
-    let root = get_storage_root();
-    let game_dir = root.join(&safe_title);
-
+    let game_dir = game_dir_for(game_title);
     if !game_dir.exists() { return None; }
 
-    // Collect segments keyed by index, deduplicating by keeping the most recently modified file per index
-    let mut segment_map: std::collections::BTreeMap<u64, (std::time::SystemTime, std::path::PathBuf, f64, Option<u64>)> = std::collections::BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(&game_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "m4s") {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let duration = get_segment_duration(&path).or_else(|| ffprobe_segment_duration(&path));
-
-                if let Some(duration) = duration {
-                    if let Ok(meta) = entry.metadata() {
-                        let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
-                        if let Some(idx) = parse_segment_index(&name) {
-                            let sid = parse_segment_session_id(&name);
-                            match segment_map.entry(idx) {
-                                std::collections::btree_map::Entry::Vacant(e) => { e.insert((modified, path, duration, sid)); }
-                                std::collections::btree_map::Entry::Occupied(mut e) => {
-                                    if modified > e.get().0 {
-                                        e.insert((modified, path, duration, sid));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let segment_map = scan_segments(&game_dir);
     if segment_map.is_empty() { return None; }
 
-    // BTreeMap is already sorted by segment index
     let master_playlist_path = game_dir.join("master.m3u8");
-    let mut m3u8_content = String::from("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n");
+    let mut m3u8 = String::from("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n");
 
     let mut last_session_id: Option<u64> = None;
-
     for (_, (_modified, path, duration, session_id)) in &segment_map {
         let file_name = match path.file_name() {
             Some(f) => f.to_string_lossy(),
             None => continue,
         };
-
-        // Insert discontinuity tag when the session ID changes (new pipeline start)
         if last_session_id.is_some() && *session_id != last_session_id {
-            m3u8_content.push_str("#EXT-X-DISCONTINUITY\n");
+            m3u8.push_str("#EXT-X-DISCONTINUITY\n");
         }
         last_session_id = *session_id;
-
-        m3u8_content.push_str(&format!("#EXTINF:{:.3},\n", duration));
-        m3u8_content.push_str(&format!("{}\n", file_name));
+        m3u8.push_str(&format!("#EXTINF:{:.3},\n{}\n", duration, file_name));
     }
-    
-    m3u8_content.push_str("#EXT-X-ENDLIST\n");
-    let _ = std::fs::write(&master_playlist_path, m3u8_content);
+    m3u8.push_str("#EXT-X-ENDLIST\n");
+    let _ = std::fs::write(&master_playlist_path, m3u8);
 
     Some(master_playlist_path)
 }
 
+#[allow(dead_code)]
 pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
-    let safe_title = if game_title == "monitor" { "monitor".to_string() } else { clean_title(game_title) };
-    let root = get_storage_root();
-    let game_dir = root.join(&safe_title);
-
+    let game_dir = game_dir_for(game_title);
     if !game_dir.exists() { return None; }
 
-    let mut segment_map: std::collections::BTreeMap<u64, (std::time::SystemTime, std::path::PathBuf, f64)> = std::collections::BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(&game_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "m4s") {
-                if let Some(duration) = get_segment_duration(&path) {
-                    if let Ok(meta) = entry.metadata() {
-                        let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        if let Some(idx) = parse_segment_index(&name) {
-                            match segment_map.entry(idx) {
-                                std::collections::btree_map::Entry::Vacant(e) => { e.insert((modified, path, duration)); }
-                                std::collections::btree_map::Entry::Occupied(mut e) => {
-                                    if modified > e.get().0 {
-                                        e.insert((modified, path, duration));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let segment_map = scan_segments(&game_dir);
     if segment_map.is_empty() { return None; }
 
     let ffconcat_path = game_dir.join("view.ffconcat");
-    let mut ffconcat_content = String::from("ffconcat version 1.0\n");
-
-    for (_, (_, path, duration)) in &segment_map {
+    let mut content = String::from("ffconcat version 1.0\n");
+    for (_, (_, path, duration, _)) in &segment_map {
         let file_name = match path.file_name() {
             Some(f) => f.to_string_lossy(),
             None => continue,
         };
-        ffconcat_content.push_str(&format!("file '{}'\nduration {}\n", file_name, duration));
+        content.push_str(&format!("file '{}'\nduration {}\n", file_name, duration));
     }
 
-    if let Ok(_) = std::fs::write(&ffconcat_path, ffconcat_content) {
-        Some(ffconcat_path)
-    } else {
-        None
-    }
+    std::fs::write(&ffconcat_path, content).ok()?;
+    Some(ffconcat_path)
 }
 
 
@@ -806,6 +752,8 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
     use notify::{RecursiveMode, Watcher, Config};
     use std::sync::mpsc::channel;
 
+    const CLEANUP_POLL_INTERVAL_SECS: u64 = 30;
+
     std::thread::Builder::new()
         .name("Luma Cleanup".to_string())
         .spawn(move || {
@@ -820,10 +768,8 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                 Ok(w) => w,
                 Err(e) => {
                     log::error!("[Cleanup] Failed to create file watcher: {}. Falling back to polling.", e);
-                    // Fall back to polling every 30 seconds
                     loop {
-                        std::thread::sleep(std::time::Duration::from_secs(30));
-                        // Re-run cleanup logic would go here, but for now just wait
+                        std::thread::sleep(std::time::Duration::from_secs(CLEANUP_POLL_INTERVAL_SECS));
                     }
                 }
             };
@@ -833,9 +779,9 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                 // 1. Wait for the first event (completely idle until then)
                 match rx.recv() {
                     Ok(_) => {
-                        // 2. Debounce: Wait a few seconds to let all simultaneous segment 
-                        // closures (A/V tracks) finish so we only scan once.
-                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        // Debounce: let simultaneous segment closures finish before scanning.
+                        const DEBOUNCE_SECS: u64 = 5;
+                        std::thread::sleep(std::time::Duration::from_secs(DEBOUNCE_SECS));
                         
                         // Drain any other pending events in the channel
                         while let Ok(_) = rx.try_recv() {}
@@ -885,12 +831,12 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                                         // 3. ENFORCE PER-GAME RETENTION (Duration-based)
                                         let mut total_game_duration = 0.0;
                                         for (path, _, _) in &game_segments {
-                                            total_game_duration += get_segment_duration(path).unwrap_or(6.0);
+                                            total_game_duration += get_segment_duration(path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                                         }
                                         
                                         for (path, _, _) in game_segments.iter() {
                                             if total_game_duration <= retention_secs { break; }
-                                            let dur = get_segment_duration(path).unwrap_or(6.0);
+                                            let dur = get_segment_duration(path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                                             let _ = std::fs::remove_file(path);
                                             total_game_duration -= dur;
                                         }

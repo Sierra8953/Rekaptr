@@ -32,6 +32,8 @@ Thumbs.db
 /bin/*.dll
 ffmpeg.exe
 libmpv-2.dll
+/dist/
+/gstreamer-1.0-uwp-universal-1.20.7/
 
 # Environments
 .env

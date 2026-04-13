@@ -1,22 +1,21 @@
+mod general;
+mod video;
+mod audio;
+mod hotkeys;
+mod storage;
+mod about;
+
 use gpui::*;
 use adabraka_ui::prelude::*;
-use adabraka_ui::charts::pie_chart::{PieChart, PieChartSegment, PieChartSize, PieChartLabelPosition};
 use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
-use crate::ui::LumaWorkspace;
+use crate::ui::{LumaWorkspace, SettingsTab};
 use crate::config::VideoSettings;
 use gstreamer::prelude::*;
 use gstreamer;
-use gstreamer_app;
 use std::sync::Arc;
 
-const TAB_GENERAL: usize = 0;
-const TAB_VIDEO: usize = 1;
-const TAB_AUDIO: usize = 2;
-const TAB_HOTKEYS: usize = 3;
-const TAB_STORAGE: usize = 4;
-const TAB_ABOUT: usize = 5;
-
 /// Format a Win32 VK code + modifier bitmask into a human-readable string.
+#[allow(dead_code)]
 fn format_hotkey(vk: u32, modifiers: u32) -> String {
     let mut parts = Vec::new();
     if modifiers & 2 != 0 { parts.push("Ctrl".to_string()); }
@@ -112,15 +111,15 @@ fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
 impl LumaWorkspace {
     pub fn render_settings_view(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        
+
         let clips_gb = self.storage_clips_mb as f64 / 1024.0;
         let sessions_gb = self.storage_sessions_mb as f64 / 1024.0;
-        let total_gb = clips_gb + sessions_gb;
-        
+        let _total_gb = clips_gb + sessions_gb;
+
         let view_handle = cx.entity().downgrade();
-        let is_calculating = self.is_calculating_storage;
-        let max_buf_gb = self.form_max_buffer_size_gb;
-        let current_tab = self.settings_tab_index;
+        let _is_calculating = self.is_calculating_storage;
+        let _max_buf_gb = self.form_max_buffer_size_gb;
+        let current_tab = self.settings_tab;
 
         let mut root = div()
             .id("settings-view")
@@ -186,24 +185,16 @@ impl LumaWorkspace {
                             .flex_1()
                             .h_0()
                             .px_8()
-                            .child({
-                                let tabs: Vec<(usize, &str, &str)> = vec![
-                                    (TAB_GENERAL, "settings", "General"),
-                                    (TAB_VIDEO, "video", "Video"),
-                                    (TAB_AUDIO, "mic", "Audio"),
-                                    (TAB_HOTKEYS, "keyboard", "Hotkeys"),
-                                    (TAB_STORAGE, "folder", "Storage"),
-                                    (TAB_ABOUT, "info", "About"),
-                                ];
+                            .child(
                                 HStack::new()
                                     .gap_4()
                                     .border_b_1()
                                     .border_color(theme.tokens.border)
-                                    .children(tabs.into_iter().map(|(idx, icon, label)| {
-                                        let is_active = current_tab == idx;
+                                    .children(SettingsTab::ALL.iter().map(|&tab| {
+                                        let is_active = current_tab == tab;
                                         let view_handle = view_handle.clone();
                                         div()
-                                            .id(SharedString::from(format!("tab-{}", label)))
+                                            .id(SharedString::from(format!("tab-{}", tab.label())))
                                             .flex()
                                             .items_center()
                                             .gap_2()
@@ -216,9 +207,9 @@ impl LumaWorkspace {
                                             .hover(|s| s.text_color(theme.tokens.primary))
                                             .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                                                 let _ = view_handle.update(cx, |this, cx| {
-                                                    this.settings_tab_index = idx;
+                                                    this.settings_tab = tab;
                                                     this.hotkey_listening = None;
-                                                    if idx != TAB_AUDIO {
+                                                    if tab != SettingsTab::Audio {
                                                         if let Some(pipeline) = this.mic_monitor_pipeline.take() {
                                                             let _ = pipeline.set_state(gstreamer::State::Null);
                                                             if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
@@ -229,10 +220,10 @@ impl LumaWorkspace {
                                                     cx.notify();
                                                 });
                                             })
-                                            .child(Icon::new(icon).size(px(16.0)))
-                                            .child(label.to_string())
+                                            .child(Icon::new(tab.icon()).size(px(16.0)))
+                                            .child(tab.label())
                                     }))
-                            })
+                            )
                             .child(
                                 div()
                                     .id("settings-scroll-area")
@@ -242,19 +233,51 @@ impl LumaWorkspace {
                                     .pb_8()
                                     .overflow_y_scroll()
                                     .child(match current_tab {
-                                        TAB_GENERAL => self.render_settings_general(&theme, &view_handle, cx).into_any_element(),
-                                        TAB_VIDEO => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
-                                        TAB_AUDIO => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
-                                        TAB_HOTKEYS => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
-                                        TAB_STORAGE => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
-                                        TAB_ABOUT => self.render_settings_about(&theme).into_any_element(),
-                                        _ => div().into_any_element(),
+                                        SettingsTab::General => self.render_settings_general(&theme, &view_handle, cx).into_any_element(),
+                                        SettingsTab::Video => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
+                                        SettingsTab::Audio => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
+                                        SettingsTab::Hotkeys => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
+                                        SettingsTab::Storage => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
+                                        SettingsTab::About => self.render_settings_about(&theme).into_any_element(),
                                     })
                             )
                     )
             )
     }
 
+    pub fn sync_settings_form_from_config(&mut self, config: &crate::config::AppConfig) {
+        self.settings_form_encoder = config.global_video.encoder.clone();
+        self.settings_form_resolution = config.global_video.resolution.clone();
+        self.settings_form_fps = config.global_video.fps;
+        self.settings_form_rate_control = config.global_video.rate_control_index;
+        self.settings_form_bitrate = config.global_video.bitrate_kbps;
+        self.settings_form_cq = config.global_video.cq_level;
+        self.settings_form_retention = config.global_video.retention_minutes;
+        self.settings_form_preset = config.global_video.preset.clone();
+        self.settings_form_gop = config.global_video.gop_size;
+        self.settings_form_bframes = config.global_video.bframes;
+        self.settings_form_zero_latency = config.global_video.zero_latency;
+        self.settings_form_lookahead = config.global_video.lookahead;
+        self.settings_form_lookahead_frames = config.global_video.lookahead_frames;
+        self.settings_form_spatial_aq = config.global_video.spatial_aq;
+        self.settings_form_temporal_aq = config.global_video.temporal_aq;
+        self.settings_form_mic_device = config.mic_settings.device_name.clone();
+        self.settings_form_mic_force_mono = config.mic_settings.force_mono;
+        self.settings_form_mic_gain = config.mic_settings.gain_db;
+        self.settings_form_mic_noise_suppression = config.mic_settings.noise_suppression;
+        self.settings_form_mic_gate_enabled = config.mic_settings.noise_gate_enabled;
+        self.settings_form_mic_gate_threshold = config.mic_settings.noise_gate_threshold;
+        self.settings_form_mic_compressor_enabled = config.mic_settings.compressor_enabled;
+        self.settings_form_mic_compressor_threshold = config.mic_settings.compressor_threshold;
+        self.settings_form_mic_compressor_ratio = config.mic_settings.compressor_ratio;
+        self.settings_form_mic_limiter_enabled = config.mic_settings.limiter_enabled;
+        self.settings_form_mic_limiter_threshold = config.mic_settings.limiter_threshold;
+        self.settings_form_auto_delete_enabled = config.auto_delete_clips_days.is_some();
+        self.settings_form_auto_delete_days = config.auto_delete_clips_days.unwrap_or(30);
+        self.settings_form_export_format = config.default_export_format.clone();
+    }
+
+    #[allow(dead_code)]
     pub fn refresh_storage_info(&mut self, cx: &mut Context<Self>) {
         if self.is_calculating_storage {
             return;
@@ -263,25 +286,27 @@ impl LumaWorkspace {
         let task = cx.background_spawn(async move {
             let root = crate::utils::get_storage_root();
             let clips_dir = root.join("Clips");
-            
+
             let clips_size = crate::utils::get_dir_size(&clips_dir).unwrap_or(0);
             let mut sessions_size = 0;
-            
+
             if let Ok(entries) = std::fs::read_dir(&root) {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let path = entry.path();
                     if path.is_dir() {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        if name != "Clips" && name != "Cache" && !name.starts_with(".") {
+                        let name_lower = name.to_lowercase();
+                        if name != "Clips" && name != "Cache" && !name.starts_with(".")
+                           && name_lower != "target" && name_lower != "dist"
+                           && !name_lower.contains("gstreamer") {
                             sessions_size += crate::utils::get_dir_size(&path).unwrap_or(0);
                         }
                     }
                 }
             }
-            
             (clips_size, sessions_size)
         });
-        
+
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
@@ -301,7 +326,7 @@ impl LumaWorkspace {
         let theme = use_theme();
         let source_name = source.to_string();
         let active_tab = self.form_active_tab;
-        
+
         let windows = self.app_state.available_windows.lock().clone();
 
         div()
@@ -683,7 +708,7 @@ impl LumaWorkspace {
                                                         break;
                                                     }
                                                 }
-                                                
+
                                                 if let Some(id) = session_id_to_remove {
                                                     this.session_to_delete = Some(id);
                                                     this.advanced_settings_source = None;
@@ -730,7 +755,7 @@ impl LumaWorkspace {
                                                         temporal_aq: this.form_temporal_aq,
                                                         artwork_path: None,
                                                     };
-                                                    config.global_audio_tracks = this.form_audio_tracks.clone();  
+                                                    config.global_audio_tracks = this.form_audio_tracks.clone();
                                                 } else {
                                                     if let Some(settings) = config.game_registry.get_mut(&source_name) {
                                                         settings.video_overrides = Some(VideoSettings {
@@ -766,781 +791,11 @@ impl LumaWorkspace {
                     )
             )
     }
-
-    // ── General Tab ─────────────────────────────────────────────────────
-
-    fn render_settings_general(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
-        let config = crate::config::AppConfig::load();
-        let vh = view_handle.clone();
-
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Application"))
-                        .child(settings_row(theme, "Start with Windows", Option::<String>::None,
-                            settings_toggle("toggle-startup", crate::utils::is_startup_with_windows(), vh.clone(), |_this, cx| {
-                                let new_state = !crate::utils::is_startup_with_windows();
-                                crate::utils::set_startup_with_windows(new_state);
-                                let mut config = crate::config::AppConfig::load();
-                                config.startup_with_windows = new_state;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Minimize to Tray", Option::<String>::None,
-                            settings_toggle("toggle-tray", config.minimize_to_tray, vh.clone(), |_this, cx| {
-                                let mut config = crate::config::AppConfig::load();
-                                config.minimize_to_tray = !config.minimize_to_tray;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Check for Updates", Option::<String>::None,
-                            settings_toggle("toggle-updates", config.check_for_updates, vh.clone(), |_this, cx| {
-                                let mut config = crate::config::AppConfig::load();
-                                config.check_for_updates = !config.check_for_updates;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                )
-            )
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Storage & Buffer"))
-                        .child(settings_row(theme, "Base Storage Path", Some(config.storage_path.clone()),
-                            Button::new("change-storage", "Change")
-                                .variant(ButtonVariant::Outline)
-                                .size(ButtonSize::Sm)
-                                .on_click({
-                                    let vh = vh.clone();
-                                    move |_, _, cx| {
-                                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                                            let mut config = crate::config::AppConfig::load();
-                                            config.storage_path = path.to_string_lossy().to_string();
-                                            config.save();
-                                            let _ = vh.update(cx, |_, cx| cx.notify());
-                                        }
-                                    }
-                                })
-                        ))
-                        .child(settings_row(theme, "Buffer Size Limit", Some(format!("{} GB", self.form_max_buffer_size_gb)),
-                            HStack::new()
-                                .gap_2()
-                                .child(
-                                    Button::new("buf-dec", "-")
-                                        .variant(ButtonVariant::Outline)
-                                        .size(ButtonSize::Sm)
-                                        .on_click({
-                                            let vh = vh.clone();
-                                            move |_, _, cx| {
-                                                let _ = vh.update(cx, |this, cx| {
-                                                    this.form_max_buffer_size_gb = (this.form_max_buffer_size_gb - 5).max(10);
-                                                    let mut config = crate::config::AppConfig::load();
-                                                    config.max_buffer_size_gb = this.form_max_buffer_size_gb;
-                                                    config.save();
-                                                    cx.notify();
-                                                });
-                                            }
-                                        })
-                                )
-                                .child(
-                                    Button::new("buf-inc", "+")
-                                        .variant(ButtonVariant::Outline)
-                                        .size(ButtonSize::Sm)
-                                        .on_click({
-                                            let vh = vh.clone();
-                                            move |_, _, cx| {
-                                                let _ = vh.update(cx, |this, cx| {
-                                                    this.form_max_buffer_size_gb = (this.form_max_buffer_size_gb + 5).min(500);
-                                                    let mut config = crate::config::AppConfig::load();
-                                                    config.max_buffer_size_gb = this.form_max_buffer_size_gb;
-                                                    config.save();
-                                                    cx.notify();
-                                                });
-                                            }
-                                        })
-                                )
-                        ))
-                )
-            )
-    }
-
-    // ── Video Tab ──────────────────────────────────────────────────────
-
-    fn render_settings_video(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
-        let vh = view_handle.clone();
-
-        let encoders: Vec<(&str, &str)> = vec![
-            ("h264_nvenc", "H.264"),
-            ("hevc_nvenc", "HEVC"),
-            ("av1_nvenc", "AV1"),
-            ("x264", "x264"),
-        ];
-
-        let resolutions = vec!["Original", "3840x2160", "2560x1440", "1920x1080", "1280x720"];
-        let fps_options: Vec<i32> = vec![30, 60, 120, 144, 165, 240];
-        let presets = vec!["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
-
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Primary Encoder"))
-                        .child(settings_row(theme, "Encoder", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(encoders.into_iter().map(|(id, label)| {
-                                    let vh = vh.clone();
-                                    let id_str = id.to_string();
-                                    let is_active = self.settings_form_encoder == id;
-                                    Button::new(SharedString::from(format!("enc-{}", id)), label)
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_encoder = id_str.clone();
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.encoder = id_str.clone();
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
-                        ))
-                        .child(settings_row(theme, "Resolution", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(resolutions.into_iter().map(|res| {
-                                    let vh = vh.clone();
-                                    let res_str = res.to_string();
-                                    let is_active = self.settings_form_resolution == res;
-                                    Button::new(SharedString::from(format!("res-{}", res)), res)
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_resolution = res_str.clone();
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.resolution = res_str.clone();
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
-                        ))
-                        .child(settings_row(theme, "Framerate", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(fps_options.into_iter().map(|fps| {
-                                    let vh = vh.clone();
-                                    let is_active = self.settings_form_fps == fps;
-                                    Button::new(SharedString::from(format!("fps-{}", fps)), format!("{}", fps))
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_fps = fps;
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.fps = fps;
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
-                        ))
-                )
-            )
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Rate Control"))
-                        .child(settings_row(theme, "Bitrate (kbps)", Some(format!("{} kbps", self.settings_form_bitrate)),
-                            stepper("bit", self.settings_form_bitrate, 1000, 100000, 1000, vh.clone(), |this, val, cx| {
-                                this.settings_form_bitrate = val;
-                                let mut config = crate::config::AppConfig::load();
-                                config.global_video.bitrate_kbps = val;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "CQ Level", Some(format!("{}", self.settings_form_cq)),
-                            stepper("cq", self.settings_form_cq, 0, 51, 1, vh.clone(), |this, val, cx| {
-                                this.settings_form_cq = val;
-                                let mut config = crate::config::AppConfig::load();
-                                config.global_video.cq_level = val;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Replay Retention", Some(format!("{} minutes", self.settings_form_retention)),
-                            stepper("ret", self.settings_form_retention, 1, 120, 1, vh.clone(), |this, val, cx| {
-                                this.settings_form_retention = val;
-                                let mut config = crate::config::AppConfig::load();
-                                config.global_video.retention_minutes = val;
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                )
-            )
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(
-                            HStack::new()
-                                .justify_between()
-                                .items_center()
-                                .child(section_header("Advanced"))
-                                .child(
-                                    Button::new("toggle-adv-video", if self.settings_show_advanced_video { "Hide" } else { "Show" })
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Sm)
-                                        .on_click({
-                                            let vh = vh.clone();
-                                            move |_, _, cx| {
-                                                let _ = vh.update(cx, |this, cx| {
-                                                    this.settings_show_advanced_video = !this.settings_show_advanced_video;
-                                                    cx.notify();
-                                                });
-                                            }
-                                        })
-                                )
-                        )
-                        .when(self.settings_show_advanced_video, |this| {
-                            this
-                                .child(settings_row(theme, "Preset", Option::<String>::None,
-                                    div().flex().flex_wrap().gap_2()
-                                        .children(presets.into_iter().map(|p| {
-                                            let vh = vh.clone();
-                                            let ps = p.to_string();
-                                            let is_active = self.settings_form_preset == p;
-                                            Button::new(SharedString::from(format!("preset-{}", p)), p)
-                                                .size(ButtonSize::Sm)
-                                                .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                .on_click(move |_, _, cx| {
-                                                    let _ = vh.update(cx, |this, cx| {
-                                                        this.settings_form_preset = ps.clone();
-                                                        let mut config = crate::config::AppConfig::load();
-                                                        config.global_video.preset = ps.clone();
-                                                        config.save();
-                                                        cx.notify();
-                                                    });
-                                                })
-                                        }))
-                                ))
-                                .child(settings_row(theme, "GOP Size", Some(format!("{}", self.settings_form_gop)),
-                                    stepper("gop", self.settings_form_gop, 0, 600, 10, vh.clone(), |this, val, cx| {
-                                        this.settings_form_gop = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.gop_size = val;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "B-Frames", Some(format!("{}", self.settings_form_bframes)),
-                                    stepper("bf", self.settings_form_bframes, 0, 4, 1, vh.clone(), |this, val, cx| {
-                                        this.settings_form_bframes = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.bframes = val;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "Zero Latency", Option::<String>::None,
-                                    settings_toggle("toggle-zl", self.settings_form_zero_latency, vh.clone(), |this, cx| {
-                                        this.settings_form_zero_latency = !this.settings_form_zero_latency;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.zero_latency = this.settings_form_zero_latency;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "Lookahead", Option::<String>::None,
-                                    settings_toggle("toggle-la", self.settings_form_lookahead, vh.clone(), |this, cx| {
-                                        this.settings_form_lookahead = !this.settings_form_lookahead;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.lookahead = this.settings_form_lookahead;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .when(self.settings_form_lookahead, |this| {
-                                    this.child(settings_row(theme, "Lookahead Frames", Some(format!("{}", self.settings_form_lookahead_frames)),
-                                        stepper("laf", self.settings_form_lookahead_frames, 0, 32, 1, vh.clone(), |this, val, cx| {
-                                            this.settings_form_lookahead_frames = val;
-                                            let mut config = crate::config::AppConfig::load();
-                                            config.global_video.lookahead_frames = val;
-                                            config.save();
-                                            cx.notify();
-                                        })
-                                    ))
-                                })
-                                .child(settings_row(theme, "Spatial AQ", Option::<String>::None,
-                                    settings_toggle("toggle-saq", self.settings_form_spatial_aq, vh.clone(), |this, cx| {
-                                        this.settings_form_spatial_aq = !this.settings_form_spatial_aq;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.spatial_aq = this.settings_form_spatial_aq;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "Temporal AQ", Option::<String>::None,
-                                    settings_toggle("toggle-taq", self.settings_form_temporal_aq, vh.clone(), |this, cx| {
-                                        this.settings_form_temporal_aq = !this.settings_form_temporal_aq;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.temporal_aq = this.settings_form_temporal_aq;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                        })
-                )
-            )
-    }
-
-    // ── Audio Tab ──────────────────────────────────────────────────────
-
-    fn render_settings_audio(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
-        let vh = view_handle.clone();
-        let mut devices_raw = crate::engine::enumerate_audio_devices(true);
-        if devices_raw.is_empty() {
-            devices_raw.push(("default".to_string(), "Default".to_string()));
-        }
-        let devices = devices_raw;
-
-        let is_monitoring = self.mic_monitor_pipeline.is_some();
-
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            // Microphone Source card
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Microphone Source"))
-                        .child(settings_row(theme, "Input Device", Option::<String>::None,
-                            {
-                                // Resolve the stored device ID to a friendly name for display
-                                let display_name = devices.iter()
-                                    .find(|(id, _)| *id == self.settings_form_mic_device)
-                                    .map(|(_, label)| label.clone())
-                                    .unwrap_or_else(|| self.settings_form_mic_device.clone());
-                                adabraka_ui::components::dropdown::Dropdown::new(self.dd_mic.clone(),
-                                    Button::new("trigger-mic", display_name).size(ButtonSize::Sm).variant(ButtonVariant::Outline))
-                                    .items(devices.into_iter().map(|(id, label)| {
-                                        let vh = vh.clone();
-                                        let dev_id = id.clone();
-                                        DropdownItem::new(id, label)
-                                            .on_click(move |_, cx| {
-                                                let _ = vh.update(cx, |this, cx| {
-                                                    this.settings_form_mic_device = dev_id.clone();
-                                                    let mut config = crate::config::AppConfig::load();
-                                                    config.mic_settings.device_name = dev_id.clone();
-                                                    config.save();
-                                                    cx.notify();
-                                                });
-                                            })
-                                    }).collect::<Vec<_>>())
-                            }
-                        ))
-                        .child(settings_row(theme, "Force Mono", Option::<String>::None,
-                            settings_toggle("toggle-mono", self.settings_form_mic_force_mono, vh.clone(), |this, cx| {
-                                this.settings_form_mic_force_mono = !this.settings_form_mic_force_mono;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.force_mono = this.settings_form_mic_force_mono;
-                                config.save();
-                                this.notify_mic_dsp_changed();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Gain (dB)", Some(format!("{:.1} dB", self.settings_form_mic_gain)),
-                            stepper_f32("gain", self.settings_form_mic_gain, -20.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
-                                this.settings_form_mic_gain = val;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.gain_db = val;
-                                config.save();
-                                this.notify_mic_dsp_changed();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Monitor Mic", Some(if is_monitoring { "Listening..." } else { "Test your mic with current settings" }),
-                            Button::new("toggle-monitor", if is_monitoring { "Stop" } else { "Monitor" })
-                                .variant(if is_monitoring { ButtonVariant::Destructive } else { ButtonVariant::Outline })
-                                .size(ButtonSize::Sm)
-                                .on_click({
-                                    let vh = vh.clone();
-                                    move |_, _, cx| {
-                                        let _ = vh.update(cx, |this, cx| {
-                                            if let Some(pipeline) = this.mic_monitor_pipeline.take() {
-                                                let _ = pipeline.set_state(gstreamer::State::Null);
-                                                // Unsubscribe from mic provider
-                                                if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
-                                                    provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);
-                                                }
-                                                cx.notify();
-                                                return;
-                                            }
-                                            // Build a monitor pipeline that receives DSP-processed audio
-                                            // from the mic provider via appsrc -> wasapi2sink.
-                                            let pipeline_str = "appsrc name=monitor_src format=time is-live=true do-timestamp=true ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! queue max-size-time=200000000 ! audioconvert ! audioresample ! wasapi2sink low-latency=true provide-clock=true";
-                                            log::info!("[MicMonitor] Launching pipeline: {}", pipeline_str);
-                                            match gstreamer::parse::launch(pipeline_str) {
-                                                Ok(element) => {
-                                                    if let Ok(pipeline) = element.downcast::<gstreamer::Pipeline>() {
-                                                        // Subscribe to the mic provider's DSP-processed output
-                                                        if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
-                                                            if let Some(appsrc) = pipeline.by_name("monitor_src")
-                                                                .and_then(|e| e.downcast::<gstreamer_app::AppSrc>().ok())
-                                                            {
-                                                                let monitor_id = 0xFFFF_FFFF_FFFF_FFFFu64; // Reserved ID for monitor
-                                                                provider.subscribers.insert(monitor_id, appsrc);
-                                                                let _ = pipeline.set_state(gstreamer::State::Playing);
-                                                                this.mic_monitor_pipeline = Some(pipeline);
-                                                                log::info!("[MicMonitor] Pipeline started (receiving from mic provider)");
-                                                            }
-                                                        } else {
-                                                            log::error!("[MicMonitor] Mic provider not running");
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    log::error!("[MicMonitor] Failed to create pipeline: {}", e);
-                                                }
-                                            }
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                        ))
-                )
-            )
-            // Processing & FX card
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Processing & FX"))
-                        .child(settings_row(theme, "Noise Suppression (RNNoise)", Some("Requires mic restart"),
-                            settings_toggle("toggle-ns", self.settings_form_mic_noise_suppression, vh.clone(), |this, cx| {
-                                this.settings_form_mic_noise_suppression = !this.settings_form_mic_noise_suppression;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.noise_suppression = this.settings_form_mic_noise_suppression;
-                                config.save();
-                                // Restart the mic provider since audiornnoise can only be
-                                // added/removed by rebuilding the GStreamer pipeline.
-                                this.restart_mic_provider();
-                                cx.notify();
-                            })
-                        ))
-                        .child(settings_row(theme, "Noise Gate", Option::<String>::None,
-                            settings_toggle("toggle-gate", self.settings_form_mic_gate_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_gate_enabled = !this.settings_form_mic_gate_enabled;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.noise_gate_enabled = this.settings_form_mic_gate_enabled;
-                                config.save();
-                                this.notify_mic_dsp_changed();
-                                cx.notify();
-                            })
-                        ))
-                        .when(self.settings_form_mic_gate_enabled, |this| {
-                            this.child(settings_row(theme, "Gate Threshold", Some(format!("{:.0} dB", self.settings_form_mic_gate_threshold)),
-                                stepper_f32("gt", self.settings_form_mic_gate_threshold, -80.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
-                                    this.settings_form_mic_gate_threshold = val;
-                                    let mut config = crate::config::AppConfig::load();
-                                    config.mic_settings.noise_gate_threshold = val;
-                                    config.save();
-                                    this.notify_mic_dsp_changed();
-                                    cx.notify();
-                                })
-                            ))
-                        })
-                )
-            )
-            // Compressor card
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Compressor"))
-                        .child(settings_row(theme, "Enable Compressor", Option::<String>::None,
-                            settings_toggle("toggle-comp", self.settings_form_mic_compressor_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_compressor_enabled = !this.settings_form_mic_compressor_enabled;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.compressor_enabled = this.settings_form_mic_compressor_enabled;
-                                config.save();
-                                this.notify_mic_dsp_changed();
-                                cx.notify();
-                            })
-                        ))
-                        .when(self.settings_form_mic_compressor_enabled, |this| {
-                            this
-                                .child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings_form_mic_compressor_threshold)),
-                                    stepper_f32("ct", self.settings_form_mic_compressor_threshold, -60.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
-                                        this.settings_form_mic_compressor_threshold = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.mic_settings.compressor_threshold = val;
-                                        config.save();
-                                        this.notify_mic_dsp_changed();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "Ratio", Some(format!("{:.1}:1", self.settings_form_mic_compressor_ratio)),
-                                    stepper_f32("cr", self.settings_form_mic_compressor_ratio, 1.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
-                                        this.settings_form_mic_compressor_ratio = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.mic_settings.compressor_ratio = val;
-                                        config.save();
-                                        this.notify_mic_dsp_changed();
-                                        cx.notify();
-                                    })
-                                ))
-                        })
-                )
-            )
-            // Limiter card
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Limiter"))
-                        .child(settings_row(theme, "Enable Limiter", Option::<String>::None,
-                            settings_toggle("toggle-lim", self.settings_form_mic_limiter_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_limiter_enabled = !this.settings_form_mic_limiter_enabled;
-                                let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.limiter_enabled = this.settings_form_mic_limiter_enabled;
-                                config.save();
-                                this.notify_mic_dsp_changed();
-                                cx.notify();
-                            })
-                        ))
-                        .when(self.settings_form_mic_limiter_enabled, |this| {
-                            this.child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings_form_mic_limiter_threshold)),
-                                stepper_f32("lt", self.settings_form_mic_limiter_threshold, -30.0, 0.0, 0.5, vh.clone(), |this, val, cx| {
-                                    this.settings_form_mic_limiter_threshold = val;
-                                    let mut config = crate::config::AppConfig::load();
-                                    config.mic_settings.limiter_threshold = val;
-                                    config.save();
-                                    this.notify_mic_dsp_changed();
-                                    cx.notify();
-                                })
-                            ))
-                        })
-                )
-            )
-    }
-
-    // ── Hotkeys Tab ────────────────────────────────────────────────────
-
-    fn render_settings_hotkeys(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
-        let config = crate::config::AppConfig::load();
-        let vh = view_handle.clone();
-
-        let hotkey_slots = vec![
-            (0, "Toggle Recording", crate::hotkeys::vk_to_string(config.hotkeys.toggle_recording_vk, config.hotkeys.toggle_recording_mod)),
-            (1, "Save Instant Replay", crate::hotkeys::vk_to_string(config.hotkeys.save_clip_vk, config.hotkeys.save_clip_mod)),
-            (2, "Toggle Mic Mute", crate::hotkeys::vk_to_string(config.hotkeys.toggle_mic_vk, config.hotkeys.toggle_mic_mod)),
-            (3, "Push-to-Talk", crate::hotkeys::vk_to_string(config.hotkeys.push_to_talk_vk, config.hotkeys.push_to_talk_mod)),
-            (4, "Mark Flag", crate::hotkeys::vk_to_string(config.hotkeys.marker_flag_vk, config.hotkeys.marker_flag_mod)),
-            (5, "Mark Kill", crate::hotkeys::vk_to_string(config.hotkeys.marker_kill_vk, config.hotkeys.marker_kill_mod)),
-        ];
-
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Global Hotkeys"))
-                        .children(hotkey_slots.into_iter().map(|(slot, label, current)| {
-                            let vh = vh.clone();
-                            let is_listening = self.hotkey_listening == Some(slot);
-                            let current_str = current.clone();
-
-                            settings_row(theme, label, Option::<String>::None,
-                                Button::new(SharedString::from(format!("hk-{}", slot)), if is_listening { "Listening...".to_string() } else { current_str })
-                                    .variant(if is_listening { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                    .size(ButtonSize::Sm)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = vh.update(cx, |this, _cx| {
-                                            this.hotkey_listening = Some(slot);
-                                        });
-                                    })
-                            )
-                        }))
-                )
-            )
-    }
-
-    // ── Storage Tab ────────────────────────────────────────────────────
-
-    fn render_settings_storage(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
-        let vh = view_handle.clone();
-
-        let clips_gb = self.storage_clips_mb as f64 / 1024.0;
-        let sessions_gb = self.storage_sessions_mb as f64 / 1024.0;
-        let total_gb = clips_gb + sessions_gb;
-
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_6()
-                        .child(section_header("Usage Statistics"))
-                        .child(
-                            HStack::new()
-                                .gap_8()
-                                .child(
-                                    VStack::new()
-                                        .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Total Usage"))
-                                        .child(div().text_3xl().font_weight(FontWeight::BOLD).child(format!("{:.1} GB", total_gb)))
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(
-                                            PieChart::new(vec![
-                                                PieChartSegment::new("Clips", clips_gb).color(theme.tokens.primary),
-                                                PieChartSegment::new("Sessions", sessions_gb).color(theme.tokens.muted),
-                                            ])
-                                            .size(PieChartSize::Custom(100))
-                                            .label_position(PieChartLabelPosition::None)
-                                        )
-                                )
-                        )
-                )
-            )
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Cleanup Rules"))
-                        .child(settings_row(theme, "Auto-Delete Old Clips", Option::<String>::None,
-                            settings_toggle("toggle-autodel", self.settings_form_auto_delete_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_auto_delete_enabled = !this.settings_form_auto_delete_enabled;
-                                let mut config = crate::config::AppConfig::load();
-                                config.auto_delete_clips_days = if this.settings_form_auto_delete_enabled { Some(this.settings_form_auto_delete_days) } else { None };
-                                config.save();
-                                cx.notify();
-                            })
-                        ))
-                        .when(self.settings_form_auto_delete_enabled, |this| {
-                            this.child(settings_row(theme, "Retention (Days)", Some(format!("{} days", self.settings_form_auto_delete_days)),
-                                HStack::new()
-                                    .gap_2()
-                                    .child(Button::new("days-dec", "-").size(ButtonSize::Sm).variant(ButtonVariant::Outline).on_click({
-                                        let vh = vh.clone();
-                                        move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_auto_delete_days = (this.settings_form_auto_delete_days - 1).max(1);
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.auto_delete_clips_days = Some(this.settings_form_auto_delete_days);
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        }
-                                    }))
-                                    .child(Button::new("days-inc", "+").size(ButtonSize::Sm).variant(ButtonVariant::Outline).on_click({
-                                        let vh = vh.clone();
-                                        move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_auto_delete_days = (this.settings_form_auto_delete_days + 1).min(365);
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.auto_delete_clips_days = Some(this.settings_form_auto_delete_days);
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        }
-                                    }))
-                            ))
-                        })
-                )
-            )
-    }
-
-    // ── About Tab ──────────────────────────────────────────────────────
-
-    fn render_settings_about(&self, theme: &Theme) -> impl IntoElement {
-        VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
-                    VStack::new()
-                        .p_12()
-                        .items_center()
-                        .gap_4()
-                        .child(
-                            div()
-                                .size(px(80.0))
-                                .rounded_2xl()
-                                .bg(theme.tokens.primary)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(Icon::new("play").size(px(40.0)).text_color(gpui::white()))
-                        )
-                        .child(
-                            VStack::new()
-                                .items_center()
-                                .child(div().text_2xl().font_weight(FontWeight::BOLD).child("Luma Replay"))
-                                .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Version 0.1.0 (Early Access)"))
-                        )
-                        .child(
-                            div()
-                                .max_w(px(400.0))
-                                .text_center()
-                                .text_sm()
-                                .text_color(theme.tokens.muted_foreground)
-                                .child("A high-performance gaming DVR and instant replay engine built with Rust and GPUI.")
-                        )
-                        .child(
-                            HStack::new()
-                                .gap_4()
-                                .mt_4()
-                                .child(Button::new("about-web", "Website").variant(ButtonVariant::Outline).size(ButtonSize::Sm))
-                                .child(Button::new("about-gh", "GitHub").variant(ButtonVariant::Outline).size(ButtonSize::Sm))
-                                .child(Button::new("about-discord", "Discord").variant(ButtonVariant::Outline).size(ButtonSize::Sm))
-                        )
-                )
-            )
-            .child(
-                div()
-                    .text_center()
-                    .text_xs()
-                    .text_color(theme.tokens.muted_foreground.opacity(0.5))
-                    .child("© 2024 Luma Research & Development. All rights reserved.")
-            )
-    }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Helpers ───────���──────────────────────────────────────────────────
 
-fn section_header(title: &str) -> impl IntoElement {
+pub(super) fn section_header(title: &str) -> impl IntoElement {
     div()
         .text_sm()
         .font_weight(FontWeight::BOLD)
@@ -1549,7 +804,7 @@ fn section_header(title: &str) -> impl IntoElement {
         .child(title.to_uppercase())
 }
 
-fn settings_row(theme: &Theme, label: impl Into<SharedString>, description: Option<impl Into<SharedString>>, control: impl IntoElement) -> impl IntoElement {
+pub(super) fn settings_row(theme: &Theme, label: impl Into<SharedString>, description: Option<impl Into<SharedString>>, control: impl IntoElement) -> impl IntoElement {
     HStack::new()
         .justify_between()
         .items_center()
@@ -1566,7 +821,7 @@ fn settings_row(theme: &Theme, label: impl Into<SharedString>, description: Opti
         .child(control)
 }
 
-fn settings_toggle<V: 'static>(
+pub(super) fn settings_toggle<V: 'static>(
     id: impl Into<ElementId>,
     value: bool,
     view_handle: WeakEntity<V>,
@@ -1586,7 +841,7 @@ fn settings_toggle<V: 'static>(
         })
 }
 
-fn stepper<V: 'static>(
+pub(super) fn stepper<V: 'static>(
     prefix: &str,
     value: i32,
     min: i32,
@@ -1625,7 +880,7 @@ fn stepper<V: 'static>(
         )
 }
 
-fn stepper_f32<V: 'static>(
+pub(super) fn stepper_f32<V: 'static>(
     prefix: &str,
     value: f32,
     min: f32,

@@ -43,14 +43,14 @@ impl LumaWorkspace {
         let rec_disk_rate = *self.app_state.recording.rec_stats.disk_write_mbps.lock();
         let rec_segments = self.app_state.recording.rec_stats.segments_written.load(std::sync::atomic::Ordering::Relaxed);
 
-        // Size the video so header + video + controls card all fit in viewport.
-        // Controls card: 32px padding + 16px gap + 44px button bar + 48px video track
-        //   + (36px per audio track) = ~140 + n*36
-        // Header row ~48px, outer padding p_8 top+bottom = 64px, gap_6 *2 = 48px
+        const CONTROLS_BASE_PX: f32 = 140.0;  // padding + gap + button bar + video track
+        const AUDIO_TRACK_PX: f32 = 36.0;
+        const CHROME_PX: f32 = 160.0;         // header + outer padding + gaps
+
         let audio_tracks = self.get_current_audio_tracks();
         let enabled_track_count = audio_tracks.iter().filter(|t| t.enabled).count();
-        let controls_h = px(140.0 + (enabled_track_count as f32 * 36.0));
-        let chrome_h = px(160.0); // header + padding + gaps
+        let controls_h = px(CONTROLS_BASE_PX + (enabled_track_count as f32 * AUDIO_TRACK_PX));
+        let chrome_h = px(CHROME_PX);
         let video_h = (window.viewport_size().height - chrome_h - controls_h).max(px(150.0));
 
         div()

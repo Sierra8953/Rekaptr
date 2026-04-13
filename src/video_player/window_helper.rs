@@ -69,7 +69,7 @@ impl VideoWindow {
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
             );
 
-            ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_SHOW);
 
             Ok(Self { hwnd })
         }

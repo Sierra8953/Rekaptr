@@ -44,6 +44,7 @@ impl GameDatabase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_all_sessions(&self) -> Result<Vec<(u64, f64)>> {
         let mut stmt = self.conn.prepare("SELECT id, duration FROM sessions ORDER BY id ASC")?;
         let rows = stmt.query_map([], |row| {
@@ -57,6 +58,7 @@ impl GameDatabase {
         Ok(results)
     }
 
+    #[allow(dead_code)]
     pub fn get_session_duration(&self, id: u64) -> Result<Option<f64>> {
         let mut stmt = self.conn.prepare("SELECT duration FROM sessions WHERE id = ?1")?;
         let mut rows = stmt.query(params![id])?;

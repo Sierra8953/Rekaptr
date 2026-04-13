@@ -1,6 +1,5 @@
 use std::sync::mpsc;
 
-/// Actions that can be triggered by global hotkeys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
     ToggleRecording,
@@ -13,14 +12,22 @@ pub enum HotkeyAction {
     MarkerHighlight,
 }
 
-const HOTKEY_ID_TOGGLE_RECORDING: i32 = 1;
-const HOTKEY_ID_SAVE_CLIP: i32 = 2;
-const HOTKEY_ID_TOGGLE_MIC: i32 = 3;
-const HOTKEY_ID_PUSH_TO_TALK: i32 = 4;
-const HOTKEY_ID_MARKER_FLAG: i32 = 5;
-const HOTKEY_ID_MARKER_KILL: i32 = 6;
-const HOTKEY_ID_MARKER_DEATH: i32 = 7;
-const HOTKEY_ID_MARKER_HIGHLIGHT: i32 = 8;
+struct HotkeyBinding {
+    id: i32,
+    action: HotkeyAction,
+    label: &'static str,
+}
+
+const BINDINGS: &[HotkeyBinding] = &[
+    HotkeyBinding { id: 1, action: HotkeyAction::ToggleRecording, label: "Toggle Recording" },
+    HotkeyBinding { id: 2, action: HotkeyAction::SaveClip,        label: "Save Clip" },
+    HotkeyBinding { id: 3, action: HotkeyAction::ToggleMic,       label: "Toggle Mic" },
+    HotkeyBinding { id: 4, action: HotkeyAction::PushToTalk,      label: "Push-to-Talk" },
+    HotkeyBinding { id: 5, action: HotkeyAction::MarkerFlag,      label: "Marker Flag" },
+    HotkeyBinding { id: 6, action: HotkeyAction::MarkerKill,      label: "Marker Kill" },
+    HotkeyBinding { id: 7, action: HotkeyAction::MarkerDeath,     label: "Marker Death" },
+    HotkeyBinding { id: 8, action: HotkeyAction::MarkerHighlight, label: "Marker Highlight" },
+];
 
 pub fn vk_to_string(vk: u32, modifiers: u32) -> String {
     if vk == 0 {
@@ -57,10 +64,23 @@ pub fn vk_to_string(vk: u32, modifiers: u32) -> String {
     res
 }
 
+/// Returns (modifiers, vk) for a binding from the config, by hotkey ID.
+fn get_binding_keys(hk: &crate::config::HotkeyConfig, id: i32) -> (u32, u32) {
+    match id {
+        1 => (hk.toggle_recording_mod, hk.toggle_recording_vk),
+        2 => (hk.save_clip_mod, hk.save_clip_vk),
+        3 => (hk.toggle_mic_mod, hk.toggle_mic_vk),
+        4 => (hk.push_to_talk_mod, hk.push_to_talk_vk),
+        5 => (hk.marker_flag_mod, hk.marker_flag_vk),
+        6 => (hk.marker_kill_mod, hk.marker_kill_vk),
+        7 => (hk.marker_death_mod, hk.marker_death_vk),
+        8 => (hk.marker_highlight_mod, hk.marker_highlight_vk),
+        _ => (0, 0),
+    }
+}
+
 /// Starts a background thread that registers global hotkeys and sends
 /// `HotkeyAction` messages when they are pressed.
-///
-/// Returns a `mpsc::Receiver` that the UI thread can poll for actions.
 pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
     let (tx, rx) = mpsc::channel();
 
@@ -70,72 +90,41 @@ pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
             unsafe {
                 use windows::Win32::UI::Input::KeyboardAndMouse::*;
                 use windows::Win32::UI::WindowsAndMessaging::*;
-                use windows::Win32::Foundation::*;
 
                 let config = crate::config::AppConfig::load();
                 let hk = &config.hotkeys;
 
-                // RegisterHotKey requires HOT_KEY_MODIFIERS
-                let reg = |id: i32, modifiers: u32, vk: u32| -> bool {
-                    if vk == 0 { return false; } // unbound
-                    RegisterHotKey(
+                for binding in BINDINGS {
+                    let (modifiers, vk) = get_binding_keys(hk, binding.id);
+                    if vk == 0 { continue; }
+                    let ok = RegisterHotKey(
                         None,
-                        id,
-                        HOT_KEY_MODIFIERS(modifiers | 0x4000), // MOD_NOREPEAT = 0x4000
+                        binding.id,
+                        HOT_KEY_MODIFIERS(modifiers | 0x4000),
                         vk,
-                    ).is_ok()
-                };
-
-                let ok1 = reg(HOTKEY_ID_TOGGLE_RECORDING, hk.toggle_recording_mod, hk.toggle_recording_vk);
-                let ok2 = reg(HOTKEY_ID_SAVE_CLIP, hk.save_clip_mod, hk.save_clip_vk);
-                let ok3 = reg(HOTKEY_ID_TOGGLE_MIC, hk.toggle_mic_mod, hk.toggle_mic_vk);
-                let ok4 = reg(HOTKEY_ID_PUSH_TO_TALK, hk.push_to_talk_mod, hk.push_to_talk_vk);
-                let ok5 = reg(HOTKEY_ID_MARKER_FLAG, hk.marker_flag_mod, hk.marker_flag_vk);
-                let ok6 = reg(HOTKEY_ID_MARKER_KILL, hk.marker_kill_mod, hk.marker_kill_vk);
-                let ok7 = reg(HOTKEY_ID_MARKER_DEATH, hk.marker_death_mod, hk.marker_death_vk);
-                let ok8 = reg(HOTKEY_ID_MARKER_HIGHLIGHT, hk.marker_highlight_mod, hk.marker_highlight_vk);
-
-                if ok1 { log::info!("[Hotkeys] Registered: Toggle Recording (vk=0x{:02X})", hk.toggle_recording_vk); }
-                else if hk.toggle_recording_vk != 0 { log::warn!("[Hotkeys] Failed to register Toggle Recording hotkey"); }
-                if ok2 { log::info!("[Hotkeys] Registered: Save Clip (vk=0x{:02X})", hk.save_clip_vk); }
-                if ok3 { log::info!("[Hotkeys] Registered: Toggle Mic (vk=0x{:02X})", hk.toggle_mic_vk); }
-                if ok4 { log::info!("[Hotkeys] Registered: Push-to-Talk (vk=0x{:02X})", hk.push_to_talk_vk); }
-                if ok5 { log::info!("[Hotkeys] Registered: Marker Flag (vk=0x{:02X})", hk.marker_flag_vk); }
-                if ok6 { log::info!("[Hotkeys] Registered: Marker Kill (vk=0x{:02X})", hk.marker_kill_vk); }
-                if ok7 { log::info!("[Hotkeys] Registered: Marker Death (vk=0x{:02X})", hk.marker_death_vk); }
-                if ok8 { log::info!("[Hotkeys] Registered: Marker Highlight (vk=0x{:02X})", hk.marker_highlight_vk); }
+                    ).is_ok();
+                    if ok {
+                        log::info!("[Hotkeys] Registered: {} (vk=0x{:02X})", binding.label, vk);
+                    } else {
+                        log::warn!("[Hotkeys] Failed to register {} hotkey", binding.label);
+                    }
+                }
 
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                     if msg.message == WM_HOTKEY {
-                        let action = match msg.wParam.0 as i32 {
-                            HOTKEY_ID_TOGGLE_RECORDING => Some(HotkeyAction::ToggleRecording),
-                            HOTKEY_ID_SAVE_CLIP => Some(HotkeyAction::SaveClip),
-                            HOTKEY_ID_TOGGLE_MIC => Some(HotkeyAction::ToggleMic),
-                            HOTKEY_ID_PUSH_TO_TALK => Some(HotkeyAction::PushToTalk),
-                            HOTKEY_ID_MARKER_FLAG => Some(HotkeyAction::MarkerFlag),
-                            HOTKEY_ID_MARKER_KILL => Some(HotkeyAction::MarkerKill),
-                            HOTKEY_ID_MARKER_DEATH => Some(HotkeyAction::MarkerDeath),
-                            HOTKEY_ID_MARKER_HIGHLIGHT => Some(HotkeyAction::MarkerHighlight),
-                            _ => None,
-                        };
-                        if let Some(action) = action {
-                            log::info!("[Hotkeys] Action triggered: {:?}", action);
-                            let _ = tx.send(action);
+                        let id = msg.wParam.0 as i32;
+                        if let Some(binding) = BINDINGS.iter().find(|b| b.id == id) {
+                            log::info!("[Hotkeys] Action triggered: {:?}", binding.action);
+                            let _ = tx.send(binding.action);
                         }
                     }
                     DispatchMessageW(&msg);
                 }
 
-                // Cleanup
-                let _ = UnregisterHotKey(None, HOTKEY_ID_TOGGLE_RECORDING);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_SAVE_CLIP);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_TOGGLE_MIC);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_PUSH_TO_TALK);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_MARKER_FLAG);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_MARKER_KILL);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_MARKER_DEATH);
-                let _ = UnregisterHotKey(None, HOTKEY_ID_MARKER_HIGHLIGHT);
+                for binding in BINDINGS {
+                    let _ = UnregisterHotKey(None, binding.id);
+                }
             }
         })
         .ok();

@@ -4,7 +4,7 @@ use adabraka_ui::components::slider::Slider;
 use crate::ui::{LumaWorkspace, TimelineDragTarget};
 
 impl LumaWorkspace {
-    pub fn render_timeline(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_timeline(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let audio_tracks = self.get_current_audio_tracks();
         let enabled_audio_tracks: Vec<_> = audio_tracks.into_iter().filter(|t| t.enabled).collect();
@@ -477,6 +477,7 @@ impl LumaWorkspace {
             )
     }
 
+    #[allow(dead_code)]
     fn format_time(secs: f64, show_hours: bool) -> String {
         let total = secs.max(0.0) as u64;
         let h = total / 3600;
@@ -531,6 +532,7 @@ impl LumaWorkspace {
             )
     }
 
+    #[allow(dead_code)]
     fn render_ruler_row(&self, duration: f64, zoom: f32, scroll: f32) -> impl IntoElement {
         let theme = use_theme();
         let show_hours = duration >= 3600.0;

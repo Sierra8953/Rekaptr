@@ -11,6 +11,8 @@ use gstreamer as gst;
 mod add_source;
 mod clips;
 mod dashboard;
+mod export;
+mod recording;
 mod settings;
 mod setup_wizard;
 mod sidebar;
@@ -19,10 +21,11 @@ mod timeline;
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::display::data_table::DataTable;
 
+#[allow(dead_code)]
 pub struct LumaWorkspace {
     pub active_view: ActiveView,
     pub clips_view_mode: ClipsViewMode,
-    pub settings_tab_index: usize,
+    pub settings_tab: SettingsTab,
     pub app_state: Arc<AppState>,
     pub video_source: Option<Video>,
     pub preview_video_source: Option<Video>,
@@ -188,6 +191,49 @@ pub enum ClipsViewMode {
     Table,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Video,
+    Audio,
+    Hotkeys,
+    Storage,
+    About,
+}
+
+impl SettingsTab {
+    pub const ALL: &[SettingsTab] = &[
+        SettingsTab::General,
+        SettingsTab::Video,
+        SettingsTab::Audio,
+        SettingsTab::Hotkeys,
+        SettingsTab::Storage,
+        SettingsTab::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => "General",
+            SettingsTab::Video => "Video",
+            SettingsTab::Audio => "Audio",
+            SettingsTab::Hotkeys => "Hotkeys",
+            SettingsTab::Storage => "Storage",
+            SettingsTab::About => "About",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            SettingsTab::General => "settings",
+            SettingsTab::Video => "video",
+            SettingsTab::Audio => "mic",
+            SettingsTab::Hotkeys => "keyboard",
+            SettingsTab::Storage => "folder",
+            SettingsTab::About => "info",
+        }
+    }
+}
+
 impl LumaWorkspace {
     pub fn new(app_state: Arc<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let toast_manager = cx.new(|cx| adabraka_ui::overlays::toast::ToastManager::new(cx));
@@ -228,7 +274,7 @@ impl LumaWorkspace {
         let mut workspace = Self {
             active_view: ActiveView::Dashboard,
             clips_view_mode: ClipsViewMode::Grid,
-            settings_tab_index: 0,
+            settings_tab: SettingsTab::General,
             app_state,
             video_source: None,
             preview_video_source: None,
@@ -446,9 +492,7 @@ impl LumaWorkspace {
                                     this.last_notified_position = pos;
                                     should_notify = true;
                                     
-                                    // Continuously re-check the audio mix to handle segments with different track counts.
-                                    // This ensures that when moving from a 1-track recording to a 2-track recording (or vice-versa),
-                                    // the audio engine correctly adapts without requiring a manual volume adjustment.
+                                    // Re-check audio mix in case track count changed between segments.
                                     this.update_mpv_audio_mix();
                                 }
                             }
@@ -601,36 +645,7 @@ impl LumaWorkspace {
         if view == ActiveView::Settings {
             let config = AppConfig::load();
             self.form_max_buffer_size_gb = config.max_buffer_size_gb;
-            // Reload all settings form state from config
-            self.settings_form_encoder = config.global_video.encoder.clone();
-            self.settings_form_resolution = config.global_video.resolution.clone();
-            self.settings_form_fps = config.global_video.fps;
-            self.settings_form_rate_control = config.global_video.rate_control_index;
-            self.settings_form_bitrate = config.global_video.bitrate_kbps;
-            self.settings_form_cq = config.global_video.cq_level;
-            self.settings_form_retention = config.global_video.retention_minutes;
-            self.settings_form_preset = config.global_video.preset.clone();
-            self.settings_form_gop = config.global_video.gop_size;
-            self.settings_form_bframes = config.global_video.bframes;
-            self.settings_form_zero_latency = config.global_video.zero_latency;
-            self.settings_form_lookahead = config.global_video.lookahead;
-            self.settings_form_lookahead_frames = config.global_video.lookahead_frames;
-            self.settings_form_spatial_aq = config.global_video.spatial_aq;
-            self.settings_form_temporal_aq = config.global_video.temporal_aq;
-            self.settings_form_mic_device = config.mic_settings.device_name.clone();
-            self.settings_form_mic_force_mono = config.mic_settings.force_mono;
-            self.settings_form_mic_gain = config.mic_settings.gain_db;
-            self.settings_form_mic_noise_suppression = config.mic_settings.noise_suppression;
-            self.settings_form_mic_gate_enabled = config.mic_settings.noise_gate_enabled;
-            self.settings_form_mic_gate_threshold = config.mic_settings.noise_gate_threshold;
-            self.settings_form_mic_compressor_enabled = config.mic_settings.compressor_enabled;
-            self.settings_form_mic_compressor_threshold = config.mic_settings.compressor_threshold;
-            self.settings_form_mic_compressor_ratio = config.mic_settings.compressor_ratio;
-            self.settings_form_mic_limiter_enabled = config.mic_settings.limiter_enabled;
-            self.settings_form_mic_limiter_threshold = config.mic_settings.limiter_threshold;
-            self.settings_form_auto_delete_enabled = config.auto_delete_clips_days.is_some();
-            self.settings_form_auto_delete_days = config.auto_delete_clips_days.unwrap_or(30);
-            self.settings_form_export_format = config.default_export_format.clone();
+            self.sync_settings_form_from_config(&config);
             
             if !self.is_calculating_storage {
                 self.is_calculating_storage = true;
@@ -646,7 +661,11 @@ impl LumaWorkspace {
                             let path = entry.path();
                             if path.is_dir() {
                                 let name = entry.file_name().to_string_lossy().to_string();
-                                if name != "Clips" && name != "Cache" && !name.starts_with(".") {
+                                let name_lower = name.to_lowercase();
+                                // Ignore system/build/dependency folders to prevent massive recursive scans
+                                if name != "Clips" && name != "Cache" && !name.starts_with(".") 
+                                   && name_lower != "target" && name_lower != "dist" 
+                                   && !name_lower.contains("gstreamer") {
                                     sessions_size += crate::utils::get_dir_size(&path).unwrap_or(0);
                                 }
                             }
@@ -901,6 +920,7 @@ impl LumaWorkspace {
         log::info!("[MicProvider] Restarted with noise_suppression={}", config.mic_settings.noise_suppression);
     }
 
+    #[allow(dead_code)]
     pub fn add_marker(&mut self, cx: &mut Context<Self>) {
         self.add_marker_with_kind(crate::state::MarkerKind::Flag, cx);
     }
@@ -915,7 +935,7 @@ impl LumaWorkspace {
                     kind,
                     label: None,
                 });
-                self.timeline_markers.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                self.timeline_markers.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
                 cx.notify();
             }
         }
@@ -930,879 +950,9 @@ impl LumaWorkspace {
 
     /// Remove all markers whose time falls within deleted footage.
     /// Called after retention cleanup trims the start of the buffer.
+    #[allow(dead_code)]
     pub fn prune_markers_before(&mut self, min_time_secs: f64) {
         self.timeline_markers.retain(|m| m.time_secs >= min_time_secs);
-    }
-
-    pub fn save_clip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.clip_start >= 0.0 && self.clip_end >= 0.0 {
-            self.show_export_modal = true;
-            cx.notify();
-        }
-    }
-
-    pub fn perform_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let start = self.clip_start;
-        let end = self.clip_end;
-        let source_name = self
-            .selected_source
-            .clone()
-            .unwrap_or_else(|| "monitor".to_string());
-
-        // Ensure playlist is up to date before exporting
-        crate::utils::generate_master_playlist(&source_name);
-
-        let safe_title = crate::utils::clean_title(&source_name);
-        let storage_root = crate::utils::get_storage_root();
-        let playlist_path = storage_root.join(&safe_title).join("master.m3u8");
-
-        if !playlist_path.exists() {
-            self.show_toast(
-                "Source Error",
-                Some("Recording segments not found."),
-                adabraka_ui::overlays::toast::ToastVariant::Error,
-                window,
-                cx,
-            );
-            return;
-        }
-
-        let clips_dir = storage_root.join("Clips").join(&safe_title);
-        let _ = std::fs::create_dir_all(&clips_dir);
-
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let output_path = clips_dir.join(format!("clip_{}_{}.mp4", safe_title, timestamp));
-
-        let ffmpeg_path = crate::utils::get_ffmpeg_path();
-
-        if ffmpeg_path.to_str() != Some("ffmpeg") && !ffmpeg_path.exists() {
-            self.show_toast(
-                "FFmpeg Not Found",
-                Some("Place ffmpeg.exe in the bin/ folder next to Luma, or install it to PATH."),
-                adabraka_ui::overlays::toast::ToastVariant::Error,
-                window,
-                cx,
-            );
-            return;
-        }
-
-        // Start export
-        *self.app_state.export.phase.lock() = crate::state::ExportPhase::Exporting;
-        *self.app_state.export.progress.lock() = 0.0;
-        
-        let encoder = self.export_encoder.clone();
-        let bitrate = self.export_bitrate;
-        let preset = self.export_preset.clone();
-        let export_reencode = self.export_reencode;
-
-        cx.notify();
-
-        let config = AppConfig::load();
-        let audio_tracks = if source_name == "monitor" {
-            config.global_audio_tracks.clone()
-        } else {
-            config
-                .game_registry
-                .get(&source_name)
-                .and_then(|g| g.audio_routing.as_ref())
-                .cloned()
-                .unwrap_or(config.global_audio_tracks.clone())
-        };
-
-        let app_state_for_progress = self.app_state.clone();
-        let view_handle = cx.entity().downgrade();
-        
-        cx.spawn(move |_, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                for i in 1..=100 {
-                    let progress = i as f32 / 100.0;
-                    *app_state_for_progress.export.progress.lock() = progress;
-                    let _ = view_handle.update(&mut cx, |_, cx| cx.notify());
-                    let _ = cx.background_executor().timer(std::time::Duration::from_millis(if export_reencode { 50 } else { 5 })).await;
-                    if *app_state_for_progress.export.phase.lock() != crate::state::ExportPhase::Exporting {
-                        break;
-                    }
-                }
-            }
-        }).detach();
-
-        let ffmpeg_task = cx.background_spawn(async move {
-            use std::process::Command;
-
-            let build_cmd = |hwaccel: bool| {
-                let mut cmd = Command::new(ffmpeg_path.clone());
-                cmd.arg("-y");
-                if hwaccel {
-                    cmd.arg("-hwaccel").arg("cuda")
-                       .arg("-hwaccel_output_format").arg("cuda");
-                }
-                cmd.arg("-ss").arg(format!("{:.3}", start))
-                   .arg("-to").arg(format!("{:.3}", end))
-                   .arg("-allowed_extensions").arg("ALL")
-                   .arg("-i").arg(playlist_path.clone())
-                   .arg("-map").arg("0:v:0");
-
-                let mut physical_stream_idx = 0;
-                for track in &audio_tracks {
-                    if track.enabled {
-                        cmd.arg("-map")
-                            .arg(format!("0:a:{}?", physical_stream_idx));
-                    }
-                    physical_stream_idx += 1;
-                }
-
-                if export_reencode {
-                    cmd.arg("-c:v")
-                        .arg(&encoder)
-                        .arg("-preset")
-                        .arg(&preset)
-                        .arg("-b:v")
-                        .arg(format!("{}k", bitrate));
-                } else {
-                    cmd.arg("-c:v").arg("copy");
-                }
-
-                cmd.arg("-c:a")
-                    .arg("aac")
-                    .arg("-b:a")
-                    .arg("320k")
-                    .arg("-ar")
-                    .arg("48000")
-                    .arg("-movflags")
-                    .arg("+faststart")
-                    .arg(&output_path);
-                cmd
-            };
-
-            // Try with CUDA hardware decoding first, fall back to software
-            let mut cmd = build_cmd(true);
-            log::info!("[UI] Running FFmpeg for clip (hwaccel cuda): {:?}", cmd);
-            let clip_output = match cmd.output() {
-                Ok(out) if out.status.success() => Ok(out),
-                _ => {
-                    log::warn!("[UI] CUDA decode failed, retrying with software decoder");
-                    let mut cmd = build_cmd(false);
-                    log::info!("[UI] Running FFmpeg for clip (software): {:?}", cmd);
-                    cmd.output()
-                }
-            };
-
-            // Extract a thumbnail from the middle of the exported clip
-            let duration = end - start;
-            let thumb_time = duration / 2.0;
-            let mut thumb_path = output_path.clone();
-            thumb_path.set_extension("jpg");
-
-            // Only generate thumbnail if the clip exported successfully
-            if clip_output.as_ref().map_or(false, |o| o.status.success()) {
-                let mut thumb_cmd = Command::new(&ffmpeg_path);
-                thumb_cmd.arg("-y")
-                         .arg("-ss").arg(format!("{:.3}", thumb_time))
-                         .arg("-i").arg(&output_path)
-                         .arg("-vframes").arg("1")
-                         .arg("-q:v").arg("2")
-                         .arg(&thumb_path);
-
-                log::info!("[UI] Running FFmpeg for thumbnail: {:?}", thumb_cmd);
-                if let Ok(out) = thumb_cmd.output() {
-                    if !out.status.success() {
-                        log::warn!("[UI] Thumbnail generation failed: {}", String::from_utf8_lossy(&out.stderr));
-                    }
-                }
-            }
-
-            (clip_output, output_path, clips_dir)
-        });
-
-        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                let (result, output_path, clips_dir) = ffmpeg_task.await;
-
-                let _ = this.update(&mut cx, |this, cx| {
-                    this.show_export_modal = false;
-                    *this.app_state.export.phase.lock() = crate::state::ExportPhase::Idle;
-                    
-                    if let Some(any_window) = cx.windows().first() {
-                        let _ = any_window.update(cx, |_, window, cx| {
-                            match result {
-                                Ok(output) => {
-                                    if output.status.success() {
-                                        this.show_toast(
-                                            SharedString::from("Clip Saved"),
-                                            Some(SharedString::from(format!(
-                                                "Exported to {:?}",
-                                                output_path
-                                            ))),
-                                            adabraka_ui::overlays::toast::ToastVariant::Success,
-                                            window,
-                                            cx,
-                                        );
-                                        let _ = std::process::Command::new("explorer")
-                                            .arg(&clips_dir)
-                                            .spawn();
-                                    } else {
-                                        let err = String::from_utf8_lossy(&output.stderr);
-                                        log::error!("[UI] FFmpeg failed: {}", err);
-                                        let err_summary = err.lines().rev()
-                                            .find(|l| !l.trim().is_empty())
-                                            .unwrap_or("FFmpeg returned an error.")
-                                            .to_string();
-                                        this.show_toast(
-                                            SharedString::from("Export Failed"),
-                                            Some(SharedString::from(err_summary)),
-                                            adabraka_ui::overlays::toast::ToastVariant::Error,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("[UI] Failed to run FFmpeg: {}", e);
-                                    this.show_toast(
-                                        SharedString::from("FFmpeg Error"),
-                                        Some(SharedString::from("Could not locate or run ffmpeg.exe")),
-                                        adabraka_ui::overlays::toast::ToastVariant::Error,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            }
-                        });
-                    }
-                    cx.notify();
-                });
-            }
-        }).detach();
-    }
-
-    pub fn toggle_recording_internal(&mut self) {
-        let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-        let game_dir = crate::utils::get_storage_root().join(crate::utils::clean_title(&source));
-
-        if let Some(pipeline) = self.app_state.recording.pipeline.lock().take() {
-            let _ = pipeline.set_state(gst::State::Null);
-            
-            // Perform fixup even on unexpected stops
-            std::thread::spawn(move || {
-                // Wait a moment for file handles to be released
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                crate::utils::fixup_eos_segments(&game_dir);
-            });
-        }
-        *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-    }
-
-    pub fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_recording_ext(None, window, cx);
-    }
-
-    pub fn toggle_recording_ext(&mut self, explicit_hwnd: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
-        let phase = *self.app_state.recording.phase.lock();
-        let is_recording = phase.is_recording();
-
-        if is_recording {
-            let game_dir_for_fixup = crate::utils::get_storage_root()
-                .join(crate::utils::clean_title(
-                    &self.selected_source.clone().unwrap_or_else(|| "monitor".to_string()),
-                ));
-            *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Stopping;
-            if let Some(pipeline) = self.app_state.recording.pipeline.lock().take() {
-                let phase_handle = Arc::clone(&self.app_state.recording.phase);
-                std::thread::spawn(move || {
-                    pipeline.send_event(gst::event::Eos::new());
-                    if let Some(bus) = pipeline.bus() {
-                        let _ = bus.timed_pop_filtered(
-                            gst::ClockTime::from_seconds(5),
-                            &[gst::MessageType::Eos],
-                        );
-                    }
-                    let _ = pipeline.set_state(gst::State::Null);
-                    // Wait for muxer to release file handles, then fixup EOS segments
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    crate::utils::fixup_eos_segments(&game_dir_for_fixup);
-                    *phase_handle.lock() = crate::state::RecordingPhase::Idle;
-                });
-            } else {
-                *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-            }
-            log::info!("[Recording] Stopped.");
-            if let Some(tx) = self.app_state.tray_tx.lock().as_ref() {
-                let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(false));
-            }
-            self.show_toast(
-                "Recording Stopped",
-                None::<&str>,
-                adabraka_ui::overlays::toast::ToastVariant::Default,
-                window,
-                cx,
-            );
-            cx.notify();
-        } else {
-            if !phase.is_idle() { return; } // Only start from Idle
-            *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Starting;
-
-            let config = AppConfig::load();
-            let source_name = self
-                .selected_source
-                .clone()
-                .unwrap_or_else(|| "monitor".to_string());
-
-            let mut video_settings = config.global_video.clone();
-            let mut audio_routing = config.global_audio_tracks.clone();
-
-            let hwnd = if let Some(h) = explicit_hwnd {
-                Some(h)
-            } else if source_name == "monitor" {
-                None
-            } else {
-                let windows = self.app_state.available_windows.lock();
-                windows
-                    .iter()
-                    .find(|w| w.title == source_name)
-                    .map(|w| w.hwnd)
-            };
-
-            let target_pid = if let Some(h) = hwnd {
-                unsafe {
-                    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-                    let mut pid = 0;
-                    let _ = GetWindowThreadProcessId(
-                        windows::Win32::Foundation::HWND(h as *mut core::ffi::c_void),
-                        Some(&mut pid),
-                    );
-                    if pid > 0 {
-                        Some(pid)
-                    } else {
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            if source_name != "monitor" {
-                if let Some(gs) = config.game_registry.get(&source_name) {
-                    if let Some(vs) = &gs.video_overrides {
-                        video_settings = vs.clone();
-                    }
-                    if let Some(ar) = &gs.audio_routing {
-                        audio_routing = ar.clone();
-                    }
-                }
-            }
-
-            // Validate encoder support before launching
-            if let Err(e) = crate::engine::validate_encoder(&video_settings) {
-                *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-                self.show_toast(
-                    "Encoder Error",
-                    Some(&format!("{}", e)),
-                    adabraka_ui::overlays::toast::ToastVariant::Error,
-                    window,
-                    cx,
-                );
-                return;
-            }
-
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            // Unified Folder: Just use the game directory root
-            let game_dir = crate::utils::get_storage_root()
-                .join(crate::utils::clean_title(&source_name));
-            let _ = std::fs::create_dir_all(&game_dir);
-
-            // Normalize path for GStreamer
-            let game_dir_str = game_dir.to_string_lossy().replace('\\', "/");
-
-            // Calculate the DTS offset by summing all segment filename durations.
-            // This matches the working test pipeline's approach (compute_total_duration).
-            let total_existing_duration = crate::utils::compute_total_duration(&game_dir);
-            let ts_offset_ns = (total_existing_duration * 1_000_000_000.0) as i64;
-
-            // Reset duration for the new recording
-            *self.app_state.recording.current_recording_duration.lock() = ts_offset_ns as f64 / 1_000_000_000.0;
-
-            let pipeline_str = crate::engine::generate_pipeline_string(
-                &video_settings,
-                &game_dir_str,
-                &audio_routing,
-                &config.mic_settings,
-                hwnd,
-                target_pid,
-                config.selected_adapter_index,
-                timestamp, // Pass the timestamp as the unique session ID
-                ts_offset_ns, // Pass the calculated DTS offset
-            );
-
-            match gst::parse::launch(&pipeline_str) {
-                Ok(pipeline) => {
-                    let pipeline = match pipeline.dynamic_cast::<gst::Pipeline>() {
-                        Ok(p) => p,
-                        Err(_) => {
-                            *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-                            self.show_toast("Pipeline Error", Some("Failed to initialize recording pipeline."), adabraka_ui::overlays::toast::ToastVariant::Error, window, cx);
-                            return;
-                        }
-                    };
-                    
-                    // Share D3D11 device handle with GStreamer for GPU-accelerated encoding.
-                    // SAFETY: The device handle has an AddRef'd reference (see main.rs) and
-                    // lives for the entire app lifetime. GStreamer receives the pointer as a
-                    // u64 value and uses it for its own D3D11 device sharing mechanism.
-                    if let Some(handle) = self.app_state.d3d11_device.lock().as_ref() {
-                        let device_ptr = handle.0.0 as u64;
-                        let mut context = gst::Context::new("gst.d3d11.device.handle", true);
-                        if let Some(c) = context.get_mut() {
-                            c.structure_mut().set("device-handle", &device_ptr);
-                        }
-                        pipeline.set_context(&context);
-                    }
-
-                    // Setup Audio Feeders
-                    let audio_routing_for_setup = audio_routing.clone();
-                    for (i, track) in audio_routing_for_setup.iter().enumerate() {
-                        if !track.enabled { continue; }
-
-                        if track.source_type == "Mic" {
-                            if let Some(src) = pipeline.by_name(&format!("mic_src_{}", i)) {
-                                if let Ok(appsrc) = src.dynamic_cast::<gstreamer_app::AppSrc>() {
-                                    if let Some(provider) = self.app_state.mic_provider.lock().as_ref() {
-                                        provider.subscribers.insert(i as u64, appsrc);
-                                    }
-                                }
-                            }
-                        } else if track.source_type == "App" {
-                            if let Some(src) = pipeline.by_name(&format!("audio_app_{}", i)) {
-                                if let Ok(appsrc) = src.dynamic_cast::<gstreamer_app::AppSrc>() {
-                                    // 1. Capture all specific apps assigned to this track
-                                    if !track.app_targets.is_empty() {
-                                        for app_name in &track.app_targets {
-                                            let appsrc_clone = appsrc.clone();
-                                            let app_name_clone = app_name.clone();
-                                            std::thread::spawn(move || {
-                                                log::info!("[UI] Starting capture for target '{}' on track {}", app_name_clone, i);
-                                                if let Err(e) = crate::engine::start_app_capture(app_name_clone, None, appsrc_clone) {
-                                                    log::error!("App capture error for track {}: {:?}", i, e);
-                                                }
-                                            });
-                                        }
-                                    } else {
-                                        // 2. Fallback: If no specific apps, capture the recorded window/process
-                                        let app_name = if track.device_name.is_empty() || track.device_name == "Default" {
-                                            source_name.clone()
-                                        } else {
-                                            track.device_name.clone()
-                                        };
-
-                                        std::thread::spawn(move || {
-                                            log::info!("[UI] Starting fallback capture for '{}' on track {}", app_name, i);
-                                            if let Err(e) = crate::engine::start_app_capture(app_name, target_pid, appsrc) {
-                                                log::error!("App capture error: {:?}", e);
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let _ = pipeline.set_state(gst::State::Playing);
-                    
-                    // Monitor the bus for errors
-                    if let Some(bus) = pipeline.bus() {
-                        let view_handle = cx.entity().downgrade();
-                        let app_state_bus = self.app_state.clone();
-                        let game_dir_bus = game_dir.clone();
-                        let recording_id_bus = timestamp;
-
-                        cx.spawn(move |_, cx: &mut AsyncApp| {
-                            let mut cx = cx.clone();
-                            async move {
-                                let mut messages = bus.stream();
-                                use futures_util::StreamExt;
-                                
-                                // Track the start time of the currently writing fragment
-                                let mut current_fragment_start_time: Option<u64> = None;
-
-                                while let Some(msg) = messages.next().await {
-                                    let msg_view = msg.view();
-                                    match msg_view {
-                                        gst::MessageView::Element(element_msg) => {
-                                            if let Some(structure) = element_msg.structure() {
-                                                let name = structure.name();
-                                                
-                                                if name == "splitmuxsink-fragment-opened" {
-                                                    let running_time: u64 = structure.get("running-time").unwrap_or(0);
-                                                    current_fragment_start_time = Some(running_time);
-                                                } else if name == "splitmuxsink-fragment-closed" {
-                                                    let location: String = structure.get("location").unwrap_or_default();
-                                                    let running_time: u64 = structure.get("running-time").unwrap_or(0);
-                                                    
-                                                    if let Some(start_time) = current_fragment_start_time {
-                                                        let duration_ns = running_time.saturating_sub(start_time);
-                                                        let duration_ms = duration_ns / 1_000_000;
-                                                        let duration_secs = duration_ns as f64 / 1_000_000_000.0;
-                                                        
-                                                        // Event-driven duration update: No disk polling needed!
-                                                        {
-                                                            let mut total_dur = app_state_bus.recording.current_recording_duration.lock();
-                                                            *total_dur += duration_secs;
-
-                                                            // Sync to database
-                                                            if let Ok(db) = crate::db::GameDatabase::open(&game_dir_bus) {
-                                                                let _ = db.update_duration(recording_id_bus, *total_dur);
-                                                            }
-                                                        }
-
-                                                        // Update recording performance stats
-                                                        {
-                                                            use std::sync::atomic::Ordering::Relaxed;
-                                                            let stats = &app_state_bus.recording.rec_stats;
-                                                            stats.segments_written.fetch_add(1, Relaxed);
-
-                                                            // Get file size for bitrate calculation
-                                                            let seg_path = std::path::Path::new(&location);
-                                                            let file_size = seg_path.metadata().map(|m| m.len()).unwrap_or(0);
-                                                            stats.last_segment_bytes.store(file_size, Relaxed);
-
-                                                            if duration_secs > 0.0 {
-                                                                // Bitrate = file_size_bits / duration_secs / 1000
-                                                                let bitrate = (file_size as f64 * 8.0) / duration_secs / 1000.0;
-                                                                *stats.bitrate_kbps.lock() = bitrate;
-
-                                                                // Disk write rate = file_size_bytes / duration_secs / 1MB
-                                                                *stats.disk_write_mbps.lock() = file_size as f64 / duration_secs / (1024.0 * 1024.0);
-                                                            }
-                                                        }
-
-                                                        let old_path = std::path::PathBuf::from(&location);
-                                                        let mut new_path = old_path.clone();
-                                                        let file_stem = match old_path.file_stem() {
-                                                            Some(s) => s.to_string_lossy().into_owned(),
-                                                            None => continue,
-                                                        };
-                                                        
-                                                        if !file_stem.contains("ms") {
-                                                            new_path.set_file_name(format!("{}_{}ms.m4s", file_stem, duration_ms));
-                                                            
-                                                            // Foreground retry loop (safe for AsyncApp)
-                                                            cx.spawn(|cx: &mut AsyncApp| {
-                                                                let mut cx = cx.clone();
-                                                                async move {
-                                                                    for _ in 0..25 {
-                                                                        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-                                                                        if std::fs::rename(&old_path, &new_path).is_ok() {
-                                                                            return;
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }).detach();
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        gst::MessageView::Eos(_) => {
-                                            log::info!("[GStreamer] EOS Received. Finalizing recording.");
-                                            break;
-                                        }
-                                        gst::MessageView::Error(err) => {
-                                            log::error!("[GStreamer] Pipeline Error: {} ({:?})", err.error(), err.debug());
-                                            let _ = view_handle.update(&mut cx, |this, cx| {
-                                                if let Some(any_window) = cx.windows().first() {
-                                                    let _ = any_window.update(cx, |_, window, cx| {
-                                                        this.show_toast("Recording Error", Some("The GStreamer pipeline crashed."), adabraka_ui::overlays::toast::ToastVariant::Error, window, cx);
-                                                    });
-                                                }
-                                                this.toggle_recording_internal(); // Helper to clean up state
-                                            });
-                                            break;
-                                        }
-                                        gst::MessageView::Warning(warn) => {
-                                            log::warn!("[GStreamer] Pipeline Warning: {} ({:?})", warn.error(), warn.debug());
-                                        }
-                                        gst::MessageView::Qos(qos) => {
-                                            // Track dropped frames from QoS events
-                                            if let Some(structure) = qos.message().structure() {
-                                                if let Ok(dropped) = structure.get::<u64>("dropped") {
-                                                    if dropped > 0 {
-                                                        app_state_bus.recording.rec_stats.dropped_frames.store(
-                                                            dropped,
-                                                            std::sync::atomic::Ordering::Relaxed,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }).detach();
-                    }
-
-                    *self.app_state.recording.pipeline.lock() = Some(pipeline);
-                    *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Recording;
-                    
-                    self.app_state.recording.reset_stats();
-                    self.recording_start_time = Some(std::time::Instant::now());
-                    self.recording_session_id = Some(timestamp);
-
-                    // Register session in DB
-                    if let Ok(db) = crate::db::GameDatabase::open(&game_dir) {
-                        let _ = db.register_session(timestamp);
-                    }
-
-                    log::info!("[Recording] Started for: {}", source_name);
-                    self.show_toast(
-                        "Recording Started",
-                        Some(&format!("Capturing {}", source_name)),
-                        adabraka_ui::overlays::toast::ToastVariant::Success,
-                        window,
-                        cx,
-                    );
-                    cx.notify();
-                }
-                Err(e) => {
-                    *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-                    log::error!("[Recording] Failed to launch pipeline: {:?}", e);
-                    self.show_toast(
-                        "Pipeline Error",
-                        Some("GStreamer failed to start"),
-                        adabraka_ui::overlays::toast::ToastVariant::Error,
-                        window,
-                        cx,
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn render_export_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = use_theme();
-        
-        div()
-            .absolute()
-            .inset_0()
-            .bg(gpui::rgba(0x000000_cc))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                Card::new()
-                    .w(px(400.0))
-                    .content(
-                        VStack::new()
-                            .p_6()
-                            .gap_6()
-                            .child(
-                                VStack::new()
-                                    .gap_1()
-                                    .child(div().text_xl().font_weight(FontWeight::BOLD).child("Export Settings"))
-                                    .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Choose how you want to save this clip."))
-                            )
-                            .child(
-                                VStack::new()
-                                    .gap_4()
-                                    .child(
-                                        HStack::new()
-                                            .gap_3()
-                                            .items_center()
-                                            .child({
-                                                let view = cx.entity().downgrade();
-                                                adabraka_ui::components::radio::Radio::new("instant-copy")
-                                                    .checked(!self.export_reencode)
-                                                    .on_click(move |_, cx| {
-                                                        let _ = view.update(cx, |this, cx| {
-                                                            this.export_reencode = false;
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            })
-                                            .child(
-                                                VStack::new()
-                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Instant Copy (Recommended)"))
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Lossless, saves in less than a second."))
-                                            )
-                                    )
-                                    .child(
-                                        HStack::new()
-                                            .gap_3()
-                                            .items_center()
-                                            .child({
-                                                let view = cx.entity().downgrade();
-                                                adabraka_ui::components::radio::Radio::new("re-encode")
-                                                    .checked(self.export_reencode)
-                                                    .on_click(move |_, cx| {
-                                                        let _ = view.update(cx, |this, cx| {
-                                                            this.export_reencode = true;
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            })
-                                            .child(
-                                                VStack::new()
-                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Re-encode (Complete MP4)"))
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Choose quality and format for best compatibility."))
-                                            )
-                                    )
-                            )
-                            .when(self.export_reencode, |this| {
-                                this.child(
-                                    VStack::new()
-                                        .gap_4()
-                                        .p_4()
-                                        .bg(theme.tokens.muted.opacity(0.5))
-                                        .rounded_md()
-                                        .child(
-                                            VStack::new()
-                                                .gap_2()
-                                                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("ENCODER"))
-                                                .child(
-                                                    HStack::new()
-                                                        .gap_2()
-                                                        .child(
-                                                            Button::new("exp-enc-h264", "H.264")
-                                                                .variant(if self.export_encoder == "h264_nvenc" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_encoder = "h264_nvenc".to_string(); cx.notify(); }))
-                                                        )
-                                                        .child(
-                                                            Button::new("exp-enc-hevc", "HEVC")
-                                                                .variant(if self.export_encoder == "hevc_nvenc" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_encoder = "hevc_nvenc".to_string(); cx.notify(); }))
-                                                        )
-                                                        .child(
-                                                            Button::new("exp-enc-av1", "AV1")
-                                                                .variant(if self.export_encoder == "av1_nvenc" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_encoder = "av1_nvenc".to_string(); cx.notify(); }))
-                                                        )
-                                                )
-                                        )
-                                        .child(
-                                            VStack::new()
-                                                .gap_2()
-                                                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("QUALITY PRESET"))
-                                                .child(
-                                                    HStack::new()
-                                                        .gap_2()
-                                                        .child(
-                                                            Button::new("exp-pre-fast", "Fast")
-                                                                .variant(if self.export_preset == "p1" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_preset = "p1".to_string(); cx.notify(); }))
-                                                        )
-                                                        .child(
-                                                            Button::new("exp-pre-bal", "Balanced")
-                                                                .variant(if self.export_preset == "p4" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_preset = "p4".to_string(); cx.notify(); }))
-                                                        )
-                                                        .child(
-                                                            Button::new("exp-pre-hq", "High Quality")
-                                                                .variant(if self.export_preset == "p7" { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_preset = "p7".to_string(); cx.notify(); }))
-                                                        )
-                                                )
-                                        )
-                                        .child(
-                                            VStack::new()
-                                                .gap_2()
-                                                .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("BITRATE (kbps)"))
-                                                .child(
-                                                    HStack::new()
-                                                        .gap_4()
-                                                        .items_center()
-                                                        .child(
-                                                            Button::new("exp-bit-dec", "-")
-                                                                .variant(ButtonVariant::Outline)
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate - 5000).max(1000); cx.notify(); }))
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .p_2()
-                                                                .bg(theme.tokens.background)
-                                                                .rounded_md()
-                                                                .child(div().text_center().font_weight(FontWeight::BOLD).child(format!("{}k", self.export_bitrate)))
-                                                        )
-                                                        .child(
-                                                            Button::new("exp-bit-inc", "+")
-                                                                .variant(ButtonVariant::Outline)
-                                                                .size(ButtonSize::Sm)
-                                                                .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate + 5000).min(100000); cx.notify(); }))
-                                                        )
-                                                )
-                                        )
-                                )
-                            })
-                            .child(
-                                HStack::new()
-                                    .justify_end()
-                                    .gap_3()
-                                    .child(
-                                        Button::new("cancel-export", "Cancel")
-                                            .variant(ButtonVariant::Ghost)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.show_export_modal = false;
-                                                cx.notify();
-                                            }))
-                                    )
-                                    .child(
-                                        Button::new("start-export", "Start Export")
-                                            .variant(ButtonVariant::Default)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.perform_export(window, cx);
-                                            }))
-                                    )
-                            )
-                            .child({
-                                let export_running = *self.app_state.export.phase.lock() == crate::state::ExportPhase::Exporting;
-                                let progress = *self.app_state.export.progress.lock();
-                                
-                                div()
-                                    .when(export_running, |this| {
-                                        this.absolute()
-                                            .inset_0()
-                                            .bg(theme.tokens.card)
-                                            .rounded_xl()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .p_6()
-                                            .gap_4()
-                                            .child(
-                                                Spinner::new()
-                                                    .size(SpinnerSize::Xl)
-                                            )
-                                            .child(div().text_lg().font_weight(FontWeight::BOLD).child("Exporting Clip..."))
-                                            .child(
-                                                VStack::new()
-                                                    .w_full()
-                                                    .gap_1()
-                                                    .child(
-                                                        adabraka_ui::components::progress::ProgressBar::new(progress)
-                                                            .h(px(8.0))
-                                                    )
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).text_center().child(format!("{:.0}%", progress * 100.0)))
-                                            )
-                                    })
-                            })
-                    )
-            )
     }
 
     pub fn open_volume_popover(&mut self, track_idx: usize, cx: &mut Context<Self>) {

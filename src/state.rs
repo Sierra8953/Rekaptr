@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct GameSession {
     pub id: i32,
     pub title: String,
@@ -27,6 +28,7 @@ pub struct SessionBlock {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct SessionInfo {
     pub game_title: String,
     pub path: std::path::PathBuf,
@@ -83,6 +85,7 @@ pub struct TimelineMarker {
     /// What kind of event this marker represents
     pub kind: MarkerKind,
     /// Optional user label
+    #[allow(dead_code)]
     pub label: Option<String>,
 }
 

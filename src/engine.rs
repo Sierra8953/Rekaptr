@@ -1,7 +1,6 @@
 use crate::config::{AudioRouting, MicSettings, VideoSettings};
 use sysinfo::System;
 use gstreamer as gst;
-use gstreamer::prelude::*;
 use gstreamer_app::AppSrc;
 use anyhow::{Result, Context};
 use wasapi::*;
@@ -190,6 +189,7 @@ pub fn parse_res(res: &str) -> (i32, i32) {
     (1920, 1080)
 }
 
+#[allow(dead_code)]
 pub fn resolve_pid(app_name: &str) -> u32 {
     if app_name.is_empty() || app_name == "Default" {
         return 0;

@@ -820,6 +820,7 @@ impl LumaWorkspace {
 
         if self.is_loading_video { return; }
         self.is_loading_video = true;
+        let is_same_source = self.selected_source.as_deref() == Some(source_name);
         let source_name_str = source_name.to_string();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -854,7 +855,9 @@ impl LumaWorkspace {
                         ) {
                             Ok(video) => {
                                 this.video_source = Some(video);
-                                this.timeline_markers.clear();
+                                if !is_same_source {
+                                    this.timeline_markers.clear();
+                                }
                                 this.update_mpv_audio_mix();
                             }
                             Err(_) => this.video_source = None,

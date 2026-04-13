@@ -601,7 +601,7 @@ impl LumaWorkspace {
                                             .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(gpui::white()).child(title.clone()))
                                     )
                                     .child(
-                                        div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child("Click to view buffer")
+                                        div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child("Click to preview recording")
                                     )
                             )
                     )

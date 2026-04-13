@@ -711,12 +711,16 @@ impl LumaWorkspace {
                                             .unwrap_or_default();
                                         let theme = use_theme();
                                         let vol_frac = (self.preview_volume / 100.0).clamp(0.0, 1.5) as f32;
+                                        let vol_pct = self.preview_volume.round() as i32;
+                                        let is_muted = self.preview_volume < 1.0;
+                                        let speaker_icon = if is_muted { "speaker-off" } else { "speaker" };
+
                                         div()
                                             .flex()
                                             .flex_row()
-                                            .gap_3()
+                                            .gap_4()
                                             .items_center()
-                                            // Volume slider
+                                            // Volume control group
                                             .child(
                                                 div()
                                                     .flex()
@@ -724,13 +728,29 @@ impl LumaWorkspace {
                                                     .gap_2()
                                                     .items_center()
                                                     .child(
-                                                        Icon::new("speaker").size(px(16.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.67))
+                                                        div()
+                                                            .id("preview-vol-icon")
+                                                            .cursor_pointer()
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                                if this.preview_volume < 1.0 {
+                                                                    this.preview_volume = 100.0;
+                                                                } else {
+                                                                    this.preview_volume = 0.0;
+                                                                }
+                                                                if let Some(v) = &this.preview_video_source {
+                                                                    v.set_volume(this.preview_volume);
+                                                                }
+                                                                cx.notify();
+                                                            }))
+                                                            .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
                                                     )
                                                     .child(
                                                         div()
                                                             .id("preview-vol-slider")
-                                                            .w(px(80.0))
-                                                            .h(px(16.0))
+                                                            .w(px(90.0))
+                                                            .h(px(18.0))
+                                                            .flex()
+                                                            .items_center()
                                                             .cursor_pointer()
                                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                                                 this.preview_volume_dragging = true;
@@ -749,7 +769,7 @@ impl LumaWorkspace {
                                                                 canvas(
                                                                     move |_, window, cx| {
                                                                         let layout_id = window.request_layout(Style {
-                                                                            size: size(px(80.0).into(), px(4.0).into()),
+                                                                            size: size(px(90.0).into(), px(6.0).into()),
                                                                             ..Default::default()
                                                                         }, [], cx);
                                                                         (layout_id, ())
@@ -761,73 +781,100 @@ impl LumaWorkspace {
                                                                             let _ = view_handle.update(cx, |this, _cx| {
                                                                                 this.preview_volume_bounds = bounds;
                                                                             });
-                                                                            // Background
-                                                                            window.paint_quad(fill(bounds, theme.tokens.muted).corner_radii(px(2.0)));
+                                                                            // Track background
+                                                                            window.paint_quad(fill(bounds, theme.tokens.muted).corner_radii(px(3.0)));
                                                                             // Fill
                                                                             let fill_frac = (vol_frac / 1.5).clamp(0.0, 1.0);
                                                                             let fill_w = bounds.size.width * fill_frac;
                                                                             let fill_rect = Bounds::new(bounds.origin, size(fill_w, bounds.size.height));
-                                                                            window.paint_quad(fill(fill_rect, theme.tokens.primary).corner_radii(px(2.0)));
-                                                                            // Thumb
-                                                                            let thumb_x = (bounds.left() + fill_w - px(4.0)).max(bounds.left());
+                                                                            window.paint_quad(fill(fill_rect, theme.tokens.primary).corner_radii(px(3.0)));
+                                                                            // Round thumb
+                                                                            let thumb_r = px(7.0);
+                                                                            let min_cx = bounds.left() + thumb_r;
+                                                                            let max_cx = (bounds.right() - thumb_r).max(min_cx);
+                                                                            let thumb_cx = (bounds.left() + fill_w).clamp(min_cx, max_cx);
+                                                                            let thumb_cy = bounds.top() + bounds.size.height / 2.0;
                                                                             let thumb_rect = Bounds::new(
-                                                                                point(thumb_x, bounds.top() - px(3.0)),
-                                                                                size(px(8.0), px(10.0))
+                                                                                point(thumb_cx - thumb_r, thumb_cy - thumb_r),
+                                                                                size(thumb_r * 2.0, thumb_r * 2.0)
                                                                             );
-                                                                            window.paint_quad(fill(thumb_rect, gpui::white()).corner_radii(px(4.0)));
+                                                                            window.paint_quad(fill(thumb_rect, gpui::white()).corner_radii(thumb_r));
                                                                         }
                                                                     }
                                                                 )
                                                             )
                                                     )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(gpui::hsla(0.0, 0.0, 1.0, 0.6))
+                                                            .w(px(32.0))
+                                                            .child(format!("{}%", vol_pct))
+                                                    )
                                             )
-                                            // Track toggle buttons
+                                            // Track toggle pills (with divider)
                                             .when(audio_tracks.len() > 1, |this| {
                                                 let audio_tracks = self.preview_video_source.as_ref()
                                                     .map(|v| v.audio_tracks())
                                                     .unwrap_or_default();
                                                 let theme = use_theme();
-                                                this.child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .gap_1()
-                                                        .items_center()
-                                                        .children(audio_tracks.into_iter().enumerate().map(|(idx, _)| {
-                                                            let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
-                                                            let theme = theme.clone();
-                                                            div()
-                                                                .id(("track-toggle", idx))
-                                                                .cursor_pointer()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .w(px(22.0))
-                                                                .h(px(22.0))
-                                                                .rounded(px(4.0))
-                                                                .text_xs()
-                                                                .font_weight(FontWeight::BOLD)
-                                                                .when(enabled, |this| {
-                                                                    this.bg(theme.tokens.primary)
-                                                                        .text_color(theme.tokens.primary_foreground)
-                                                                        .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
-                                                                })
-                                                                .when(!enabled, |this| {
-                                                                    this.bg(theme.tokens.muted)
-                                                                        .text_color(theme.tokens.muted_foreground)
-                                                                        .hover(|s| s.text_color(gpui::white()))
-                                                                })
-                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                                                                    this.init_preview_audio_tracks();
-                                                                    if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
-                                                                        *v = !*v;
-                                                                    }
-                                                                    this.update_preview_audio_mix();
-                                                                    cx.notify();
-                                                                }))
-                                                                .child(format!("{}", idx + 1))
-                                                        }))
-                                                )
+                                                this
+                                                    // Vertical divider
+                                                    .child(
+                                                        div()
+                                                            .w(px(1.0))
+                                                            .h(px(20.0))
+                                                            .bg(gpui::hsla(0.0, 0.0, 1.0, 0.2))
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .gap_2()
+                                                            .items_center()
+                                                            .children(audio_tracks.into_iter().enumerate().map(|(idx, (_id, label))| {
+                                                                let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
+                                                                let theme = theme.clone();
+                                                                let short_label = if label.len() > 12 {
+                                                                    format!("{}...", &label[..10])
+                                                                } else {
+                                                                    label
+                                                                };
+                                                                div()
+                                                                    .id(("track-toggle", idx))
+                                                                    .cursor_pointer()
+                                                                    .flex()
+                                                                    .flex_row()
+                                                                    .gap_1()
+                                                                    .items_center()
+                                                                    .px(px(8.0))
+                                                                    .h(px(26.0))
+                                                                    .rounded_full()
+                                                                    .text_xs()
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .when(enabled, |this| {
+                                                                        this.bg(theme.tokens.primary.opacity(0.9))
+                                                                            .text_color(theme.tokens.primary_foreground)
+                                                                            .hover(|s| s.bg(theme.tokens.primary))
+                                                                    })
+                                                                    .when(!enabled, |this| {
+                                                                        this.bg(gpui::hsla(0.0, 0.0, 1.0, 0.15))
+                                                                            .text_color(gpui::hsla(0.0, 0.0, 1.0, 0.5))
+                                                                            .hover(|s| s.bg(gpui::hsla(0.0, 0.0, 1.0, 0.25)))
+                                                                    })
+                                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                                        this.init_preview_audio_tracks();
+                                                                        if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
+                                                                            *v = !*v;
+                                                                        }
+                                                                        this.update_preview_audio_mix();
+                                                                        cx.notify();
+                                                                    }))
+                                                                    .child(Icon::new("speaker").size(px(12.0)))
+                                                                    .child(short_label)
+                                                            }))
+                                                    )
                                             })
                                     })
                             )

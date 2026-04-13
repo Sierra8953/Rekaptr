@@ -330,6 +330,10 @@ impl AppConfig {
             "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, json_data TEXT)",
             [],
         )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS favorites (clip_path TEXT PRIMARY KEY)",
+            [],
+        )?;
         Ok(())
     }
 
@@ -389,6 +393,37 @@ impl AppConfig {
                 "INSERT OR REPLACE INTO config (id, json_data) VALUES (1, ?1)",
                 [&json],
             );
+        }
+    }
+
+    pub fn load_favorites() -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        if let Ok(conn) = rusqlite::Connection::open(Self::get_db_path()) {
+            if let Ok(mut stmt) = conn.prepare("SELECT clip_path FROM favorites") {
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+                if let Ok(rows) = rows {
+                    for path in rows.flatten() {
+                        set.insert(path);
+                    }
+                }
+            }
+        }
+        set
+    }
+
+    pub fn set_favorite(clip_path: &str, favorite: bool) {
+        if let Ok(conn) = rusqlite::Connection::open(Self::get_db_path()) {
+            if favorite {
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO favorites (clip_path) VALUES (?1)",
+                    [clip_path],
+                );
+            } else {
+                let _ = conn.execute(
+                    "DELETE FROM favorites WHERE clip_path = ?1",
+                    [clip_path],
+                );
+            }
         }
     }
 }

@@ -42,8 +42,7 @@ pub struct LumaWorkspace {
     pub preview_scrubbing_progress: f32,
     pub preview_audio_enabled: Vec<bool>,
     pub preview_volume: f64,
-    pub preview_volume_dragging: bool,
-    pub preview_volume_bounds: Bounds<Pixels>,
+pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderState>,
     pub clip_popover: Option<(Point<Pixels>, crate::state::Clip)>,
     pub clip_table: Entity<DataTable<crate::state::Clip>>,
     pub clips_list_state: ListState,
@@ -104,6 +103,7 @@ pub struct LumaWorkspace {
     pub library_items: Vec<crate::ui::clips::LibraryRow>,
     pub form_max_buffer_size_gb: i32,
     pub clips_search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub favorite_clips: std::collections::HashSet<String>,
     pub selected_clips: std::collections::HashSet<String>,
     pub selected_clip_for_details: Option<crate::state::Clip>,
     pub selected_game_filter: Option<String>,
@@ -290,8 +290,11 @@ impl LumaWorkspace {
             is_scrubbing_preview: false,
             preview_audio_enabled: Vec::new(),
             preview_volume: 100.0,
-            preview_volume_dragging: false,
-            preview_volume_bounds: Bounds::default(),
+preview_vol_slider_state: cx.new(|cx| {
+                let mut state = adabraka_ui::components::slider::SliderState::new(cx);
+                state.set_value(66.7, cx); // 100/150 * 100 = 66.7%
+                state
+            }),
             preview_scrubbing_progress: 0.0,
             clip_popover: None,
             clip_table,
@@ -352,6 +355,7 @@ impl LumaWorkspace {
             library_items: Vec::new(),
             form_max_buffer_size_gb: config.max_buffer_size_gb,
             clips_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            favorite_clips: crate::config::AppConfig::load_favorites(),
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
             selected_game_filter: None,
@@ -693,6 +697,18 @@ impl LumaWorkspace {
         cx.notify();
     }
 
+    pub fn toggle_favorite(&mut self, clip_path: &str, cx: &mut Context<Self>) {
+        let is_fav = self.favorite_clips.contains(clip_path);
+        if is_fav {
+            self.favorite_clips.remove(clip_path);
+        } else {
+            self.favorite_clips.insert(clip_path.to_string());
+        }
+        crate::config::AppConfig::set_favorite(clip_path, !is_fav);
+        self.rebuild_library_items(cx);
+        cx.notify();
+    }
+
     pub fn refresh_clips(&mut self, cx: &mut Context<Self>) {
         if self.is_loading_clips { return; }
         self.is_loading_clips = true;
@@ -726,6 +742,12 @@ impl LumaWorkspace {
         let clips = &self.cached_clips;
         let mut rows = Vec::new();
 
+        // Collect favorited clips
+        let fav_clips: Vec<_> = clips.iter()
+            .filter(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
+            .cloned()
+            .collect();
+
         if let Some(game_title) = &self.selected_game_filter {
             // Filtered view: show only clips for this game
             let game_clips: Vec<_> = clips.iter().filter(|c| &c.title == game_title).cloned().collect();
@@ -733,6 +755,14 @@ impl LumaWorkspace {
                 rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
             }
         } else {
+            // Favorites section
+            if !fav_clips.is_empty() {
+                rows.push(crate::ui::clips::LibraryRow::SectionHeader("FAVORITES".to_string()));
+                for chunk in fav_clips.chunks(4) {
+                    rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
+                }
+            }
+
             // Dashboard view: recent + game groups
             if !clips.is_empty() {
                 rows.push(crate::ui::clips::LibraryRow::SectionHeader("MOST RECENT".to_string()));
@@ -1147,13 +1177,26 @@ impl LumaWorkspace {
 
         // Clip Popover Menu
         if let Some((pos, clip)) = self.clip_popover.clone() {
+            let clip_path_str = clip.path.to_string_lossy().to_string();
+            let is_favorited = self.favorite_clips.contains(&clip_path_str);
+            let fav_label = if is_favorited { "Unfavorite" } else { "Favorite" };
             let items = vec![
+                PopoverMenuItem::new("favorite", fav_label)
+                    .icon(if is_favorited { "star-off" } else { "star" })
+                    .on_click({
+                        let view = cx.entity().downgrade();
+                        let path = clip_path_str.clone();
+                        move |_, cx| { let _ = view.update(cx, |this, cx| {
+                            this.clip_popover = None;
+                            this.toggle_favorite(&path.clone(), cx);
+                        }); }
+                    }),
                 PopoverMenuItem::new("play", "Play Clip")
                     .icon("play")
                     .on_click({
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
-                        move |window, cx| { let _ = view.update(cx, |this, cx| { 
+                        move |window, cx| { let _ = view.update(cx, |this, cx| {
                             this.clip_popover = None;
                             this.set_active_view(ActiveView::Dashboard, cx);
                             this.load_video(&clip.path.to_string_lossy(), window, cx);

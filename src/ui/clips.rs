@@ -4,6 +4,7 @@ use crate::ui::{LumaWorkspace, ClipsViewMode};
 use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
+use adabraka_ui::components::slider::Slider;
 
 impl LumaWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -136,14 +137,18 @@ impl LumaWorkspace {
                                                     LibraryRow::ClipChunk(clips) => {
                                                         let chunk_view_handle = view_handle.clone();
                                                         let mut row = HStack::new().px_8().gap_6().py_2();
-                                                        // Get selection state from view.read(cx)
+                                                        let ws = view.read(cx);
                                                         let is_selected_map: Vec<bool> = clips.iter().map(|c| {
                                                             let path = c.path.to_string_lossy().to_string();
-                                                            view.read(cx).selected_clips.contains(&path)
+                                                            ws.selected_clips.contains(&path)
+                                                        }).collect();
+                                                        let is_fav_map: Vec<bool> = clips.iter().map(|c| {
+                                                            let path = c.path.to_string_lossy().to_string();
+                                                            ws.favorite_clips.contains(&path)
                                                         }).collect();
 
                                                         for (idx, clip) in clips.iter().enumerate() {
-                                                            row = row.child(Self::render_clip_card_advanced(clip.clone(), &chunk_view_handle, is_selected_map[idx]));
+                                                            row = row.child(Self::render_clip_card_advanced(clip.clone(), &chunk_view_handle, is_selected_map[idx], is_fav_map[idx]));
                                                         }
                                                         row.into_any_element()
                                                     }
@@ -336,7 +341,7 @@ impl LumaWorkspace {
             )
     }
 
-    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool) -> impl IntoElement {
+    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
         let view_handle_actions = view_handle.clone();
@@ -387,6 +392,16 @@ impl LumaWorkspace {
                             img(path.to_string_lossy().to_string())
                                 .size_full()
                                 .object_fit(ObjectFit::Cover)
+                        )
+                    })
+                    .when(is_favorited, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_2()
+                                .left_2()
+                                .text_color(gpui::rgba(0xfbbf24ff))
+                                .child(Icon::new(IconSource::Named("star".to_string())).size(px(16.0)))
                         )
                     })
                     .child(
@@ -473,35 +488,6 @@ impl LumaWorkspace {
 
     fn render_mini_player(&self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-
-        if self.preview_volume_dragging {
-            let view_handle = cx.entity().downgrade();
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
-                if phase == DispatchPhase::Bubble {
-                    let _ = view_handle.update(cx, |this, cx| {
-                        let bounds = this.preview_volume_bounds;
-                        if bounds.size.width > px(0.0) {
-                            let rel_x = (event.position.x - bounds.left()).max(px(0.0));
-                            let frac = (rel_x / bounds.size.width).clamp(0.0, 1.0);
-                            this.preview_volume = (frac * 150.0) as f64;
-                            if let Some(v) = &this.preview_video_source {
-                                v.set_volume(this.preview_volume);
-                            }
-                            cx.notify();
-                        }
-                    });
-                }
-            });
-            let view_handle = cx.entity().downgrade();
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
-                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
-                    let _ = view_handle.update(cx, |this, cx| {
-                        this.preview_volume_dragging = false;
-                        cx.notify();
-                    });
-                }
-            });
-        }
 
         let (pos, dur) = if let Some(v) = &self.preview_video_source {
             (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
@@ -652,19 +638,31 @@ impl LumaWorkspace {
                             )
                             .child(
                                 HStack::new()
-                                    .p_6()
-                                    .justify_between()
+                                    .px_4()
+                                    .py_3()
                                     .items_center()
+                                    // Left section — fixed width to balance the right
                                     .child(
-                                        div().text_sm().font_weight(FontWeight::MEDIUM).text_color(gpui::white())
-                                            .child(format!("{} / {}", format_time(display_pos), format_time(dur)))
+                                        div()
+                                            .w(px(260.0))
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                div().text_xs().font_weight(FontWeight::MEDIUM).text_color(gpui::hsla(0.0, 0.0, 1.0, 0.7))
+                                                    .child(format!("{} / {}", format_time(display_pos), format_time(dur)))
+                                            )
                                     )
+                                    // Center: play controls
+                                    .child(div().flex_1())
                                     .child(
                                         HStack::new()
-                                            .gap_12()
+                                            .gap_4()
+                                            .items_center()
                                             .child(
                                                 div()
+                                                    .id("preview-skip-back")
                                                     .cursor_pointer()
+                                                    .hover(|s| s.opacity(0.7))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                         if let Some(v) = &this.preview_video_source {
                                                             let target = (v.position().as_secs_f64() - 5.0).max(0.0);
@@ -672,12 +670,21 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new("rotate-ccw").size(px(32.0)).color(theme.tokens.primary))
+                                                    .child(Icon::new("rotate-ccw").size(px(22.0)).color(gpui::white()))
                                             )
                                             .child({
                                                 let is_paused = self.preview_video_source.as_ref().map_or(true, |v| v.paused());
                                                 div()
+                                                    .id("preview-play-pause")
                                                     .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(36.0))
+                                                    .h(px(36.0))
+                                                    .rounded_full()
+                                                    .bg(theme.tokens.primary)
+                                                    .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                         if let Some(v) = &this.preview_video_source {
                                                             if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
@@ -689,11 +696,13 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(40.0)).color(theme.tokens.primary))
+                                                    .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(20.0)).color(theme.tokens.primary_foreground))
                                             })
                                             .child(
                                                 div()
+                                                    .id("preview-skip-fwd")
                                                     .cursor_pointer()
+                                                    .hover(|s| s.opacity(0.7))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                         if let Some(v) = &this.preview_video_source {
                                                             let duration = v.duration().as_secs_f64();
@@ -702,179 +711,102 @@ impl LumaWorkspace {
                                                             cx.notify();
                                                         }
                                                     }))
-                                                    .child(Icon::new("rotate-cw").size(px(32.0)).color(theme.tokens.primary))
+                                                    .child(Icon::new("rotate-cw").size(px(22.0)).color(gpui::white()))
                                             )
                                     )
+                                    .child(div().flex_1())
+                                    // Right section — fixed width to balance the left
                                     .child({
-                                        let audio_tracks = self.preview_video_source.as_ref()
-                                            .map(|v| v.audio_tracks())
-                                            .unwrap_or_default();
-                                        let theme = use_theme();
-                                        let vol_frac = (self.preview_volume / 100.0).clamp(0.0, 1.5) as f32;
-                                        let vol_pct = self.preview_volume.round() as i32;
                                         let is_muted = self.preview_volume < 1.0;
                                         let speaker_icon = if is_muted { "speaker-off" } else { "speaker" };
-
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .gap_4()
+                                        HStack::new()
+                                            .w(px(260.0))
+                                            .justify_end()
+                                            .gap_3()
                                             .items_center()
-                                            // Volume control group
                                             .child(
                                                 div()
+                                                    .id("preview-vol-icon")
+                                                    .cursor_pointer()
                                                     .flex()
-                                                    .flex_row()
-                                                    .gap_2()
                                                     .items_center()
-                                                    .child(
-                                                        div()
-                                                            .id("preview-vol-icon")
-                                                            .cursor_pointer()
-                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                                if this.preview_volume < 1.0 {
-                                                                    this.preview_volume = 100.0;
-                                                                } else {
-                                                                    this.preview_volume = 0.0;
-                                                                }
-                                                                if let Some(v) = &this.preview_video_source {
-                                                                    v.set_volume(this.preview_volume);
-                                                                }
-                                                                cx.notify();
-                                                            }))
-                                                            .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id("preview-vol-slider")
-                                                            .w(px(90.0))
-                                                            .h(px(18.0))
-                                                            .flex()
-                                                            .items_center()
-                                                            .cursor_pointer()
-                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                                this.preview_volume_dragging = true;
-                                                                let bounds = this.preview_volume_bounds;
-                                                                if bounds.size.width > px(0.0) {
-                                                                    let rel_x = (event.position.x - bounds.left()).max(px(0.0));
-                                                                    let frac = (rel_x / bounds.size.width).clamp(0.0, 1.0);
-                                                                    this.preview_volume = (frac * 150.0) as f64;
-                                                                    if let Some(v) = &this.preview_video_source {
-                                                                        v.set_volume(this.preview_volume);
-                                                                    }
-                                                                }
-                                                                cx.notify();
-                                                            }))
-                                                            .child(
-                                                                canvas(
-                                                                    move |_, window, cx| {
-                                                                        let layout_id = window.request_layout(Style {
-                                                                            size: size(px(90.0).into(), px(6.0).into()),
-                                                                            ..Default::default()
-                                                                        }, [], cx);
-                                                                        (layout_id, ())
-                                                                    },
-                                                                    {
-                                                                        let view_handle = cx.entity().downgrade();
-                                                                        let theme = theme.clone();
-                                                                        move |bounds, _, window, cx| {
-                                                                            let _ = view_handle.update(cx, |this, _cx| {
-                                                                                this.preview_volume_bounds = bounds;
-                                                                            });
-                                                                            // Track background
-                                                                            window.paint_quad(fill(bounds, theme.tokens.muted).corner_radii(px(3.0)));
-                                                                            // Fill
-                                                                            let fill_frac = (vol_frac / 1.5).clamp(0.0, 1.0);
-                                                                            let fill_w = bounds.size.width * fill_frac;
-                                                                            let fill_rect = Bounds::new(bounds.origin, size(fill_w, bounds.size.height));
-                                                                            window.paint_quad(fill(fill_rect, theme.tokens.primary).corner_radii(px(3.0)));
-                                                                            // Round thumb
-                                                                            let thumb_r = px(7.0);
-                                                                            let min_cx = bounds.left() + thumb_r;
-                                                                            let max_cx = (bounds.right() - thumb_r).max(min_cx);
-                                                                            let thumb_cx = (bounds.left() + fill_w).clamp(min_cx, max_cx);
-                                                                            let thumb_cy = bounds.top() + bounds.size.height / 2.0;
-                                                                            let thumb_rect = Bounds::new(
-                                                                                point(thumb_cx - thumb_r, thumb_cy - thumb_r),
-                                                                                size(thumb_r * 2.0, thumb_r * 2.0)
-                                                                            );
-                                                                            window.paint_quad(fill(thumb_rect, gpui::white()).corner_radii(thumb_r));
-                                                                        }
-                                                                    }
-                                                                )
-                                                            )
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(gpui::hsla(0.0, 0.0, 1.0, 0.6))
-                                                            .w(px(32.0))
-                                                            .child(format!("{}%", vol_pct))
-                                                    )
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                        if this.preview_volume < 1.0 {
+                                                            this.preview_volume = 100.0;
+                                                        } else {
+                                                            this.preview_volume = 0.0;
+                                                        }
+                                                        if let Some(v) = &this.preview_video_source {
+                                                            v.set_volume(this.preview_volume);
+                                                        }
+                                                        let slider_val = (this.preview_volume / 1.5) as f32;
+                                                        this.preview_vol_slider_state.update(cx, |s, cx| s.set_value(slider_val, cx));
+                                                        cx.notify();
+                                                    }))
+                                                    .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
                                             )
-                                            // Track toggle pills (with divider)
-                                            .when(audio_tracks.len() > 1, |this| {
+                                            .child({
+                                                let view_for_slider = cx.entity().downgrade();
+                                                Slider::new(self.preview_vol_slider_state.clone())
+                                                    .w(px(80.0))
+                                                    .size(adabraka_ui::components::slider::SliderSize::Sm)
+                                                    .on_change(move |value: f32, _window, cx| {
+                                                        let _ = view_for_slider.update(cx, |this, cx| {
+                                                            this.preview_volume = (value * 1.5) as f64; // 0-100 slider -> 0-150 volume
+                                                            if let Some(v) = &this.preview_video_source {
+                                                                v.set_volume(this.preview_volume);
+                                                            }
+                                                            cx.notify();
+                                                        });
+                                                    })
+                                            })
+                                            // Audio track toggles
+                                            .when(self.preview_video_source.as_ref().map_or(false, |v| v.audio_tracks().len() > 1), |this| {
                                                 let audio_tracks = self.preview_video_source.as_ref()
                                                     .map(|v| v.audio_tracks())
                                                     .unwrap_or_default();
-                                                let theme = use_theme();
                                                 this
-                                                    // Vertical divider
                                                     .child(
                                                         div()
                                                             .w(px(1.0))
-                                                            .h(px(20.0))
+                                                            .h(px(16.0))
                                                             .bg(gpui::hsla(0.0, 0.0, 1.0, 0.2))
                                                     )
-                                                    .child(
+                                                    .children(audio_tracks.into_iter().enumerate().map(|(idx, (_id, label))| {
+                                                        let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
+                                                        let short_label = if label.len() > 14 {
+                                                            format!("{}...", &label[..12])
+                                                        } else {
+                                                            label
+                                                        };
                                                         div()
+                                                            .id(("track-toggle", idx))
+                                                            .cursor_pointer()
                                                             .flex()
-                                                            .flex_row()
-                                                            .gap_2()
                                                             .items_center()
-                                                            .children(audio_tracks.into_iter().enumerate().map(|(idx, (_id, label))| {
-                                                                let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
-                                                                let theme = theme.clone();
-                                                                let short_label = if label.len() > 12 {
-                                                                    format!("{}...", &label[..10])
-                                                                } else {
-                                                                    label
-                                                                };
-                                                                div()
-                                                                    .id(("track-toggle", idx))
-                                                                    .cursor_pointer()
-                                                                    .flex()
-                                                                    .flex_row()
-                                                                    .gap_1()
-                                                                    .items_center()
-                                                                    .px(px(8.0))
-                                                                    .h(px(26.0))
-                                                                    .rounded_full()
-                                                                    .text_xs()
-                                                                    .font_weight(FontWeight::MEDIUM)
-                                                                    .when(enabled, |this| {
-                                                                        this.bg(theme.tokens.primary.opacity(0.9))
-                                                                            .text_color(theme.tokens.primary_foreground)
-                                                                            .hover(|s| s.bg(theme.tokens.primary))
-                                                                    })
-                                                                    .when(!enabled, |this| {
-                                                                        this.bg(gpui::hsla(0.0, 0.0, 1.0, 0.15))
-                                                                            .text_color(gpui::hsla(0.0, 0.0, 1.0, 0.5))
-                                                                            .hover(|s| s.bg(gpui::hsla(0.0, 0.0, 1.0, 0.25)))
-                                                                    })
-                                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                                                                        this.init_preview_audio_tracks();
-                                                                        if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
-                                                                            *v = !*v;
-                                                                        }
-                                                                        this.update_preview_audio_mix();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .child(Icon::new("speaker").size(px(12.0)))
-                                                                    .child(short_label)
+                                                            .px(px(6.0))
+                                                            .h(px(24.0))
+                                                            .rounded(px(4.0))
+                                                            .text_xs()
+                                                            .when(enabled, |this| {
+                                                                this.bg(gpui::hsla(0.0, 0.0, 1.0, 0.2))
+                                                                    .text_color(gpui::white())
+                                                                    .hover(|s| s.bg(gpui::hsla(0.0, 0.0, 1.0, 0.3)))
+                                                            })
+                                                            .when(!enabled, |this| {
+                                                                this.text_color(gpui::hsla(0.0, 0.0, 1.0, 0.35))
+                                                                    .hover(|s| s.text_color(gpui::hsla(0.0, 0.0, 1.0, 0.5)))
+                                                            })
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                                this.init_preview_audio_tracks();
+                                                                if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
+                                                                    *v = !*v;
+                                                                }
+                                                                this.update_preview_audio_mix();
+                                                                cx.notify();
                                                             }))
-                                                    )
+                                                            .child(short_label)
+                                                    }))
                                             })
                                     })
                             )

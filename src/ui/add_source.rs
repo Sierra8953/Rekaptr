@@ -454,8 +454,7 @@ impl LumaWorkspace {
                                         Button::new("modal-cancel", "Cancel")
                                             .variant(ButtonVariant::Ghost)
                                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                this.show_add_source_modal = false;
-                                                cx.notify();
+                                                this.close_add_source_modal(cx);
                                             }))
                                     )
                                     .child(
@@ -520,16 +519,22 @@ impl LumaWorkspace {
                                                     this.load_video(&title, window, cx);
                                                     this.show_toast("Source Added", Some(&format!("{} is now available in your gallery.", title)), adabraka_ui::overlays::toast::ToastVariant::Success, window, cx);
                                                 }
-                                                this.show_add_source_modal = false;
-                                                cx.notify();
+                                                this.close_add_source_modal(cx);
                                             }))
                                     )
                             )
                     )
             )
             .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                this.show_add_source_modal = false;
-                cx.notify();
+                this.close_add_source_modal(cx);
             }))
+    }
+
+    fn close_add_source_modal(&mut self, cx: &mut Context<Self>) {
+        self.show_add_source_modal = false;
+        self.form_hwnd = None;
+        self.form_title = String::new();
+        self.form_active_tab = 0;
+        cx.notify();
     }
 }

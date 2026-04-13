@@ -4,10 +4,18 @@ use adabraka_ui::prelude::*;
 use gpui::*;
 
 impl LumaWorkspace {
-    pub fn save_clip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.clip_start >= 0.0 && self.clip_end >= 0.0 {
             self.show_export_modal = true;
             cx.notify();
+        } else {
+            self.show_toast(
+                "Set IN and OUT points first",
+                Some("Use the timeline to mark the start and end of your clip."),
+                adabraka_ui::overlays::toast::ToastVariant::Warning,
+                window,
+                cx,
+            );
         }
     }
 
@@ -187,6 +195,11 @@ impl LumaWorkspace {
 
                 let _ = this.update(&mut cx, |this, cx| {
                     this.show_export_modal = false;
+                    this.export_reencode = false;
+                    this.export_encoder = "h264_nvenc".to_string();
+                    this.export_bitrate = 50000;
+                    this.export_preset = "p4".to_string();
+                    this.export_crf = 23;
                     *this.app_state.export.phase.lock() = crate::state::ExportPhase::Idle;
 
                     if let Some(any_window) = cx.windows().first() {
@@ -194,6 +207,8 @@ impl LumaWorkspace {
                             match result {
                                 Ok(output) => {
                                     if output.status.success() {
+                                        this.clip_start = -1.0;
+                                        this.clip_end = -1.0;
                                         this.show_toast(
                                             SharedString::from("Clip Saved"),
                                             Some(SharedString::from(format!("Exported to {:?}", output_path))),

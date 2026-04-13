@@ -1,0 +1,3 @@
+## 2024-04-13 - Replace `.clone()` then `.clear()` with `.drain()` in collection handling
+**Learning:** In Rust, iterating over a collection by cloning it first and then clearing the original collection is inefficient, especially when the collection is `HashSet<String>` as it triggers multiple heap allocations (for both the new `HashSet` structure and cloning each `String` inside). `drain()` allows iterating and removing elements simultaneously without the allocation overhead.
+**Action:** Replace `.clone()` followed by `.clear()` pattern with `.drain().collect::<Vec<_>>()` or iterate directly over `.drain()` where possible. In the case of `HashSet`, `drain()` returns an iterator that yields and removes all elements.

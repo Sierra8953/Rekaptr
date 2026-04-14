@@ -1,14 +1,18 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
-use crate::state::GameSession;
 use crate::config::GameSettings;
+use crate::state::GameSession;
+use crate::ui::LumaWorkspace;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl LumaWorkspace {
-    pub fn render_add_source_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_add_source_modal(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let windows = self.app_state.available_windows.lock().clone();
         let theme = use_theme();
-        
+
         let mut window_list = div()
             .id("add-source-window-list")
             .flex()
@@ -21,7 +25,7 @@ impl LumaWorkspace {
             let hwnd = win.hwnd;
             let title = win.title.clone();
             let is_selected = self.form_hwnd == Some(hwnd);
-            
+
             window_list = window_list.child(
                 div()
                     .id(("win", hwnd as usize))
@@ -29,17 +33,30 @@ impl LumaWorkspace {
                     .py(px(8.0))
                     .rounded_md()
                     .cursor_pointer()
-                    .bg(if is_selected { theme.tokens.accent } else { gpui::transparent_black() })
+                    .bg(if is_selected {
+                        theme.tokens.accent
+                    } else {
+                        gpui::transparent_black()
+                    })
                     .hover(|style| style.bg(theme.tokens.accent))
                     .child(
                         HStack::new()
                             .justify_between()
-                            .child(div().text_sm().text_color(theme.tokens.foreground).child(title.clone()))
-                            .when(is_selected, |this| this.child(
+                            .child(
                                 div()
-                                    .id(("check", hwnd as usize))
-                                    .child(Icon::new("check.svg").size(px(14.0)).color(theme.tokens.primary))
-                            ))
+                                    .text_sm()
+                                    .text_color(theme.tokens.foreground)
+                                    .child(title.clone()),
+                            )
+                            .when(is_selected, |this| {
+                                this.child(
+                                    div().id(("check", hwnd as usize)).child(
+                                        Icon::new("check.svg")
+                                            .size(px(14.0))
+                                            .color(theme.tokens.primary),
+                                    ),
+                                )
+                            }),
                     )
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
@@ -48,7 +65,7 @@ impl LumaWorkspace {
                         this.form_hwnd = Some(hwnd);
                         this.form_title = title.clone();
                         cx.notify();
-                    }))
+                    })),
             );
         }
 

@@ -1,10 +1,15 @@
-use gpui::*;
-use crate::video_player::video;
-use adabraka_ui::prelude::*;
 use crate::ui::LumaWorkspace;
+use crate::video_player::video;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl LumaWorkspace {
-    pub fn render_dashboard(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_dashboard(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
 
         let (position, duration) = if let Some(v) = &self.video_source {
@@ -23,29 +28,57 @@ impl LumaWorkspace {
                     .child(video(v_clone).id("main-video"))
                     .into_any_element()
             }
-            None => div().w_full().h_full().bg(rgb(0x000000)).flex().items_center().justify_center().child(
-                VStack::new()
-                    .items_center()
-                    .gap_3()
-                    .child(Icon::new("info").size(px(40.0)).color(theme.tokens.muted_foreground))
-                    .child(div().text_color(theme.tokens.muted_foreground).font_weight(FontWeight::MEDIUM).child("Select a source to begin previewing"))
-            ).into_any_element(),
+            None => div()
+                .w_full()
+                .h_full()
+                .bg(rgb(0x000000))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    VStack::new()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            Icon::new("info")
+                                .size(px(40.0))
+                                .color(theme.tokens.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.tokens.muted_foreground)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Select a source to begin previewing"),
+                        ),
+                )
+                .into_any_element(),
         };
 
         let is_recording = self.app_state.recording.phase.lock().is_recording();
 
         // Collect recording stats for overlay
-        let rec_elapsed = self.recording_start_time
+        let rec_elapsed = self
+            .recording_start_time
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
         let rec_bitrate = *self.app_state.recording.rec_stats.bitrate_kbps.lock();
-        let rec_dropped = self.app_state.recording.rec_stats.dropped_frames.load(std::sync::atomic::Ordering::Relaxed);
+        let rec_dropped = self
+            .app_state
+            .recording
+            .rec_stats
+            .dropped_frames
+            .load(std::sync::atomic::Ordering::Relaxed);
         let rec_disk_rate = *self.app_state.recording.rec_stats.disk_write_mbps.lock();
-        let rec_segments = self.app_state.recording.rec_stats.segments_written.load(std::sync::atomic::Ordering::Relaxed);
+        let rec_segments = self
+            .app_state
+            .recording
+            .rec_stats
+            .segments_written
+            .load(std::sync::atomic::Ordering::Relaxed);
 
-        const CONTROLS_BASE_PX: f32 = 140.0;  // padding + gap + button bar + video track
+        const CONTROLS_BASE_PX: f32 = 140.0; // padding + gap + button bar + video track
         const AUDIO_TRACK_PX: f32 = 36.0;
-        const CHROME_PX: f32 = 160.0;         // header + outer padding + gaps
+        const CHROME_PX: f32 = 160.0; // header + outer padding + gaps
 
         let audio_tracks = self.get_current_audio_tracks();
         let enabled_track_count = audio_tracks.iter().filter(|t| t.enabled).count();
@@ -233,61 +266,85 @@ impl LumaWorkspace {
                                                 HStack::new()
                                                     .gap_2()
                                                     .child(
-                                                        Button::new("btn-record", "")
-                                                            .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
-                                                            .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                this.toggle_recording(window, cx);
-                                                            }))
+                                                        Tooltip::new(if is_recording { "Stop Recording" } else { "Start Recording" })
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new("btn-record", "")
+                                                                    .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
+                                                                    .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
+                                                                    .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                        this.toggle_recording(window, cx);
+                                                                    }))
+                                                            )
                                                     )
                                                     .child(
-                                                        Button::new("btn-back", "")
-                                                            .icon(IconSource::Named("rotate-ccw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
+                                                        Tooltip::new("Rewind 10s")
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new("btn-back", "")
+                                                                    .icon(IconSource::Named("rotate-ccw".to_string()))
+                                                                    .variant(ButtonVariant::Outline)
+                                                                    .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                        if let Some(v) = &this.video_source {
+                                                                            let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
+                                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                        }
+                                                                    }))
+                                                            )
                                                     )
                                                     .child({
                                                         let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
-                                                        Button::new("btn-play", "")
-                                                            .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                this.toggle_play_pause(cx);
-                                                            }))
+                                                        Tooltip::new(if is_paused { "Play" } else { "Pause" })
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new("btn-play", "")
+                                                                    .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
+                                                                    .variant(ButtonVariant::Outline)
+                                                                    .on_click(cx.listener(|this: &mut Self, _, _, cx| {
+                                                                        this.toggle_play_pause(cx);
+                                                                    }))
+                                                            )
                                                     })
                                                     .child(
-                                                        Button::new("btn-fwd", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
+                                                        Tooltip::new("Forward 30s")
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new("btn-fwd", "")
+                                                                    .icon(IconSource::Named("rotate-cw".to_string()))
+                                                                    .variant(ButtonVariant::Outline)
+                                                                    .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
+                                                                        if let Some(v) = &this.video_source {
+                                                                            let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
+                                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                                        }
+                                                                    }))
+                                                            )
                                                     )
                                                     .child(
-                                                        Button::new("btn-refresh", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-                                                                this.load_video(&source, window, cx);
-                                                            }))
+                                                        Tooltip::new("Reload Video")
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new("btn-refresh", "")
+                                                                    .icon(IconSource::Named("rotate-cw".to_string()))
+                                                                    .variant(ButtonVariant::Secondary)
+                                                                    .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                                                        let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                                                                        this.load_video(&source, window, cx);
+                                                                    }))
+                                                            )
                                                     )
                                                     .child(div().w(px(10.0)))
                                                     .children(crate::state::MarkerKind::ALL.iter().map(|&kind| {
-                                                        Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
-                                                            .icon(IconSource::Named(kind.icon_name().to_string()))
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                                                                this.add_marker_with_kind(kind, cx);
-                                                            }))
+                                                        Tooltip::new(SharedString::from(format!("Add {} Marker", kind.label())))
+                                                            .placement(TooltipPlacement::Bottom)
+                                                            .child(
+                                                                Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
+                                                                    .icon(IconSource::Named(kind.icon_name().to_string()))
+                                                                    .variant(ButtonVariant::Secondary)
+                                                                    .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
+                                                                        this.add_marker_with_kind(kind, cx);
+                                                                    }))
+                                                            )
                                                             .into_any_element()
                                                     }))
                                                     .child(div().w(px(6.0)))
@@ -347,15 +404,15 @@ impl LumaWorkspace {
             )
     }
 
-    pub fn render_game_gallery(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_game_gallery(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let sessions = &self.app_state.manual_sessions;
         let theme = use_theme();
-        
-        let mut gallery = div()
-            .id("source-gallery")
-            .flex()
-            .flex_wrap()
-            .gap_4();
+
+        let mut gallery = div().id("source-gallery").flex().flex_wrap().gap_4();
 
         gallery = gallery.child(
             div()
@@ -377,19 +434,30 @@ impl LumaWorkspace {
                             VStack::new()
                                 .items_center()
                                 .child(
-                                    div()
-                                        .id("add-plus-icon")
-                                        .child(Icon::new("plus").size(px(32.0)).color(theme.tokens.muted_foreground))
+                                    div().id("add-plus-icon").child(
+                                        Icon::new("plus")
+                                            .size(px(32.0))
+                                            .color(theme.tokens.muted_foreground),
+                                    ),
                                 )
-                                .child(div().text_color(theme.tokens.muted_foreground).font_weight(FontWeight::MEDIUM).mt_2().child("Add Source"))
-                        )
+                                .child(
+                                    div()
+                                        .text_color(theme.tokens.muted_foreground)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .mt_2()
+                                        .child("Add Source"),
+                                ),
+                        ),
                 )
                 .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                    this.show_add_source_modal = true;
-                    this.refresh_available_windows(cx);
-                    cx.notify();
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut Self, _, _, cx| {
+                        this.show_add_source_modal = true;
+                        this.refresh_available_windows(cx);
+                        cx.notify();
+                    }),
+                ),
         );
 
         let monitor_selected = self.selected_source.as_deref() == Some("monitor");
@@ -399,50 +467,58 @@ impl LumaWorkspace {
                 .relative()
                 .w(px(240.0))
                 .h(px(135.0))
-                .border_color(if monitor_selected { theme.tokens.primary } else { theme.tokens.border })
+                .border_color(if monitor_selected {
+                    theme.tokens.primary
+                } else {
+                    theme.tokens.border
+                })
                 .border(if monitor_selected { px(2.0) } else { px(1.0) })
                 .rounded_xl()
                 .overflow_hidden()
                 .hover(|s| s.shadow_lg())
                 .child(
-                    div()
-                        .size_full()
-                        .bg(theme.tokens.card)
-                        .child(
-                            VStack::new()
-                                .h_full()
-                                .justify_between()
-                                .p_4()
-                                .child(
-                                    HStack::new()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child("Monitor"))
-                                )
-                                .child(
-                                    div().text_sm().text_color(theme.tokens.muted_foreground).child("Record entire desktop")
-                                )
-                        )
+                    div().size_full().bg(theme.tokens.card).child(
+                        VStack::new()
+                            .h_full()
+                            .justify_between()
+                            .p_4()
+                            .child(
+                                HStack::new().justify_between().items_center().child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.tokens.foreground)
+                                        .child("Monitor"),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .child("Record entire desktop"),
+                            ),
+                    ),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .top_2()
-                        .right_2()
-                        .child(
-                            div()
-                                .id("monitor-settings-btn-hitbox")
-                                .cursor_pointer()
-                                .p_1()
-                                .text_color(theme.tokens.muted_foreground)
-                                .hover(|s| s.text_color(theme.tokens.primary))
-                                .child(
-                                    svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
-                                )
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    div().absolute().top_2().right_2().child(
+                        div()
+                            .id("monitor-settings-btn-hitbox")
+                            .cursor_pointer()
+                            .p_1()
+                            .text_color(theme.tokens.muted_foreground)
+                            .hover(|s| s.text_color(theme.tokens.primary))
+                            .child(
+                                svg()
+                                    .path("icons/settings.svg")
+                                    .size(px(16.0))
+                                    .flex_shrink_0(),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.advanced_settings_source = Some("monitor".to_string());
-                                    
+
                                     // Refresh window list for audio routing asynchronously
                                     this.refresh_available_windows(cx);
 
@@ -460,33 +536,43 @@ impl LumaWorkspace {
                                     this.form_preset = config.global_video.preset.clone();
                                     this.form_zero_latency = config.global_video.zero_latency;
                                     this.form_lookahead = config.global_video.lookahead;
-                                    this.form_lookahead_frames = config.global_video.lookahead_frames;
+                                    this.form_lookahead_frames =
+                                        config.global_video.lookahead_frames;
                                     this.form_spatial_aq = config.global_video.spatial_aq;
                                     this.form_temporal_aq = config.global_video.temporal_aq;
                                     this.form_audio_tracks = config.global_audio_tracks.clone();
                                     this.form_active_tab = 0;
                                     this.form_editing_track_index = None;
-                                    
+
                                     cx.notify();
-                                }))
-                        )
+                                }),
+                            ),
+                    ),
                 )
                 .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, window, cx| {
-                    log::debug!("[UI] Monitor card clicked");
-                    this.selected_source = Some("monitor".to_string());
-                    this.load_video("monitor", window, cx);
-                    cx.notify();
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this: &mut Self, _, window, cx| {
+                        log::debug!("[UI] Monitor card clicked");
+                        this.selected_source = Some("monitor".to_string());
+                        this.load_video("monitor", window, cx);
+                        cx.notify();
+                    }),
+                ),
         );
 
         for session in sessions.iter() {
             let title = session.value().title.to_string();
             let is_selected = self.selected_source.as_deref() == Some(title.as_str());
-            
+
             // Check cache
-            let cached_path = self.app_state.artwork_cache.get(&title).map(|v| v.value().clone()).flatten();
-            
+            let cached_path = self
+                .app_state
+                .artwork_cache
+                .get(&title)
+                .map(|v| v.value().clone())
+                .flatten();
+
             if !self.app_state.artwork_cache.contains_key(&title) {
                 // Mark as in-progress immediately
                 self.app_state.artwork_cache.insert(title.clone(), None);
@@ -502,14 +588,17 @@ impl LumaWorkspace {
                     let title = title_cache;
                     async move {
                         // Resolve app_id + check local cache off UI thread
-                        let resolved = cx.background_executor().spawn({
-                            let title = title.clone();
-                            async move {
-                                crate::utils::find_steam_artwork(&title)
-                            }
-                        }).await;
+                        let resolved = cx
+                            .background_executor()
+                            .spawn({
+                                let title = title.clone();
+                                async move { crate::utils::find_steam_artwork(&title) }
+                            })
+                            .await;
 
-                        let Some(source) = resolved else { return; };
+                        let Some(source) = resolved else {
+                            return;
+                        };
 
                         if !source.starts_with("http") {
                             app_state.artwork_cache.insert(title, Some(source));
@@ -519,12 +608,20 @@ impl LumaWorkspace {
 
                         // Download from CDN
                         let result = if let Ok(resp) = reqwest::get(&source).await {
-                            if let Ok(bytes) = resp.bytes().await { Some(bytes) } else { None }
-                        } else { None };
+                            if let Ok(bytes) = resp.bytes().await {
+                                Some(bytes)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
 
                         if let Some(bytes) = result {
                             let app_id = source.split('/').nth(5).unwrap_or("unknown");
-                            let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                            let cache_dir = crate::utils::get_storage_root()
+                                .join("Cache")
+                                .join("Artwork");
                             let _ = std::fs::create_dir_all(&cache_dir);
                             let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
                             if std::fs::write(&local_path, &bytes).is_ok() {
@@ -534,7 +631,8 @@ impl LumaWorkspace {
                             }
                         }
                     }
-                }).detach();
+                })
+                .detach();
             }
 
             let final_image_path = cached_path.map(std::path::PathBuf::from);
@@ -547,46 +645,45 @@ impl LumaWorkspace {
                     .relative()
                     .w(px(240.0))
                     .h(px(135.0))
-                    .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
+                    .border_color(if is_selected {
+                        theme.tokens.primary
+                    } else {
+                        theme.tokens.border
+                    })
                     .border(if is_selected { px(2.0) } else { px(1.0) })
                     .rounded_xl()
                     .overflow_hidden()
                     .cursor_pointer()
                     .hover(|s| s.shadow_lg())
-                    .on_mouse_down(MouseButton::Left, cx.listener({
-                        let title = title.clone();
-                        move |this: &mut Self, _, window, cx| {
-                            this.selected_source = Some(title.clone());
-                            this.load_video(&title, window, cx);
-                            cx.notify();
-                        }
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener({
+                            let title = title.clone();
+                            move |this: &mut Self, _, window, cx| {
+                                this.selected_source = Some(title.clone());
+                                this.load_video(&title, window, cx);
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .size_full()
                             .bg(theme.tokens.card)
                             // Artwork Background
                             .child({
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .size_full()
-                                    .when_some(final_image_path, |this, path| {
+                                div().absolute().inset_0().size_full().when_some(
+                                    final_image_path,
+                                    |this, path| {
                                         this.child(
-                                            img(path)
-                                                .size_full()
-                                                .object_fit(ObjectFit::Cover)
+                                            img(path).size_full().object_fit(ObjectFit::Cover),
                                         )
-                                    })
+                                    },
+                                )
                             })
                             // Dark Overlay for readability - ONLY if image exists
                             .when(image_exists, |this| {
-                                this.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .bg(gpui::rgba(0x000000_99))
-                                )
+                                this.child(div().absolute().inset_0().bg(gpui::rgba(0x000000_99)))
                             })
                             .child(
                                 VStack::new()
@@ -595,73 +692,82 @@ impl LumaWorkspace {
                                     .justify_between()
                                     .p_4()
                                     .child(
-                                        HStack::new()
-                                            .justify_between()
-                                            .items_center()
-                                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(gpui::white()).child(title.clone()))
+                                        HStack::new().justify_between().items_center().child(
+                                            div()
+                                                .text_lg()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(gpui::white())
+                                                .child(title.clone()),
+                                        ),
                                     )
                                     .child(
-                                        div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child("Click to preview recording")
-                                    )
-                            )
+                                        div()
+                                            .text_sm()
+                                            .text_color(gpui::rgba(0xffffff_aa))
+                                            .child("Click to preview recording"),
+                                    ),
+                            ),
                     )
-                    .child(
+                    .child(div().absolute().top_2().right_2().child({
+                        let title_settings = title.clone();
                         div()
-                            .absolute()
-                            .top_2()
-                            .right_2()
-                            .child({
-                                let title_settings = title.clone();
-                                div()
-                                    .id(("session-settings-btn-hitbox", session_key))
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .text_color(theme.tokens.muted_foreground)
-                                    .hover(|s| s.text_color(theme.tokens.primary))
-                                    .child(
-                                        svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
-                                    )
-                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.advanced_settings_source = Some(title_settings.clone());
-                                        
-                                        // Refresh window list for audio routing asynchronously
-                                        this.refresh_available_windows(cx);
+                            .id(("session-settings-btn-hitbox", session_key))
+                            .cursor_pointer()
+                            .p_1()
+                            .text_color(theme.tokens.muted_foreground)
+                            .hover(|s| s.text_color(theme.tokens.primary))
+                            .child(
+                                svg()
+                                    .path("icons/settings.svg")
+                                    .size(px(16.0))
+                                    .flex_shrink_0(),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.advanced_settings_source = Some(title_settings.clone());
 
-                                        // Load session settings into form state
-                                        let config = crate::config::AppConfig::load();
-                                        if let Some(settings) = config.game_registry.get(&title_settings) {
-                                            if let Some(video) = &settings.video_overrides {
-                                                this.form_encoder = video.encoder.clone();
-                                                this.form_rate_control = video.rate_control_index;
-                                                this.form_bitrate = video.bitrate_kbps;
-                                                this.form_cq = video.cq_level;
-                                                this.form_resolution = video.resolution.clone();
-                                                this.form_fps = video.fps;
-                                                this.form_retention = video.retention_minutes;
-                                                this.form_gop = video.gop_size;
-                                                this.form_bframes = video.bframes;
-                                                this.form_preset = video.preset.clone();
-                                                this.form_zero_latency = video.zero_latency;
-                                                this.form_lookahead = video.lookahead;
-                                                this.form_lookahead_frames = video.lookahead_frames;
-                                                this.form_spatial_aq = video.spatial_aq;
-                                                this.form_temporal_aq = video.temporal_aq;
-                                            }
-                                            if let Some(audio) = &settings.audio_routing {
-                                                this.form_audio_tracks = audio.clone();
-                                            } else {
-                                                this.form_audio_tracks = config.global_audio_tracks.clone();
-                                            }
-                                            this.form_auto_record = settings.auto_record;
+                                    // Refresh window list for audio routing asynchronously
+                                    this.refresh_available_windows(cx);
+
+                                    // Load session settings into form state
+                                    let config = crate::config::AppConfig::load();
+                                    if let Some(settings) =
+                                        config.game_registry.get(&title_settings)
+                                    {
+                                        if let Some(video) = &settings.video_overrides {
+                                            this.form_encoder = video.encoder.clone();
+                                            this.form_rate_control = video.rate_control_index;
+                                            this.form_bitrate = video.bitrate_kbps;
+                                            this.form_cq = video.cq_level;
+                                            this.form_resolution = video.resolution.clone();
+                                            this.form_fps = video.fps;
+                                            this.form_retention = video.retention_minutes;
+                                            this.form_gop = video.gop_size;
+                                            this.form_bframes = video.bframes;
+                                            this.form_preset = video.preset.clone();
+                                            this.form_zero_latency = video.zero_latency;
+                                            this.form_lookahead = video.lookahead;
+                                            this.form_lookahead_frames = video.lookahead_frames;
+                                            this.form_spatial_aq = video.spatial_aq;
+                                            this.form_temporal_aq = video.temporal_aq;
                                         }
-                                        this.form_active_tab = 0;
-                                        this.form_editing_track_index = None;
-                                        
-                                        cx.notify();
-                                    }))
-                            })
-                    )
+                                        if let Some(audio) = &settings.audio_routing {
+                                            this.form_audio_tracks = audio.clone();
+                                        } else {
+                                            this.form_audio_tracks =
+                                                config.global_audio_tracks.clone();
+                                        }
+                                        this.form_auto_record = settings.auto_record;
+                                    }
+                                    this.form_active_tab = 0;
+                                    this.form_editing_track_index = None;
+
+                                    cx.notify();
+                                }),
+                            )
+                    })),
             );
         }
 

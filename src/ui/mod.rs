@@ -1,12 +1,12 @@
 use crate::config::{AppConfig, AudioRouting};
 use crate::state::AppState;
 use crate::video_player::Video;
-use adabraka_ui::prelude::*;
 use adabraka_ui::components::dropdown::DropdownState;
+use adabraka_ui::prelude::*;
 use gpui::*;
-use std::sync::Arc;
-use gstreamer::prelude::*;
 use gstreamer as gst;
+use gstreamer::prelude::*;
+use std::sync::Arc;
 
 mod add_source;
 mod clips;
@@ -18,8 +18,8 @@ mod setup_wizard;
 mod sidebar;
 mod timeline;
 
-use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::display::data_table::DataTable;
+use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 
 #[allow(dead_code)]
 pub struct LumaWorkspace {
@@ -42,7 +42,7 @@ pub struct LumaWorkspace {
     pub preview_scrubbing_progress: f32,
     pub preview_audio_enabled: Vec<bool>,
     pub preview_volume: f64,
-pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderState>,
+    pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderState>,
     pub clip_popover: Option<(Point<Pixels>, crate::state::Clip)>,
     pub clip_table: Entity<DataTable<crate::state::Clip>>,
     pub clips_list_state: ListState,
@@ -240,14 +240,14 @@ impl LumaWorkspace {
         let config = AppConfig::load();
 
         // Initialize empty DataTable for clips
-        let clip_table = cx.new(|cx| {
-            DataTable::new(Vec::new(), Self::create_clip_columns(), cx)
-        });
+        let clip_table = cx.new(|cx| DataTable::new(Vec::new(), Self::create_clip_columns(), cx));
 
         // Populate app_state with saved games from config
         if app_state.game_registry.is_empty() {
             for (title, settings) in &config.game_registry {
-                app_state.game_registry.insert(title.clone(), settings.clone());
+                app_state
+                    .game_registry
+                    .insert(title.clone(), settings.clone());
                 let id = app_state.manual_sessions.len() as i32 + 100;
                 app_state.manual_sessions.insert(
                     id,
@@ -290,7 +290,7 @@ impl LumaWorkspace {
             is_scrubbing_preview: false,
             preview_audio_enabled: Vec::new(),
             preview_volume: 100.0,
-preview_vol_slider_state: cx.new(|cx| {
+            preview_vol_slider_state: cx.new(|cx| {
                 let mut state = adabraka_ui::components::slider::SliderState::new(cx);
                 state.set_value(66.7, cx); // 100/150 * 100 = 66.7%
                 state
@@ -354,7 +354,8 @@ preview_vol_slider_state: cx.new(|cx| {
             cached_clips: Vec::new(),
             library_items: Vec::new(),
             form_max_buffer_size_gb: config.max_buffer_size_gb,
-            clips_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            clips_search_input: cx
+                .new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             favorite_clips: crate::config::AppConfig::load_favorites(),
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
@@ -370,7 +371,10 @@ preview_vol_slider_state: cx.new(|cx| {
             setup_storage_path: config.storage_path.clone(),
             setup_selected_encoder: {
                 let detected = setup_wizard::detect_available_encoders();
-                let default_enc = detected.first().map(|e| e.id.clone()).unwrap_or_else(|| config.global_video.encoder.clone());
+                let default_enc = detected
+                    .first()
+                    .map(|e| e.id.clone())
+                    .unwrap_or_else(|| config.global_video.encoder.clone());
                 default_enc
             },
             setup_detected_encoders: setup_wizard::detect_available_encoders(),
@@ -412,7 +416,8 @@ preview_vol_slider_state: cx.new(|cx| {
             settings_form_auto_delete_days: config.auto_delete_clips_days.unwrap_or(30),
             settings_form_export_format: config.default_export_format.clone(),
             // Dropdown states
-            custom_res_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            custom_res_input: cx
+                .new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             dd_encoder: cx.new(|cx| DropdownState::new(cx)),
             dd_resolution: cx.new(|cx| DropdownState::new(cx)),
             dd_fps: cx.new(|cx| DropdownState::new(cx)),
@@ -450,8 +455,12 @@ preview_vol_slider_state: cx.new(|cx| {
                 let _ = pipeline.set_state(gstreamer::State::Null);
 
                 // Fixup EOS segments
-                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-                let game_dir = crate::utils::get_storage_root().join(crate::utils::clean_title(&source));
+                let source = this
+                    .selected_source
+                    .clone()
+                    .unwrap_or_else(|| "monitor".to_string());
+                let game_dir =
+                    crate::utils::get_storage_root().join(crate::utils::clean_title(&source));
                 crate::utils::fixup_eos_segments(&game_dir);
                 *this.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
                 log::info!("[Shutdown] Recording pipeline stopped.");
@@ -459,7 +468,10 @@ preview_vol_slider_state: cx.new(|cx| {
 
             // 2. Stop mic provider pipeline
             if let Some(mic) = this.app_state.mic_provider.lock().take() {
-                log::info!("[Shutdown] Mic provider released ({} subscribers)", mic.subscribers.len());
+                log::info!(
+                    "[Shutdown] Mic provider released ({} subscribers)",
+                    mic.subscribers.len()
+                );
                 mic.subscribers.clear();
             }
 
@@ -467,7 +479,10 @@ preview_vol_slider_state: cx.new(|cx| {
             {
                 let mut routers = this.app_state.virtual_audio_routers.lock();
                 if !routers.is_empty() {
-                    log::info!("[Shutdown] Stopping {} virtual audio routers", routers.len());
+                    log::info!(
+                        "[Shutdown] Stopping {} virtual audio routers",
+                        routers.len()
+                    );
                     routers.clear(); // Drop calls stop on each router
                 }
             }
@@ -492,10 +507,12 @@ preview_vol_slider_state: cx.new(|cx| {
                         if let Some(v) = &this.video_source {
                             if !v.paused() || this.is_scrubbing {
                                 let pos = v.position().as_secs_f64();
-                                if (pos - this.last_notified_position).abs() > 0.05 || this.is_scrubbing {
+                                if (pos - this.last_notified_position).abs() > 0.05
+                                    || this.is_scrubbing
+                                {
                                     this.last_notified_position = pos;
                                     should_notify = true;
-                                    
+
                                     // Re-check audio mix in case track count changed between segments.
                                     this.update_mpv_audio_mix();
                                 }
@@ -526,7 +543,7 @@ preview_vol_slider_state: cx.new(|cx| {
         if let Some(v) = &self.video_source {
             // Get the actual number of audio tracks present in the current file/segment
             let actual_track_count = v.audio_tracks().len();
-            
+
             let active_tracks = self.get_current_audio_tracks();
             let mut enabled_aids = Vec::new();
             for (i, t) in active_tracks.iter().enumerate() {
@@ -545,21 +562,29 @@ preview_vol_slider_state: cx.new(|cx| {
                 let idx = enabled_aids[0];
                 let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
                 let complex = format!("[aid{}]volume=volume={}[ao]", idx + 1, vol);
-                
+
                 let _ = v.read().mpv.set_property("aid", "no");
                 let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
             } else {
                 let mut complex = String::new();
                 for &idx in &enabled_aids {
                     let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
-                    complex.push_str(&format!("[aid{}]volume=volume={}[a{}];", idx + 1, vol, idx + 1));
+                    complex.push_str(&format!(
+                        "[aid{}]volume=volume={}[a{}];",
+                        idx + 1,
+                        vol,
+                        idx + 1
+                    ));
                 }
                 for &idx in &enabled_aids {
                     complex.push_str(&format!("[a{}]", idx + 1));
                 }
                 // Normalize=0 prevents volume dropping when mixing multiple tracks
-                complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", enabled_aids.len()));
-                
+                complex.push_str(&format!(
+                    "amix=inputs={}:normalize=0[ao]",
+                    enabled_aids.len()
+                ));
+
                 let _ = v.read().mpv.set_property("aid", "no");
                 let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
             }
@@ -568,7 +593,9 @@ preview_vol_slider_state: cx.new(|cx| {
 
     pub fn update_preview_audio_mix(&self) {
         if let Some(v) = &self.preview_video_source {
-            let enabled_ids: Vec<usize> = self.preview_audio_enabled.iter()
+            let enabled_ids: Vec<usize> = self
+                .preview_audio_enabled
+                .iter()
                 .enumerate()
                 .filter(|(_, &on)| on)
                 .map(|(i, _)| i)
@@ -589,7 +616,10 @@ preview_vol_slider_state: cx.new(|cx| {
                 for &idx in &enabled_ids {
                     complex.push_str(&format!("[a{}]", idx + 1));
                 }
-                complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", enabled_ids.len()));
+                complex.push_str(&format!(
+                    "amix=inputs={}:normalize=0[ao]",
+                    enabled_ids.len()
+                ));
                 let _ = v.read().mpv.set_property("aid", "no");
                 let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
             }
@@ -635,7 +665,7 @@ preview_vol_slider_state: cx.new(|cx| {
     pub fn set_active_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
         self.active_view = view;
         self.hotkey_listening = None;
-        
+
         if view == ActiveView::Clips {
             self.refresh_clips(cx);
         } else {
@@ -650,16 +680,16 @@ preview_vol_slider_state: cx.new(|cx| {
             let config = AppConfig::load();
             self.form_max_buffer_size_gb = config.max_buffer_size_gb;
             self.sync_settings_form_from_config(&config);
-            
+
             if !self.is_calculating_storage {
                 self.is_calculating_storage = true;
                 let task = cx.background_spawn(async move {
                     let root = crate::utils::get_storage_root();
                     let clips_dir = root.join("Clips");
-                    
+
                     let clips_size = crate::utils::get_dir_size(&clips_dir).unwrap_or(0);
                     let mut sessions_size = 0;
-                    
+
                     if let Ok(entries) = std::fs::read_dir(&root) {
                         for entry in entries.filter_map(|e| e.ok()) {
                             let path = entry.path();
@@ -667,18 +697,22 @@ preview_vol_slider_state: cx.new(|cx| {
                                 let name = entry.file_name().to_string_lossy().to_string();
                                 let name_lower = name.to_lowercase();
                                 // Ignore system/build/dependency folders to prevent massive recursive scans
-                                if name != "Clips" && name != "Cache" && !name.starts_with(".") 
-                                   && name_lower != "target" && name_lower != "dist" 
-                                   && !name_lower.contains("gstreamer") {
+                                if name != "Clips"
+                                    && name != "Cache"
+                                    && !name.starts_with(".")
+                                    && name_lower != "target"
+                                    && name_lower != "dist"
+                                    && !name_lower.contains("gstreamer")
+                                {
                                     sessions_size += crate::utils::get_dir_size(&path).unwrap_or(0);
                                 }
                             }
                         }
                     }
-                    
+
                     (clips_size, sessions_size)
                 });
-                
+
                 cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
                     let mut cx = cx.clone();
                     async move {
@@ -690,10 +724,11 @@ preview_vol_slider_state: cx.new(|cx| {
                             cx.notify();
                         });
                     }
-                }).detach();
+                })
+                .detach();
             }
         }
-        
+
         cx.notify();
     }
 
@@ -710,15 +745,18 @@ preview_vol_slider_state: cx.new(|cx| {
     }
 
     pub fn refresh_clips(&mut self, cx: &mut Context<Self>) {
-        if self.is_loading_clips { return; }
+        if self.is_loading_clips {
+            return;
+        }
         self.is_loading_clips = true;
-        
+
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let clips = cx.background_executor().spawn(async move {
-                    crate::utils::fetch_all_clips()
-                }).await;
+                let clips = cx
+                    .background_executor()
+                    .spawn(async move { crate::utils::fetch_all_clips() })
+                    .await;
 
                 let _ = this.update(&mut cx, |this, cx| {
                     this.cached_clips = clips.clone();
@@ -729,12 +767,13 @@ preview_vol_slider_state: cx.new(|cx| {
                     this.clip_table.update(cx, |table, cx| {
                         table.set_data(clips, cx);
                     });
-                    
+
                     cx.notify();
                 });
             }
-        }).detach();
-        
+        })
+        .detach();
+
         cx.notify();
     }
 
@@ -743,21 +782,31 @@ preview_vol_slider_state: cx.new(|cx| {
         let mut rows = Vec::new();
 
         // Collect favorited clips
-        let fav_clips: Vec<_> = clips.iter()
-            .filter(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
+        let fav_clips: Vec<_> = clips
+            .iter()
+            .filter(|c| {
+                self.favorite_clips
+                    .contains(&c.path.to_string_lossy().to_string())
+            })
             .cloned()
             .collect();
 
         if let Some(game_title) = &self.selected_game_filter {
             // Filtered view: show only clips for this game
-            let game_clips: Vec<_> = clips.iter().filter(|c| &c.title == game_title).cloned().collect();
+            let game_clips: Vec<_> = clips
+                .iter()
+                .filter(|c| &c.title == game_title)
+                .cloned()
+                .collect();
             for chunk in game_clips.chunks(4) {
                 rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
             }
         } else {
             // Favorites section
             if !fav_clips.is_empty() {
-                rows.push(crate::ui::clips::LibraryRow::SectionHeader("FAVORITES".to_string()));
+                rows.push(crate::ui::clips::LibraryRow::SectionHeader(
+                    "FAVORITES".to_string(),
+                ));
                 for chunk in fav_clips.chunks(4) {
                     rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
                 }
@@ -765,16 +814,24 @@ preview_vol_slider_state: cx.new(|cx| {
 
             // Dashboard view: recent + game groups
             if !clips.is_empty() {
-                rows.push(crate::ui::clips::LibraryRow::SectionHeader("MOST RECENT".to_string()));
+                rows.push(crate::ui::clips::LibraryRow::SectionHeader(
+                    "MOST RECENT".to_string(),
+                ));
                 let recent: Vec<_> = clips.iter().take(4).cloned().collect();
                 rows.push(crate::ui::clips::LibraryRow::ClipChunk(recent));
             }
 
-            rows.push(crate::ui::clips::LibraryRow::SectionHeader("GAMES".to_string()));
+            rows.push(crate::ui::clips::LibraryRow::SectionHeader(
+                "GAMES".to_string(),
+            ));
 
-            let mut game_groups: std::collections::BTreeMap<String, Vec<crate::state::Clip>> = std::collections::BTreeMap::new();
+            let mut game_groups: std::collections::BTreeMap<String, Vec<crate::state::Clip>> =
+                std::collections::BTreeMap::new();
             for clip in clips.iter() {
-                game_groups.entry(clip.title.clone()).or_default().push(clip.clone());
+                game_groups
+                    .entry(clip.title.clone())
+                    .or_default()
+                    .push(clip.clone());
             }
 
             let game_titles: Vec<String> = game_groups.keys().cloned().collect();
@@ -783,7 +840,8 @@ preview_vol_slider_state: cx.new(|cx| {
             self.fetch_portrait_artwork(&game_titles, cx);
 
             for chunk in game_titles.chunks(4) {
-                let titles_with_data: Vec<(String, usize)> = chunk.iter()
+                let titles_with_data: Vec<(String, usize)> = chunk
+                    .iter()
                     .map(|title| {
                         let count = game_groups.get(title).map_or(0, |v| v.len());
                         (title.clone(), count)
@@ -818,14 +876,17 @@ preview_vol_slider_state: cx.new(|cx| {
         }
 
         self.is_refreshing_windows = true;
-        
+
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let windows = cx.background_executor().spawn(async move {
-                    let mut detector = crate::game_detector::GameDetector::new();
-                    detector.enumerate_windows()
-                }).await;
+                let windows = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let mut detector = crate::game_detector::GameDetector::new();
+                        detector.enumerate_windows()
+                    })
+                    .await;
 
                 let _ = this.update(&mut cx, |this, cx: &mut Context<Self>| {
                     this.is_refreshing_windows = false;
@@ -833,14 +894,18 @@ preview_vol_slider_state: cx.new(|cx| {
                     cx.notify();
                 });
             }
-        }).detach();
-        
+        })
+        .detach();
+
         cx.notify();
     }
 
     pub fn load_video(&mut self, source_name: &str, _window: &mut Window, cx: &mut Context<Self>) {
         let path = std::path::Path::new(source_name);
-        let is_direct_file = path.exists() && path.extension().map_or(false, |ext| ext == "mkv" || ext == "mp4");
+        let is_direct_file = path.exists()
+            && path
+                .extension()
+                .map_or(false, |ext| ext == "mkv" || ext == "mp4");
 
         // Always create a fresh Video instance when switching sessions.
         // Reusing an existing mpv instance with loadfile("replace") can leave
@@ -848,7 +913,9 @@ preview_vol_slider_state: cx.new(|cx| {
         // OBU parsing errors and falling back to software decoding.
         self.video_source = None;
 
-        if self.is_loading_video { return; }
+        if self.is_loading_video {
+            return;
+        }
         self.is_loading_video = true;
         let is_same_source = self.selected_source.as_deref() == Some(source_name);
         let source_name_str = source_name.to_string();
@@ -856,16 +923,31 @@ preview_vol_slider_state: cx.new(|cx| {
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let recording_id = this.read_with(&cx, |this, _| this.recording_session_id).ok().flatten();
+                let recording_id = this
+                    .read_with(&cx, |this, _| this.recording_session_id)
+                    .ok()
+                    .flatten();
                 let (video_url, blocks) = if is_direct_file {
                     (Some(source_name_str.clone()), Vec::new())
                 } else {
                     let name_clone = source_name_str.clone();
-                    if let Some((_, b)) = cx.background_executor().spawn(async move {
-                        crate::utils::generate_session_playlist(&name_clone, recording_id)
-                    }).await {
-                        let safe_title = if source_name_str == "monitor" { "monitor".to_string() } else { crate::utils::clean_title(&source_name_str) };
-                        let url = format!("http://127.0.0.1:8080/{}/master.m3u8?token={}", safe_title, crate::get_hls_token());
+                    if let Some((_, b)) = cx
+                        .background_executor()
+                        .spawn(async move {
+                            crate::utils::generate_session_playlist(&name_clone, recording_id)
+                        })
+                        .await
+                    {
+                        let safe_title = if source_name_str == "monitor" {
+                            "monitor".to_string()
+                        } else {
+                            crate::utils::clean_title(&source_name_str)
+                        };
+                        let url = format!(
+                            "http://127.0.0.1:8080/{}/master.m3u8?token={}",
+                            safe_title,
+                            crate::get_hls_token()
+                        );
                         (Some(url), b)
                     } else {
                         (None, Vec::new())
@@ -877,10 +959,14 @@ preview_vol_slider_state: cx.new(|cx| {
                     *this.app_state.recording.current_session_blocks.lock() = blocks;
 
                     if let Some(url) = video_url {
-                        let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
+                        let d3d_device_ptr =
+                            this.app_state.d3d11_device.lock().as_ref().map(|h| h.0 .0);
                         match crate::video_player::Video::new_with_options(
                             &url,
-                            crate::video_player::VideoOptions { source_name: Some(source_name_str), ..Default::default() },
+                            crate::video_player::VideoOptions {
+                                source_name: Some(source_name_str),
+                                ..Default::default()
+                            },
                             d3d_device_ptr,
                         ) {
                             Ok(video) => {
@@ -898,7 +984,8 @@ preview_vol_slider_state: cx.new(|cx| {
                     cx.notify();
                 });
             }
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -950,7 +1037,10 @@ preview_vol_slider_state: cx.new(|cx| {
         let provider_storage = self.app_state.mic_provider.clone();
         let device_name = config.mic_settings.device_name.clone();
         crate::audio::start_mic_provider(provider_storage, device_name);
-        log::info!("[MicProvider] Restarted with noise_suppression={}", config.mic_settings.noise_suppression);
+        log::info!(
+            "[MicProvider] Restarted with noise_suppression={}",
+            config.mic_settings.noise_suppression
+        );
     }
 
     #[allow(dead_code)]
@@ -962,13 +1052,18 @@ preview_vol_slider_state: cx.new(|cx| {
         if let Some(v) = &self.video_source {
             let time = v.position().as_secs_f64();
             // Don't add duplicate markers within 0.5s of each other
-            if !self.timeline_markers.iter().any(|m| (m.time_secs - time).abs() < 0.5) {
+            if !self
+                .timeline_markers
+                .iter()
+                .any(|m| (m.time_secs - time).abs() < 0.5)
+            {
                 self.timeline_markers.push(crate::state::TimelineMarker {
                     time_secs: time,
                     kind,
                     label: None,
                 });
-                self.timeline_markers.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+                self.timeline_markers
+                    .sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
                 cx.notify();
             }
         }
@@ -985,7 +1080,8 @@ preview_vol_slider_state: cx.new(|cx| {
     /// Called after retention cleanup trims the start of the buffer.
     #[allow(dead_code)]
     pub fn prune_markers_before(&mut self, min_time_secs: f64) {
-        self.timeline_markers.retain(|m| m.time_secs >= min_time_secs);
+        self.timeline_markers
+            .retain(|m| m.time_secs >= min_time_secs);
     }
 
     pub fn open_volume_popover(&mut self, track_idx: usize, cx: &mut Context<Self>) {
@@ -999,15 +1095,19 @@ preview_vol_slider_state: cx.new(|cx| {
 
         self.audio_track_volume_popover = Some(track_idx);
         self.last_audio_track_volume_popover = Some(track_idx);
-        
-        let current_playback_volume = self.playback_volumes.get(track_idx).copied().unwrap_or(100.0);
+
+        let current_playback_volume = self
+            .playback_volumes
+            .get(track_idx)
+            .copied()
+            .unwrap_or(100.0);
         self.volume_slider_last_value = current_playback_volume as f32;
 
         self.volume_slider_state.update(cx, |state, cx| {
             state.set_step(0.1, cx);
             state.set_value((current_playback_volume / 1.5) as f32, cx);
         });
-        
+
         cx.notify();
     }
 
@@ -1019,26 +1119,47 @@ preview_vol_slider_state: cx.new(|cx| {
             let mut config = AppConfig::load();
             config.game_registry.remove(&title);
             config.save();
-            self.show_toast("Source Deleted", Some(format!("Removed {} from library.", title)), adabraka_ui::overlays::toast::ToastVariant::Default, window, cx);
+            self.show_toast(
+                "Source Deleted",
+                Some(format!("Removed {} from library.", title)),
+                adabraka_ui::overlays::toast::ToastVariant::Default,
+                window,
+                cx,
+            );
             self.session_to_delete = None;
             cx.notify();
         }
     }
 
-    pub fn delete_clip(&mut self, clip: crate::state::Clip, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn delete_clip(
+        &mut self,
+        clip: crate::state::Clip,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let _ = std::fs::remove_file(&clip.path);
         if let Some(thumb) = &clip.thumbnail_path {
             let _ = std::fs::remove_file(thumb);
         }
-        self.show_toast("Clip Deleted", Some("The file has been removed from disk."), adabraka_ui::overlays::toast::ToastVariant::Default, window, cx);
+        self.show_toast(
+            "Clip Deleted",
+            Some("The file has been removed from disk."),
+            adabraka_ui::overlays::toast::ToastVariant::Default,
+            window,
+            cx,
+        );
         self.clip_to_delete = None;
         self.refresh_clips(cx);
         cx.notify();
     }
 
-    pub fn render_workspace(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_workspace(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
-        
+
         let mut root = div()
             .size_full()
             .flex()
@@ -1052,10 +1173,14 @@ preview_vol_slider_state: cx.new(|cx| {
                     .h_full()
                     .overflow_hidden()
                     .child(match self.active_view {
-                        ActiveView::Dashboard => self.render_dashboard(window, cx).into_any_element(),
-                        ActiveView::Settings => self.render_settings_view(window, cx).into_any_element(),
+                        ActiveView::Dashboard => {
+                            self.render_dashboard(window, cx).into_any_element()
+                        }
+                        ActiveView::Settings => {
+                            self.render_settings_view(window, cx).into_any_element()
+                        }
                         ActiveView::Clips => self.render_clips(window, cx).into_any_element(),
-                    })
+                    }),
             );
 
         if self.show_setup_wizard {
@@ -1137,41 +1262,65 @@ preview_vol_slider_state: cx.new(|cx| {
                     .justify_center()
                     .on_mouse_down(MouseButton::Left, |_, _, _| {}) // Block clicks through
                     .child(
-                        Card::new()
-                            .w(px(400.0))
-                            .content(
-                                VStack::new()
-                                    .p_6()
-                                    .gap_6()
-                                    .child(
-                                        VStack::new()
-                                            .gap_1()
-                                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Delete Clip"))
-                                            .child(div().text_sm().text_color(theme.tokens.muted_foreground).child(format!("Permanently delete '{}'?", clip.title)))
-                                    )
-                                    .child(
-                                        HStack::new()
-                                            .justify_end()
-                                            .gap_3()
-                                            .child(
-                                                Button::new("cancel-delete-clip", "Cancel")
-                                                    .variant(ButtonVariant::Ghost)
-                                                    .on_click({
-                                                        let view = view.clone();
-                                                        move |_, _, cx| { let _ = view.update(cx, |this, cx| { this.clip_to_delete = None; cx.notify(); }); }
-                                                    })
-                                            )
-                                            .child(
-                                                Button::new("confirm-delete-clip", "Delete")
-                                                    .variant(ButtonVariant::Destructive)
-                                                    .on_click({
-                                                        let view = view.clone();
-                                                        move |_, window, cx| { let _ = view.update(cx, |this, cx| { this.delete_clip(clip.clone(), window, cx); }); }
-                                                    })
-                                            )
-                                    )
-                            )
-                    )
+                        Card::new().w(px(400.0)).content(
+                            VStack::new()
+                                .p_6()
+                                .gap_6()
+                                .child(
+                                    VStack::new()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_xl()
+                                                .font_weight(FontWeight::BOLD)
+                                                .child("Delete Clip"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(theme.tokens.muted_foreground)
+                                                .child(format!(
+                                                    "Permanently delete '{}'?",
+                                                    clip.title
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    HStack::new()
+                                        .justify_end()
+                                        .gap_3()
+                                        .child(
+                                            Button::new("cancel-delete-clip", "Cancel")
+                                                .variant(ButtonVariant::Ghost)
+                                                .on_click({
+                                                    let view = view.clone();
+                                                    move |_, _, cx| {
+                                                        let _ = view.update(cx, |this, cx| {
+                                                            this.clip_to_delete = None;
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("confirm-delete-clip", "Delete")
+                                                .variant(ButtonVariant::Destructive)
+                                                .on_click({
+                                                    let view = view.clone();
+                                                    move |_, window, cx| {
+                                                        let _ = view.update(cx, |this, cx| {
+                                                            this.delete_clip(
+                                                                clip.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                }),
+                                        ),
+                                ),
+                        ),
+                    ),
             );
         }
 
@@ -1179,60 +1328,77 @@ preview_vol_slider_state: cx.new(|cx| {
         if let Some((pos, clip)) = self.clip_popover.clone() {
             let clip_path_str = clip.path.to_string_lossy().to_string();
             let is_favorited = self.favorite_clips.contains(&clip_path_str);
-            let fav_label = if is_favorited { "Unfavorite" } else { "Favorite" };
+            let fav_label = if is_favorited {
+                "Unfavorite"
+            } else {
+                "Favorite"
+            };
             let items = vec![
                 PopoverMenuItem::new("favorite", fav_label)
                     .icon(if is_favorited { "star-off" } else { "star" })
                     .on_click({
                         let view = cx.entity().downgrade();
                         let path = clip_path_str.clone();
-                        move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
-                            this.toggle_favorite(&path.clone(), cx);
-                        }); }
+                        move |_, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.clip_popover = None;
+                                this.toggle_favorite(&path.clone(), cx);
+                            });
+                        }
                     }),
                 PopoverMenuItem::new("play", "Play Clip")
                     .icon("play")
                     .on_click({
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
-                        move |window, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
-                            this.set_active_view(ActiveView::Dashboard, cx);
-                            this.load_video(&clip.path.to_string_lossy(), window, cx);
-                        }); }
+                        move |window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.clip_popover = None;
+                                this.set_active_view(ActiveView::Dashboard, cx);
+                                this.load_video(&clip.path.to_string_lossy(), window, cx);
+                            });
+                        }
                     }),
                 PopoverMenuItem::new("folder", "Show in Folder")
                     .icon("folder")
                     .on_click({
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
-                        move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
-                            let _ = std::process::Command::new("explorer").arg("/select,").arg(&clip.path).spawn();
-                            cx.notify();
-                        }); }
+                        move |_, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.clip_popover = None;
+                                let _ = std::process::Command::new("explorer")
+                                    .arg("/select,")
+                                    .arg(&clip.path)
+                                    .spawn();
+                                cx.notify();
+                            });
+                        }
                     }),
                 PopoverMenuItem::new("delete", "Delete Clip")
                     .icon("trash")
                     .on_click({
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
-                        move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
-                            this.clip_to_delete = Some(clip.clone());
-                            cx.notify();
-                        }); }
+                        move |_, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.clip_popover = None;
+                                this.clip_to_delete = Some(clip.clone());
+                                cx.notify();
+                            });
+                        }
                     }),
             ];
 
-            root = root.child(
-                PopoverMenu::new(pos, items)
-                    .on_close({
-                        let view = cx.entity().downgrade();
-                        move |_, cx| { let _ = view.update(cx, |this, cx| { this.clip_popover = None; cx.notify(); }); }
-                    })
-            );
+            root = root.child(PopoverMenu::new(pos, items).on_close({
+                let view = cx.entity().downgrade();
+                move |_, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.clip_popover = None;
+                        cx.notify();
+                    });
+                }
+            }));
         }
 
         root.child(self.toast_manager.clone())

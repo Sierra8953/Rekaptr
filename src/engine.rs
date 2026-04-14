@@ -1,12 +1,12 @@
 use crate::config::{AudioRouting, MicSettings, VideoSettings};
-use sysinfo::System;
+use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer_app::AppSrc;
-use anyhow::{Result, Context};
-use wasapi::*;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
-use ringbuf::traits::{Split, Producer, Consumer, Observer};
 use std::time::Duration;
+use sysinfo::System;
+use wasapi::*;
 
 // D3DKMT GPU scheduling priority classes
 #[allow(dead_code)]
@@ -31,9 +31,9 @@ enum D3DKmtSchedulingPriorityClass {
 pub fn boost_gpu_priority() {
     // --- Process-level GPU priority via D3DKMT (gdi32.dll) ---
     unsafe {
-        use windows::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
-        use windows::Win32::System::Threading::GetCurrentProcess;
         use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        use windows::Win32::System::Threading::GetCurrentProcess;
 
         let lib = LoadLibraryW(windows::core::w!("gdi32.dll"));
         let lib = match lib {
@@ -44,10 +44,7 @@ pub fn boost_gpu_priority() {
             }
         };
 
-        type SetPriorityFn = unsafe extern "system" fn(
-            handle: HANDLE,
-            priority: i32,
-        ) -> i32;
+        type SetPriorityFn = unsafe extern "system" fn(handle: HANDLE, priority: i32) -> i32;
 
         let proc = GetProcAddress(
             lib.into(),
@@ -63,12 +60,12 @@ pub fn boost_gpu_priority() {
                 D3DKmtSchedulingPriorityClass::Realtime as i32,
             );
             if status == 0 {
-                log::info!("[GPU Priority] Process GPU scheduling priority set to REALTIME (admin)");
-            } else {
-                let status = set_priority(
-                    current_process,
-                    D3DKmtSchedulingPriorityClass::High as i32,
+                log::info!(
+                    "[GPU Priority] Process GPU scheduling priority set to REALTIME (admin)"
                 );
+            } else {
+                let status =
+                    set_priority(current_process, D3DKmtSchedulingPriorityClass::High as i32);
                 if status == 0 {
                     log::info!("[GPU Priority] Process GPU scheduling priority set to HIGH");
                 } else {
@@ -94,9 +91,9 @@ pub fn boost_device_gpu_priority(d3d11_device_ptr: *mut std::ffi::c_void) {
         return;
     }
     unsafe {
-        use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-        use windows::Win32::Graphics::Direct3D11::ID3D11Device;
         use windows::core::Interface;
+        use windows::Win32::Graphics::Direct3D11::ID3D11Device;
+        use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 
         // Wrap the raw pointer without taking ownership. ManuallyDrop prevents
         // the Drop impl from calling Release on the borrowed pointer.
@@ -109,11 +106,16 @@ pub fn boost_device_gpu_priority(d3d11_device_ptr: *mut std::ffi::c_void) {
                 if let Err(e) = dxgi_device.SetGPUThreadPriority(7) {
                     log::warn!("[GPU Priority] SetGPUThreadPriority failed: {}", e);
                 } else {
-                    log::info!("[GPU Priority] D3D11 device GPU thread priority set to 7 (maximum)");
+                    log::info!(
+                        "[GPU Priority] D3D11 device GPU thread priority set to 7 (maximum)"
+                    );
                 }
             }
             Err(e) => {
-                log::warn!("[GPU Priority] Failed to cast D3D11Device to IDXGIDevice: {}", e);
+                log::warn!(
+                    "[GPU Priority] Failed to cast D3D11Device to IDXGIDevice: {}",
+                    e
+                );
             }
         }
     }
@@ -147,7 +149,9 @@ pub fn enumerate_audio_devices(capture: bool) -> Vec<(String, String)> {
             let count = collection.get_nbr_devices().unwrap_or(0);
             for i in 0..count {
                 if let Ok(device) = collection.get_device_at_index(i) {
-                    let name = device.get_friendlyname().unwrap_or_else(|_| format!("Device {}", i));
+                    let name = device
+                        .get_friendlyname()
+                        .unwrap_or_else(|_| format!("Device {}", i));
                     let id = device.get_id().unwrap_or_else(|_| format!("device_{}", i));
                     devices.push((id, name));
                 }
@@ -174,7 +178,10 @@ pub fn resolve_device_id(value: &str, capture: bool) -> String {
         log::info!("[Audio] Resolved device name '{}' to ID '{}'", value, id);
         id.clone()
     } else {
-        log::warn!("[Audio] Could not resolve device name '{}' to an ID, using as-is", value);
+        log::warn!(
+            "[Audio] Could not resolve device name '{}' to an ID, using as-is",
+            value
+        );
         value.to_string()
     }
 }
@@ -253,7 +260,7 @@ pub fn generate_pipeline_string(
     _target_pid: Option<u32>,
     adapter_index: i32,
     session_id: u64,
-    ts_offset_ns: i64, 
+    ts_offset_ns: i64,
 ) -> String {
     let adapter_str = if adapter_index >= 0 {
         format!("adapter={}", adapter_index)
@@ -281,17 +288,19 @@ pub fn generate_pipeline_string(
             adapter_str
         );
         match v.rate_control_index {
-            0 => if v.encoder == "nvav1enc" {
-                format!(
-                    "rc-mode=vbr const-quality={} bitrate=0 {}",
-                    v.cq_level, base
-                )
-            } else {
-                format!(
-                    "rc-mode=constqp qp-const-i={} qp-const-p={} qp-const-b={} {}",
-                    v.cq_level, v.cq_level, v.cq_level, base
-                )
-            },
+            0 => {
+                if v.encoder == "nvav1enc" {
+                    format!(
+                        "rc-mode=vbr const-quality={} bitrate=0 {}",
+                        v.cq_level, base
+                    )
+                } else {
+                    format!(
+                        "rc-mode=constqp qp-const-i={} qp-const-p={} qp-const-b={} {}",
+                        v.cq_level, v.cq_level, v.cq_level, base
+                    )
+                }
+            }
             1 => format!("rc-mode=vbr bitrate={} {}", v.bitrate_kbps, base),
             _ => format!("bitrate={} {}", v.bitrate_kbps, base),
         }
@@ -389,7 +398,7 @@ pub fn generate_pipeline_string(
         for entry in entries.filter_map(|e| e.ok()) {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with("seg_") && name.ends_with(".m4s") {
-                let stem = &name[4..name.len()-4];
+                let stem = &name[4..name.len() - 4];
                 let first_part = stem.split('_').next().unwrap_or(stem);
                 if let Ok(idx) = first_part.parse::<u64>() {
                     if idx >= highest_index {
@@ -415,7 +424,11 @@ pub fn generate_pipeline_string(
     pipeline
 }
 
-pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: AppSrc) -> Result<()> {
+pub fn start_app_capture(
+    app_name: String,
+    explicit_pid: Option<u32>,
+    appsrc: AppSrc,
+) -> Result<()> {
     if wasapi::initialize_mta().is_err() {
         let _ = appsrc.end_of_stream();
         return Ok(());
@@ -451,7 +464,11 @@ pub fn start_app_capture(app_name: String, explicit_pid: Option<u32>, appsrc: Ap
                 .values()
                 .filter(|p| {
                     let name = p.name().to_string().to_lowercase();
-                    let name_no_ext = if name.ends_with(".exe") { &name[..name.len() - 4] } else { &name };
+                    let name_no_ext = if name.ends_with(".exe") {
+                        &name[..name.len() - 4]
+                    } else {
+                        &name
+                    };
                     target_name.contains(name_no_ext)
                 })
                 .collect();

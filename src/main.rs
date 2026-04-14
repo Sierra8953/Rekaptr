@@ -15,16 +15,16 @@ pub mod virtual_audio_router;
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use crate::state::AppState;
+use crate::state::TrayCommand;
 use crate::ui::LumaWorkspace;
 use anyhow::Result;
 use gpui::*;
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIconBuilder, TrayIconEvent,
 };
-use crate::state::TrayCommand;
 
 /// Cryptographically random token for authenticating local HLS server requests.
 /// Prevents other local processes from accessing recording segments.
@@ -45,10 +45,7 @@ fn percent_decode_path(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
-                hex_val(bytes[i + 1]),
-                hex_val(bytes[i + 2]),
-            ) {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
                 result.push(hi << 4 | lo);
                 i += 3;
                 continue;
@@ -105,7 +102,13 @@ async fn main() -> Result<()> {
     gstreamer::init()?;
     crate::engine::boost_gpu_priority();
     let (major, minor, micro, nano) = gstreamer::version();
-    log::info!("[Main] GStreamer version: {}.{}.{}.{}", major, minor, micro, nano);
+    log::info!(
+        "[Main] GStreamer version: {}.{}.{}.{}",
+        major,
+        minor,
+        micro,
+        nano
+    );
     // Validate configured encoder is available, auto-fallback if not
     {
         let mut config = crate::config::AppConfig::load();
@@ -549,13 +552,14 @@ fn start_local_server(root: PathBuf) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::error!("[Server] Failed to build tokio runtime: {}", e);
-                    return;
-                }
-            };
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::error!("[Server] Failed to build tokio runtime: {}", e);
+                return;
+            }
+        };
 
         rt.block_on(async move {
             let listener = match tokio::net::TcpListener::bind("127.0.0.1:8080").await {

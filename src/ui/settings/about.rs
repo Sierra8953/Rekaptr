@@ -1,6 +1,6 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
 use crate::ui::LumaWorkspace;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl LumaWorkspace {
     pub(crate) fn render_settings_about(&self, theme: &Theme) -> impl IntoElement {

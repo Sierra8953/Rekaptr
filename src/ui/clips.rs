@@ -1,22 +1,28 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
-use crate::ui::{LumaWorkspace, ClipsViewMode};
 use crate::state::Clip;
-use adabraka_ui::display::data_table::ColumnDef;
+use crate::ui::{ClipsViewMode, LumaWorkspace};
 use adabraka_ui::components::input::Input;
 use adabraka_ui::components::slider::Slider;
+use adabraka_ui::display::data_table::ColumnDef;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl LumaWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let all_clips = self.cached_clips.clone();
-        
+
         let search_query = self.clips_search_input.read(cx).content.to_lowercase();
-        let mut filtered_clips: Vec<Clip> = all_clips.into_iter()
+        let mut filtered_clips: Vec<Clip> = all_clips
+            .into_iter()
             .filter(|c| {
-                if search_query.is_empty() { return true; }
-                c.title.to_lowercase().contains(&search_query) || 
-                c.path.to_string_lossy().to_lowercase().contains(&search_query)
+                if search_query.is_empty() {
+                    return true;
+                }
+                c.title.to_lowercase().contains(&search_query)
+                    || c.path
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&search_query)
             })
             .collect();
 
@@ -244,12 +250,13 @@ impl LumaWorkspace {
                 let title = title_cache;
                 async move {
                     // Run the blocking app_id resolution + local cache check off the UI thread
-                    let resolved = cx.background_executor().spawn({
-                        let title = title.clone();
-                        async move {
-                            crate::utils::find_steam_artwork_portrait(&title)
-                        }
-                    }).await;
+                    let resolved = cx
+                        .background_executor()
+                        .spawn({
+                            let title = title.clone();
+                            async move { crate::utils::find_steam_artwork_portrait(&title) }
+                        })
+                        .await;
 
                     let Some(source) = resolved else {
                         // No artwork found — leave None in cache
@@ -267,12 +274,18 @@ impl LumaWorkspace {
                     let result = if let Ok(resp) = reqwest::get(&source).await {
                         if let Ok(bytes) = resp.bytes().await {
                             Some(bytes)
-                        } else { None }
-                    } else { None };
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     if let Some(bytes) = result {
                         let app_id = source.split('/').nth(5).unwrap_or("unknown");
-                        let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                        let cache_dir = crate::utils::get_storage_root()
+                            .join("Cache")
+                            .join("Artwork");
                         let _ = std::fs::create_dir_all(&cache_dir);
                         let local_path = cache_dir.join(format!("{}_portrait.jpg", app_id));
                         if std::fs::write(&local_path, &bytes).is_ok() {
@@ -282,17 +295,28 @@ impl LumaWorkspace {
                         }
                     }
                 }
-            }).detach();
+            })
+            .detach();
         }
     }
 
-    fn render_game_card_vertical(title: String, clip_count: usize, app_state: &std::sync::Arc<crate::state::AppState>, view_handle: WeakEntity<Self>) -> impl IntoElement {
+    fn render_game_card_vertical(
+        title: String,
+        clip_count: usize,
+        app_state: &std::sync::Arc<crate::state::AppState>,
+        view_handle: WeakEntity<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let title_for_click = title.clone();
 
         // Read from portrait cache (fetch was triggered earlier)
-        let cached_path = app_state.portrait_cache.get(&title).map(|v| v.value().clone()).flatten();
-        let final_image_path: Option<std::path::PathBuf> = cached_path.map(std::path::PathBuf::from);
+        let cached_path = app_state
+            .portrait_cache
+            .get(&title)
+            .map(|v| v.value().clone())
+            .flatten();
+        let final_image_path: Option<std::path::PathBuf> =
+            cached_path.map(std::path::PathBuf::from);
 
         div()
             .group("game-card")
@@ -318,11 +342,12 @@ impl LumaWorkspace {
                     .size_full()
                     .bg(theme.tokens.muted)
                     .when_some(final_image_path, |this, img_path| {
-                        let img_path_str = format!("file://{}", img_path.to_string_lossy().replace("\\", "/"));
+                        let img_path_str =
+                            format!("file://{}", img_path.to_string_lossy().replace("\\", "/"));
                         this.child(
                             img(img_path_str)
                                 .size_full()
-                                .object_fit(gpui::ObjectFit::Cover)
+                                .object_fit(gpui::ObjectFit::Cover),
                         )
                     })
                     .child(
@@ -335,13 +360,29 @@ impl LumaWorkspace {
                             .justify_end()
                             .p_6()
                             .gap_1()
-                            .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(gpui::white()).child(title.clone()))
-                            .child(div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child(format!("{} Clips", clip_count)))
-                    )
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(gpui::white())
+                                    .child(title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(gpui::rgba(0xffffff_aa))
+                                    .child(format!("{} Clips", clip_count)),
+                            ),
+                    ),
             )
     }
 
-    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool) -> impl IntoElement {
+    fn render_clip_card_advanced(
+        clip: Clip,
+        view_handle: &WeakEntity<Self>,
+        is_selected: bool,
+        is_favorited: bool,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
         let view_handle_actions = view_handle.clone();
@@ -353,9 +394,17 @@ impl LumaWorkspace {
             .flex()
             .flex_col()
             .w(px(280.0))
-            .bg(if is_selected { theme.tokens.primary.opacity(0.1) } else { theme.tokens.card })
+            .bg(if is_selected {
+                theme.tokens.primary.opacity(0.1)
+            } else {
+                theme.tokens.card
+            })
             .border(if is_selected { px(2.0) } else { px(1.0) })
-            .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
+            .border_color(if is_selected {
+                theme.tokens.primary
+            } else {
+                theme.tokens.border
+            })
             .rounded_xl()
             .overflow_hidden()
             .cursor_pointer()
@@ -391,7 +440,7 @@ impl LumaWorkspace {
                         this.child(
                             img(path.to_string_lossy().to_string())
                                 .size_full()
-                                .object_fit(ObjectFit::Cover)
+                                .object_fit(ObjectFit::Cover),
                         )
                     })
                     .when(is_favorited, |this| {
@@ -401,7 +450,9 @@ impl LumaWorkspace {
                                 .top_2()
                                 .left_2()
                                 .text_color(gpui::rgba(0xfbbf24ff))
-                                .child(Icon::new(IconSource::Named("star".to_string())).size(px(16.0)))
+                                .child(
+                                    Icon::new(IconSource::Named("star".to_string())).size(px(16.0)),
+                                ),
                         )
                     })
                     .child(
@@ -417,34 +468,41 @@ impl LumaWorkspace {
                             .group("play-btn")
                             .text_color(gpui::rgba(0xffffffaa))
                             .hover(|this| this.text_color(gpui::white()))
-                            .child(
-                                Icon::new(IconSource::Named("play".to_string()))
-                                    .size(px(32.0))
-                            )
+                            .child(Icon::new(IconSource::Named("play".to_string())).size(px(32.0)))
                             .on_mouse_down(MouseButton::Left, {
-                                        let clip = clip.clone();
-                                        let view_handle = view_handle_click.clone();
-                                        move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            let _ = view_handle.update(cx, |this, cx| {
-                                                this.clip_to_preview = Some(clip.clone());
-                                                this.last_preview_mouse_move = std::time::Instant::now();
-                                                this.show_preview_controls = true;
-                                                let url = clip.path.to_string_lossy().to_string();
-                                                let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
-                                                if let Ok(video) = crate::video_player::Video::new_with_options(
-                                                    &url,
-                                                    crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
-                                                    d3d_device_ptr,
-                                                ) {
-                                                    this.preview_video_source = Some(video);
-                                                    this.init_preview_audio_tracks();
-                                                }
-                                                cx.notify();
-                                            });
+                                let clip = clip.clone();
+                                let view_handle = view_handle_click.clone();
+                                move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    let _ = view_handle.update(cx, |this, cx| {
+                                        this.clip_to_preview = Some(clip.clone());
+                                        this.last_preview_mouse_move = std::time::Instant::now();
+                                        this.show_preview_controls = true;
+                                        let url = clip.path.to_string_lossy().to_string();
+                                        let d3d_device_ptr = this
+                                            .app_state
+                                            .d3d11_device
+                                            .lock()
+                                            .as_ref()
+                                            .map(|h| h.0 .0);
+                                        if let Ok(video) =
+                                            crate::video_player::Video::new_with_options(
+                                                &url,
+                                                crate::video_player::VideoOptions {
+                                                    source_name: Some("preview".to_string()),
+                                                    ..Default::default()
+                                                },
+                                                d3d_device_ptr,
+                                            )
+                                        {
+                                            this.preview_video_source = Some(video);
+                                            this.init_preview_audio_tracks();
                                         }
-                                    })
-                    )
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    ),
             )
             .child(
                 VStack::new()
@@ -454,53 +512,77 @@ impl LumaWorkspace {
                         HStack::new()
                             .justify_between()
                             .items_start()
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).text_sm().child(clip.title.clone()))
                             .child(
                                 div()
-                                    .child(
-                                        Button::new(("actions-btn", clip.timestamp), "")
-                                            .icon(IconSource::Named("plus".to_string()))
-                                            .variant(ButtonVariant::Ghost)
-                                            .size(ButtonSize::Sm)
-                                            .on_click({
-                                                let clip = clip.clone();
-                                                let view_handle = view_handle_actions.clone();
-                                                move |_, window, cx| {
-                                                    let mouse_pos = window.mouse_position();
-                                                    let clip = clip.clone();
-                                                    let _ = view_handle.update(cx, |this, cx| {
-                                                        this.clip_popover = Some((mouse_pos, clip.clone()));
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            })
-                                    )
+                                    .flex_1()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_sm()
+                                    .child(clip.title.clone()),
                             )
+                            .child(
+                                div().child(
+                                    Button::new(("actions-btn", clip.timestamp), "")
+                                        .icon(IconSource::Named("plus".to_string()))
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Sm)
+                                        .on_click({
+                                            let clip = clip.clone();
+                                            let view_handle = view_handle_actions.clone();
+                                            move |_, window, cx| {
+                                                let mouse_pos = window.mouse_position();
+                                                let clip = clip.clone();
+                                                let _ = view_handle.update(cx, |this, cx| {
+                                                    this.clip_popover =
+                                                        Some((mouse_pos, clip.clone()));
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                ),
+                            ),
                     )
                     .child(
                         HStack::new()
                             .justify_between()
-                            .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(clip.date.clone()))
-                            .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(clip.size.clone()))
-                    )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .child(clip.date.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .child(clip.size.clone()),
+                            ),
+                    ),
             )
     }
 
-    fn render_mini_player(&self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_mini_player(
+        &self,
+        clip: Clip,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
 
         let (pos, dur) = if let Some(v) = &self.preview_video_source {
-            (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
+            (
+                v.position().as_secs_f64(),
+                v.duration().as_secs_f64().max(1.0),
+            )
         } else {
             (0.0, 1.0)
         };
-        
+
         let display_pos = if self.is_scrubbing_preview {
             self.preview_scrubbing_progress as f64 * dur
         } else {
             pos
         };
-        
+
         let progress = (display_pos / dur) as f32;
         let controls_visible = self.show_preview_controls;
 
@@ -829,7 +911,11 @@ impl LumaWorkspace {
             .child(
                 HStack::new()
                     .gap_4()
-                    .child(div().font_weight(FontWeight::BOLD).child(format!("{} Clips Selected", count)))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("{} Clips Selected", count)),
+                    )
                     .child(
                         Button::new("clear-selection", "Clear Selection")
                             .variant(ButtonVariant::Ghost)
@@ -837,29 +923,27 @@ impl LumaWorkspace {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.selected_clips.clear();
                                 cx.notify();
-                              }))
-                    )
+                            })),
+                    ),
             )
             .child(
-                HStack::new()
-                    .gap_3()
-                    .child(
-                        Button::new("batch-delete", "Delete Selected")
-                            .variant(ButtonVariant::Destructive)
-                            .size(ButtonSize::Sm)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                for path_str in this.selected_clips.clone() {
-                                    let path = std::path::PathBuf::from(path_str);
-                                    let _ = std::fs::remove_file(&path);
-                                    let mut thumb = path.clone();
-                                    thumb.set_extension("jpg");
-                                    let _ = std::fs::remove_file(thumb);
-                                }
-                                this.selected_clips.clear();
-                                this.refresh_clips(cx);
-                                cx.notify();
-                            }))
-                    )
+                HStack::new().gap_3().child(
+                    Button::new("batch-delete", "Delete Selected")
+                        .variant(ButtonVariant::Destructive)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            for path_str in this.selected_clips.clone() {
+                                let path = std::path::PathBuf::from(path_str);
+                                let _ = std::fs::remove_file(&path);
+                                let mut thumb = path.clone();
+                                thumb.set_extension("jpg");
+                                let _ = std::fs::remove_file(thumb);
+                            }
+                            this.selected_clips.clear();
+                            this.refresh_clips(cx);
+                            cx.notify();
+                        })),
+                ),
             )
     }
 
@@ -879,16 +963,28 @@ impl LumaWorkspace {
                         HStack::new()
                             .justify_between()
                             .items_center()
-                            .child(div().text_lg().font_weight(FontWeight::BOLD).child("Clip Details"))
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Clip Details"),
+                            )
                             .child(
                                 div()
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.selected_clip_for_details = None;
-                                        cx.notify();
-                                    }))
-                                    .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
-                            )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.selected_clip_for_details = None;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(
+                                        Icon::new("x")
+                                            .size(px(24.0))
+                                            .color(theme.tokens.muted_foreground),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -898,11 +994,8 @@ impl LumaWorkspace {
                             .rounded_md()
                             .overflow_hidden()
                             .when_some(clip.thumbnail_path.as_ref(), |this, path| {
-                                this.child(
-                                    img(path.to_string_lossy().to_string())
-                                        .size_full()
-                                )
-                            })
+                                this.child(img(path.to_string_lossy().to_string()).size_full())
+                            }),
                     )
                     .child(
                         VStack::new()
@@ -911,7 +1004,7 @@ impl LumaWorkspace {
                             .child(self.render_detail_item("Recorded", &clip.date))
                             .child(self.render_detail_item("File Size", &clip.size))
                             .child(self.render_detail_item("Duration", &clip.duration))
-                            .child(self.render_detail_item("Path", &clip.path.to_string_lossy()))
+                            .child(self.render_detail_item("Path", &clip.path.to_string_lossy())),
                     )
                     .child(
                         VStack::new()
@@ -924,21 +1017,32 @@ impl LumaWorkspace {
                                         let clip = clip.clone();
                                         move |this, _, _, cx| {
                                             this.clip_to_preview = Some(clip.clone());
-                                            this.last_preview_mouse_move = std::time::Instant::now();
+                                            this.last_preview_mouse_move =
+                                                std::time::Instant::now();
                                             this.show_preview_controls = true;
                                             let url = clip.path.to_string_lossy().to_string();
-                                            let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
-                                            if let Ok(video) = crate::video_player::Video::new_with_options(
-                                                &url,
-                                                crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
-                                                d3d_device_ptr,
-                                            ) {
+                                            let d3d_device_ptr = this
+                                                .app_state
+                                                .d3d11_device
+                                                .lock()
+                                                .as_ref()
+                                                .map(|h| h.0 .0);
+                                            if let Ok(video) =
+                                                crate::video_player::Video::new_with_options(
+                                                    &url,
+                                                    crate::video_player::VideoOptions {
+                                                        source_name: Some("preview".to_string()),
+                                                        ..Default::default()
+                                                    },
+                                                    d3d_device_ptr,
+                                                )
+                                            {
                                                 this.preview_video_source = Some(video);
                                                 this.init_preview_audio_tracks();
                                             }
                                             cx.notify();
                                         }
-                                    }))
+                                    })),
                             )
                             .child(
                                 Button::new("open-folder-details", "Show in Folder")
@@ -948,11 +1052,14 @@ impl LumaWorkspace {
                                     .on_click({
                                         let clip = clip.clone();
                                         move |_, _, _| {
-                                            let _ = std::process::Command::new("explorer").arg("/select,").arg(&clip.path).spawn();
+                                            let _ = std::process::Command::new("explorer")
+                                                .arg("/select,")
+                                                .arg(&clip.path)
+                                                .spawn();
                                         }
-                                    })
-                            )
-                    )
+                                    }),
+                            ),
+                    ),
             )
     }
 
@@ -960,7 +1067,13 @@ impl LumaWorkspace {
         let theme = use_theme();
         VStack::new()
             .gap_1()
-            .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child(label.to_uppercase()))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.tokens.muted_foreground)
+                    .child(label.to_uppercase()),
+            )
             .child(div().text_sm().child(value.to_string()))
     }
 }

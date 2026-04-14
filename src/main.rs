@@ -26,22 +26,47 @@ use tray_icon::{
 };
 use crate::state::TrayCommand;
 
-/// Random token for authenticating local HLS server requests.
+/// Cryptographically random token for authenticating local HLS server requests.
 /// Prevents other local processes from accessing recording segments.
 static HLS_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 pub fn get_hls_token() -> &'static str {
     HLS_TOKEN.get_or_init(|| {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-        let s = RandomState::new();
-        let mut hasher = s.build_hasher();
-        hasher.write_u64(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64);
-        format!("{:016x}", hasher.finish())
+        use rand::RngExt;
+        let bytes: [u8; 32] = rand::rng().random();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
     })
+}
+
+/// Decode percent-encoded URL path components (e.g. %20 -> space, %2F -> /).
+fn percent_decode_path(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                hex_val(bytes[i + 1]),
+                hex_val(bytes[i + 2]),
+            ) {
+                result.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 struct Assets {
@@ -566,23 +591,44 @@ fn start_local_server(root: PathBuf) {
                     let (url_path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
                     let url_path = url_path.trim_start_matches('/');
 
-                    let decoded_path = url_path.replace("%20", " ");
+                    let decoded_path = percent_decode_path(url_path);
 
-                    // Validate token on playlist requests (the entry point).
-                    // Segment files (.m4s/.mp4) are served without token since mpv
-                    // resolves them from relative URLs in the playlist and can't
-                    // forward query params. Server is already bound to 127.0.0.1.
-                    let is_playlist = decoded_path.ends_with(".m3u8");
-                    if is_playlist {
-                        let token_valid = query.split('&')
-                            .find_map(|p| p.strip_prefix("token="))
-                            .map_or(false, |t| t == get_hls_token());
-                        if !token_valid {
-                            let _ = socket.write_all(b"HTTP/1.1 403 FORBIDDEN\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
+                    // Validate auth token on all requests to prevent other
+                    // local processes from reading recording data.
+                    // Accept token from query param (?token=...) or HTTP header (X-Luma-Token: ...).
+                    let query_token = query.split('&')
+                        .find_map(|p| p.strip_prefix("token="));
+                    let header_token = request.lines()
+                        .find(|l| l.to_lowercase().starts_with("x-luma-token:"))
+                        .map(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim());
+                    let expected = get_hls_token();
+                    let token_valid = query_token.map_or(false, |t| t == expected)
+                        || header_token.map_or(false, |t| t == expected);
+                    if !token_valid {
+                        let _ = socket.write_all(b"HTTP/1.1 403 FORBIDDEN\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
+                        return;
+                    }
+
+                    let file_path = root.join(&decoded_path);
+
+                    // Canonicalize and verify the resolved path stays within root
+                    // to prevent path traversal (e.g. "../../etc/passwd").
+                    let canonical = match tokio::fs::canonicalize(&file_path).await {
+                        Ok(p) => p,
+                        Err(_) => {
+                            let _ = socket.write_all(b"HTTP/1.1 404 NOT FOUND\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
                             return;
                         }
+                    };
+                    let canonical_root = match tokio::fs::canonicalize(&root).await {
+                        Ok(p) => p,
+                        Err(_) => { return; }
+                    };
+                    if !canonical.starts_with(&canonical_root) {
+                        let _ = socket.write_all(b"HTTP/1.1 403 FORBIDDEN\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
+                        return;
                     }
-                    let file_path = root.join(decoded_path);
+                    let file_path = canonical;
                     
                     let range_header = request.lines().find(|l| l.to_lowercase().starts_with("range:"));
 

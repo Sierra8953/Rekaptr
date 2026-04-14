@@ -248,6 +248,11 @@ impl Video {
             mpv.set_property("vd-lavc-threads", "4").ok();
             mpv.set_property("hr-seek-framedrop", "no").ok();
 
+            // Send auth token as HTTP header so the local HLS server can
+            // authenticate both playlist and segment requests.
+            let token_header = format!("X-Luma-Token: {}", crate::get_hls_token());
+            mpv.set_property("http-header-fields", &*token_header).ok();
+
             let mut render_context: *mut mpv_render_context = std::ptr::null_mut();
             
             unsafe extern "C" fn get_proc_address_callback(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {

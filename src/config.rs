@@ -135,7 +135,7 @@ fn default_hotkeys() -> HotkeyConfig {
         toggle_recording_mod: 0,   // No modifier
         save_clip_vk: 0x79,        // F10
         save_clip_mod: 0,
-        toggle_mic_vk: 0x7A,       // F11
+        toggle_mic_vk: 0x7A, // F11
         toggle_mic_mod: 0,
         push_to_talk_vk: 0,
         push_to_talk_mod: 0,
@@ -150,15 +150,23 @@ fn default_hotkeys() -> HotkeyConfig {
     }
 }
 
-fn default_max_buffer_size() -> i32 { 50 }
-fn default_export_format() -> String { "mp4".to_string() }
+fn default_max_buffer_size() -> i32 {
+    50
+}
+fn default_export_format() -> String {
+    "mp4".to_string()
+}
 
 fn default_storage_path() -> String {
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let path = PathBuf::from(local_app_data).join("Luma").join("Recordings");
+        let path = PathBuf::from(local_app_data)
+            .join("Luma")
+            .join("Recordings");
         return path.to_string_lossy().to_string();
     }
-    PathBuf::from("C:\\LumaRecordings").to_string_lossy().to_string()
+    PathBuf::from("C:\\LumaRecordings")
+        .to_string_lossy()
+        .to_string()
 }
 
 impl Default for AppConfig {
@@ -288,7 +296,8 @@ impl AppConfig {
 
         log::warn!(
             "[Config] Configured encoder '{}' (element '{}') not found, auto-selecting fallback",
-            self.global_video.encoder, gst_element
+            self.global_video.encoder,
+            gst_element
         );
 
         // Priority: NVENC H.264 > NVENC H.265 > NVENC AV1 > x264
@@ -301,7 +310,11 @@ impl AppConfig {
 
         for (element, config_id) in &fallbacks {
             if gst::ElementFactory::find(element).is_some() {
-                log::info!("[Config] Auto-selected encoder: {} ({})", config_id, element);
+                log::info!(
+                    "[Config] Auto-selected encoder: {} ({})",
+                    config_id,
+                    element
+                );
                 self.global_video.encoder = config_id.to_string();
                 self.save();
                 return;
@@ -320,12 +333,12 @@ impl AppConfig {
 
     pub fn init_db() -> rusqlite::Result<()> {
         let conn = rusqlite::Connection::open(Self::get_db_path())?;
-        
+
         // Use execute for PRAGMAs that we don't need the return value from
         let _ = conn.execute("PRAGMA journal_mode=WAL", []);
         let _ = conn.execute("PRAGMA synchronous=NORMAL", []);
         let _ = conn.execute("PRAGMA cache_size=-2000", []);
-        
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, json_data TEXT)",
             [],
@@ -419,10 +432,7 @@ impl AppConfig {
                     [clip_path],
                 );
             } else {
-                let _ = conn.execute(
-                    "DELETE FROM favorites WHERE clip_path = ?1",
-                    [clip_path],
-                );
+                let _ = conn.execute("DELETE FROM favorites WHERE clip_path = ?1", [clip_path]);
             }
         }
     }
@@ -440,12 +450,21 @@ mod tests {
 
         assert_eq!(loaded.global_video.encoder, config.global_video.encoder);
         assert_eq!(loaded.global_video.fps, config.global_video.fps);
-        assert_eq!(loaded.global_video.resolution, config.global_video.resolution);
-        assert_eq!(loaded.global_video.bitrate_kbps, config.global_video.bitrate_kbps);
+        assert_eq!(
+            loaded.global_video.resolution,
+            config.global_video.resolution
+        );
+        assert_eq!(
+            loaded.global_video.bitrate_kbps,
+            config.global_video.bitrate_kbps
+        );
         assert_eq!(loaded.max_buffer_size_gb, config.max_buffer_size_gb);
         assert_eq!(loaded.storage_path, config.storage_path);
         assert_eq!(loaded.first_run_completed, config.first_run_completed);
-        assert_eq!(loaded.hotkeys.toggle_recording_vk, config.hotkeys.toggle_recording_vk);
+        assert_eq!(
+            loaded.hotkeys.toggle_recording_vk,
+            config.hotkeys.toggle_recording_vk
+        );
         assert_eq!(loaded.global_audio_tracks.len(), 6);
     }
 
@@ -493,7 +512,8 @@ mod tests {
             "game_registry": {}
         }"#;
 
-        let config: AppConfig = serde_json::from_str(minimal_json).expect("deserialize minimal config");
+        let config: AppConfig =
+            serde_json::from_str(minimal_json).expect("deserialize minimal config");
         // Fields with #[serde(default)] should get their defaults
         assert_eq!(config.first_run_completed, false);
         assert_eq!(config.startup_with_windows, false);

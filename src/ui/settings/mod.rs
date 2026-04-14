@@ -1,26 +1,32 @@
-mod general;
-mod video;
+mod about;
 mod audio;
+mod general;
 mod hotkeys;
 mod storage;
-mod about;
+mod video;
 
-use gpui::*;
-use adabraka_ui::prelude::*;
-use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
-use crate::ui::{LumaWorkspace, SettingsTab};
 use crate::config::VideoSettings;
-use gstreamer::prelude::*;
+use crate::ui::{LumaWorkspace, SettingsTab};
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
+use adabraka_ui::prelude::*;
+use gpui::*;
 use gstreamer;
+use gstreamer::prelude::*;
 use std::sync::Arc;
 
 /// Format a Win32 VK code + modifier bitmask into a human-readable string.
 #[allow(dead_code)]
 fn format_hotkey(vk: u32, modifiers: u32) -> String {
     let mut parts = Vec::new();
-    if modifiers & 2 != 0 { parts.push("Ctrl".to_string()); }
-    if modifiers & 1 != 0 { parts.push("Alt".to_string()); }
-    if modifiers & 4 != 0 { parts.push("Shift".to_string()); }
+    if modifiers & 2 != 0 {
+        parts.push("Ctrl".to_string());
+    }
+    if modifiers & 1 != 0 {
+        parts.push("Alt".to_string());
+    }
+    if modifiers & 4 != 0 {
+        parts.push("Shift".to_string());
+    }
     let key_name = match vk {
         0x70..=0x87 => format!("F{}", vk - 0x6F),
         0x30..=0x39 => format!("{}", (vk - 0x30)),
@@ -63,10 +69,22 @@ fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
     let key_str = keystroke.key.as_str();
 
     let vk = match key_str {
-        "f1" => 0x70, "f2" => 0x71, "f3" => 0x72, "f4" => 0x73,
-        "f5" => 0x74, "f6" => 0x75, "f7" => 0x76, "f8" => 0x77,
-        "f9" => 0x78, "f10" => 0x79, "f11" => 0x7A, "f12" => 0x7B,
-        "f13" => 0x7C, "f14" => 0x7D, "f15" => 0x7E, "f16" => 0x7F,
+        "f1" => 0x70,
+        "f2" => 0x71,
+        "f3" => 0x72,
+        "f4" => 0x73,
+        "f5" => 0x74,
+        "f6" => 0x75,
+        "f7" => 0x76,
+        "f8" => 0x77,
+        "f9" => 0x78,
+        "f10" => 0x79,
+        "f11" => 0x7A,
+        "f12" => 0x7B,
+        "f13" => 0x7C,
+        "f14" => 0x7D,
+        "f15" => 0x7E,
+        "f16" => 0x7F,
         "space" => 0x20,
         "enter" => 0x0D,
         "tab" => 0x09,
@@ -101,15 +119,25 @@ fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
     };
 
     let mut modifiers = 0u32;
-    if keystroke.modifiers.control { modifiers |= 2; } // MOD_CONTROL
-    if keystroke.modifiers.alt { modifiers |= 1; }     // MOD_ALT
-    if keystroke.modifiers.shift { modifiers |= 4; }   // MOD_SHIFT
+    if keystroke.modifiers.control {
+        modifiers |= 2;
+    } // MOD_CONTROL
+    if keystroke.modifiers.alt {
+        modifiers |= 1;
+    } // MOD_ALT
+    if keystroke.modifiers.shift {
+        modifiers |= 4;
+    } // MOD_SHIFT
 
     Some((vk, modifiers))
 }
 
 impl LumaWorkspace {
-    pub fn render_settings_view(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_settings_view(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
 
         let clips_gb = self.storage_clips_mb as f64 / 1024.0;
@@ -134,7 +162,9 @@ impl LumaWorkspace {
                 .focusable()
                 .track_focus(&self.hotkey_focus_handle)
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    let Some(slot) = this.hotkey_listening else { return };
+                    let Some(slot) = this.hotkey_listening else {
+                        return;
+                    };
                     let keystroke = &event.keystroke;
 
                     // Escape cancels
@@ -152,14 +182,38 @@ impl LumaWorkspace {
                     if let Some((vk, modifiers)) = keystroke_to_vk(keystroke) {
                         let mut config = crate::config::AppConfig::load();
                         match slot {
-                            0 => { config.hotkeys.toggle_recording_vk = vk; config.hotkeys.toggle_recording_mod = modifiers; }
-                            1 => { config.hotkeys.save_clip_vk = vk; config.hotkeys.save_clip_mod = modifiers; }
-                            2 => { config.hotkeys.toggle_mic_vk = vk; config.hotkeys.toggle_mic_mod = modifiers; }
-                            3 => { config.hotkeys.push_to_talk_vk = vk; config.hotkeys.push_to_talk_mod = modifiers; }
-                            4 => { config.hotkeys.marker_flag_vk = vk; config.hotkeys.marker_flag_mod = modifiers; }
-                            5 => { config.hotkeys.marker_kill_vk = vk; config.hotkeys.marker_kill_mod = modifiers; }
-                            6 => { config.hotkeys.marker_death_vk = vk; config.hotkeys.marker_death_mod = modifiers; }
-                            7 => { config.hotkeys.marker_highlight_vk = vk; config.hotkeys.marker_highlight_mod = modifiers; }
+                            0 => {
+                                config.hotkeys.toggle_recording_vk = vk;
+                                config.hotkeys.toggle_recording_mod = modifiers;
+                            }
+                            1 => {
+                                config.hotkeys.save_clip_vk = vk;
+                                config.hotkeys.save_clip_mod = modifiers;
+                            }
+                            2 => {
+                                config.hotkeys.toggle_mic_vk = vk;
+                                config.hotkeys.toggle_mic_mod = modifiers;
+                            }
+                            3 => {
+                                config.hotkeys.push_to_talk_vk = vk;
+                                config.hotkeys.push_to_talk_mod = modifiers;
+                            }
+                            4 => {
+                                config.hotkeys.marker_flag_vk = vk;
+                                config.hotkeys.marker_flag_mod = modifiers;
+                            }
+                            5 => {
+                                config.hotkeys.marker_kill_vk = vk;
+                                config.hotkeys.marker_kill_mod = modifiers;
+                            }
+                            6 => {
+                                config.hotkeys.marker_death_vk = vk;
+                                config.hotkeys.marker_death_mod = modifiers;
+                            }
+                            7 => {
+                                config.hotkeys.marker_highlight_vk = vk;
+                                config.hotkeys.marker_highlight_mod = modifiers;
+                            }
                             _ => {}
                         }
                         config.save();
@@ -170,79 +224,111 @@ impl LumaWorkspace {
         }
 
         root.child(
-                VStack::new()
-                    .flex_1()
-                    .h_0()
-                    .child(
+            VStack::new()
+                .flex_1()
+                .h_0()
+                .child(
+                    div().px_8().pt_8().pb_4().child(
                         div()
-                            .px_8()
-                            .pt_8()
-                            .pb_4()
-                            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child("Settings"))
-                    )
-                    .child(
-                        VStack::new()
-                            .flex_1()
-                            .h_0()
-                            .px_8()
-                            .child(
-                                HStack::new()
-                                    .gap_4()
-                                    .border_b_1()
-                                    .border_color(theme.tokens.border)
-                                    .children(SettingsTab::ALL.iter().map(|&tab| {
-                                        let is_active = current_tab == tab;
-                                        let view_handle = view_handle.clone();
-                                        div()
-                                            .id(SharedString::from(format!("tab-{}", tab.label())))
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .px_4()
-                                            .py_2()
-                                            .cursor(CursorStyle::PointingHand)
-                                            .border_b_2()
-                                            .border_color(if is_active { theme.tokens.primary } else { gpui::transparent_black() })
-                                            .text_color(if is_active { theme.tokens.primary } else { theme.tokens.muted_foreground })
-                                            .hover(|s| s.text_color(theme.tokens.primary))
-                                            .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
-                                                let _ = view_handle.update(cx, |this, cx| {
-                                                    this.settings_tab = tab;
-                                                    this.hotkey_listening = None;
-                                                    if tab != SettingsTab::Audio {
-                                                        if let Some(pipeline) = this.mic_monitor_pipeline.take() {
-                                                            let _ = pipeline.set_state(gstreamer::State::Null);
-                                                            if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
-                                                                provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);
-                                                            }
+                            .text_2xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.tokens.foreground)
+                            .child("Settings"),
+                    ),
+                )
+                .child(
+                    VStack::new()
+                        .flex_1()
+                        .h_0()
+                        .px_8()
+                        .child(
+                            HStack::new()
+                                .gap_4()
+                                .border_b_1()
+                                .border_color(theme.tokens.border)
+                                .children(SettingsTab::ALL.iter().map(|&tab| {
+                                    let is_active = current_tab == tab;
+                                    let view_handle = view_handle.clone();
+                                    div()
+                                        .id(SharedString::from(format!("tab-{}", tab.label())))
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .px_4()
+                                        .py_2()
+                                        .cursor(CursorStyle::PointingHand)
+                                        .border_b_2()
+                                        .border_color(if is_active {
+                                            theme.tokens.primary
+                                        } else {
+                                            gpui::transparent_black()
+                                        })
+                                        .text_color(if is_active {
+                                            theme.tokens.primary
+                                        } else {
+                                            theme.tokens.muted_foreground
+                                        })
+                                        .hover(|s| s.text_color(theme.tokens.primary))
+                                        .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                                            let _ = view_handle.update(cx, |this, cx| {
+                                                this.settings_tab = tab;
+                                                this.hotkey_listening = None;
+                                                if tab != SettingsTab::Audio {
+                                                    if let Some(pipeline) =
+                                                        this.mic_monitor_pipeline.take()
+                                                    {
+                                                        let _ = pipeline
+                                                            .set_state(gstreamer::State::Null);
+                                                        if let Some(provider) = this
+                                                            .app_state
+                                                            .mic_provider
+                                                            .lock()
+                                                            .as_ref()
+                                                        {
+                                                            provider
+                                                                .subscribers
+                                                                .remove(&0xFFFF_FFFF_FFFF_FFFFu64);
                                                         }
                                                     }
-                                                    cx.notify();
-                                                });
-                                            })
-                                            .child(Icon::new(tab.icon()).size(px(16.0)))
-                                            .child(tab.label())
-                                    }))
-                            )
-                            .child(
-                                div()
-                                    .id("settings-scroll-area")
-                                    .flex_1()
-                                    .h_0()
-                                    .pt_4()
-                                    .pb_8()
-                                    .overflow_y_scroll()
-                                    .child(match current_tab {
-                                        SettingsTab::General => self.render_settings_general(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Video => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Audio => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Hotkeys => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Storage => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::About => self.render_settings_about(&theme).into_any_element(),
-                                    })
-                            )
-                    )
-            )
+                                                }
+                                                cx.notify();
+                                            });
+                                        })
+                                        .child(Icon::new(tab.icon()).size(px(16.0)))
+                                        .child(tab.label())
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("settings-scroll-area")
+                                .flex_1()
+                                .h_0()
+                                .pt_4()
+                                .pb_8()
+                                .overflow_y_scroll()
+                                .child(match current_tab {
+                                    SettingsTab::General => self
+                                        .render_settings_general(&theme, &view_handle, cx)
+                                        .into_any_element(),
+                                    SettingsTab::Video => self
+                                        .render_settings_video(&theme, &view_handle, cx)
+                                        .into_any_element(),
+                                    SettingsTab::Audio => self
+                                        .render_settings_audio(&theme, &view_handle, cx)
+                                        .into_any_element(),
+                                    SettingsTab::Hotkeys => self
+                                        .render_settings_hotkeys(&theme, &view_handle, cx)
+                                        .into_any_element(),
+                                    SettingsTab::Storage => self
+                                        .render_settings_storage(&theme, &view_handle, cx)
+                                        .into_any_element(),
+                                    SettingsTab::About => {
+                                        self.render_settings_about(&theme).into_any_element()
+                                    }
+                                }),
+                        ),
+                ),
+        )
     }
 
     pub fn sync_settings_form_from_config(&mut self, config: &crate::config::AppConfig) {
@@ -296,9 +382,13 @@ impl LumaWorkspace {
                     if path.is_dir() {
                         let name = entry.file_name().to_string_lossy().to_string();
                         let name_lower = name.to_lowercase();
-                        if name != "Clips" && name != "Cache" && !name.starts_with(".")
-                           && name_lower != "target" && name_lower != "dist"
-                           && !name_lower.contains("gstreamer") {
+                        if name != "Clips"
+                            && name != "Cache"
+                            && !name.starts_with(".")
+                            && name_lower != "target"
+                            && name_lower != "dist"
+                            && !name_lower.contains("gstreamer")
+                        {
                             sessions_size += crate::utils::get_dir_size(&path).unwrap_or(0);
                         }
                     }
@@ -318,11 +408,17 @@ impl LumaWorkspace {
                     cx.notify();
                 });
             }
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
-    pub fn render_advanced_settings_dialog(&self, source: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_advanced_settings_dialog(
+        &self,
+        source: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let source_name = source.to_string();
         let active_tab = self.form_active_tab;
@@ -804,7 +900,12 @@ pub(super) fn section_header(title: &str) -> impl IntoElement {
         .child(title.to_uppercase())
 }
 
-pub(super) fn settings_row(theme: &Theme, label: impl Into<SharedString>, description: Option<impl Into<SharedString>>, control: impl IntoElement) -> impl IntoElement {
+pub(super) fn settings_row(
+    theme: &Theme,
+    label: impl Into<SharedString>,
+    description: Option<impl Into<SharedString>>,
+    control: impl IntoElement,
+) -> impl IntoElement {
     HStack::new()
         .justify_between()
         .items_center()
@@ -815,8 +916,13 @@ pub(super) fn settings_row(theme: &Theme, label: impl Into<SharedString>, descri
             VStack::new()
                 .child(div().font_weight(FontWeight::MEDIUM).child(label.into()))
                 .when_some(description, |this, desc| {
-                    this.child(div().text_xs().text_color(theme.tokens.muted_foreground).child(desc.into()))
-                })
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(desc.into()),
+                    )
+                }),
         )
         .child(control)
 }

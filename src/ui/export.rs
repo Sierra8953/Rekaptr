@@ -98,13 +98,23 @@ impl LumaWorkspace {
                     let progress = i as f32 / 100.0;
                     *app_state_for_progress.export.progress.lock() = progress;
                     let _ = view_handle.update(&mut cx, |_, cx| cx.notify());
-                    let _ = cx.background_executor().timer(std::time::Duration::from_millis(if export_reencode { 50 } else { 5 })).await;
-                    if *app_state_for_progress.export.phase.lock() != crate::state::ExportPhase::Exporting {
+                    let _ = cx
+                        .background_executor()
+                        .timer(std::time::Duration::from_millis(if export_reencode {
+                            50
+                        } else {
+                            5
+                        }))
+                        .await;
+                    if *app_state_for_progress.export.phase.lock()
+                        != crate::state::ExportPhase::Exporting
+                    {
                         break;
                     }
                 }
             }
-        }).detach();
+        })
+        .detach();
 
         let ffmpeg_task = cx.background_spawn(async move {
             use std::process::Command;
@@ -113,20 +123,26 @@ impl LumaWorkspace {
                 let mut cmd = Command::new(ffmpeg_path.clone());
                 cmd.arg("-y");
                 if hwaccel {
-                    cmd.arg("-hwaccel").arg("cuda")
-                       .arg("-hwaccel_output_format").arg("cuda");
+                    cmd.arg("-hwaccel")
+                        .arg("cuda")
+                        .arg("-hwaccel_output_format")
+                        .arg("cuda");
                 }
-                cmd.arg("-ss").arg(format!("{:.3}", start))
-                   .arg("-to").arg(format!("{:.3}", end))
-                   .arg("-allowed_extensions").arg("ALL")
-                   .arg("-i").arg(playlist_path.clone())
-                   .arg("-map").arg("0:v:0");
+                cmd.arg("-ss")
+                    .arg(format!("{:.3}", start))
+                    .arg("-to")
+                    .arg(format!("{:.3}", end))
+                    .arg("-allowed_extensions")
+                    .arg("ALL")
+                    .arg("-i")
+                    .arg(playlist_path.clone())
+                    .arg("-map")
+                    .arg("0:v:0");
 
                 let mut physical_stream_idx = 0;
                 for track in &audio_tracks {
                     if track.enabled {
-                        cmd.arg("-map")
-                            .arg(format!("0:a:{}?", physical_stream_idx));
+                        cmd.arg("-map").arg(format!("0:a:{}?", physical_stream_idx));
                     }
                     physical_stream_idx += 1;
                 }
@@ -142,10 +158,14 @@ impl LumaWorkspace {
                     cmd.arg("-c:v").arg("copy");
                 }
 
-                cmd.arg("-c:a").arg("aac")
-                    .arg("-b:a").arg("320k")
-                    .arg("-ar").arg("48000")
-                    .arg("-movflags").arg("+faststart")
+                cmd.arg("-c:a")
+                    .arg("aac")
+                    .arg("-b:a")
+                    .arg("320k")
+                    .arg("-ar")
+                    .arg("48000")
+                    .arg("-movflags")
+                    .arg("+faststart")
                     .arg(&output_path);
                 cmd
             };
@@ -170,17 +190,25 @@ impl LumaWorkspace {
 
             if clip_output.as_ref().map_or(false, |o| o.status.success()) {
                 let mut thumb_cmd = Command::new(&ffmpeg_path);
-                thumb_cmd.arg("-y")
-                         .arg("-ss").arg(format!("{:.3}", thumb_time))
-                         .arg("-i").arg(&output_path)
-                         .arg("-vframes").arg("1")
-                         .arg("-q:v").arg("2")
-                         .arg(&thumb_path);
+                thumb_cmd
+                    .arg("-y")
+                    .arg("-ss")
+                    .arg(format!("{:.3}", thumb_time))
+                    .arg("-i")
+                    .arg(&output_path)
+                    .arg("-vframes")
+                    .arg("1")
+                    .arg("-q:v")
+                    .arg("2")
+                    .arg(&thumb_path);
 
                 log::info!("[Export] Generating thumbnail: {:?}", thumb_cmd);
                 if let Ok(out) = thumb_cmd.output() {
                     if !out.status.success() {
-                        log::warn!("[Export] Thumbnail generation failed: {}", String::from_utf8_lossy(&out.stderr));
+                        log::warn!(
+                            "[Export] Thumbnail generation failed: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        );
                     }
                 }
             }
@@ -203,58 +231,66 @@ impl LumaWorkspace {
                     *this.app_state.export.phase.lock() = crate::state::ExportPhase::Idle;
 
                     if let Some(any_window) = cx.windows().first() {
-                        let _ = any_window.update(cx, |_, window, cx| {
-                            match result {
-                                Ok(output) => {
-                                    if output.status.success() {
-                                        this.clip_start = -1.0;
-                                        this.clip_end = -1.0;
-                                        this.show_toast(
-                                            SharedString::from("Clip Saved"),
-                                            Some(SharedString::from(format!("Exported to {:?}", output_path))),
-                                            adabraka_ui::overlays::toast::ToastVariant::Success,
-                                            window,
-                                            cx,
-                                        );
-                                        let _ = std::process::Command::new("explorer")
-                                            .arg(&clips_dir)
-                                            .spawn();
-                                    } else {
-                                        let err = String::from_utf8_lossy(&output.stderr);
-                                        log::error!("[Export] FFmpeg failed: {}", err);
-                                        let err_summary = err.lines().rev()
-                                            .find(|l| !l.trim().is_empty())
-                                            .unwrap_or("FFmpeg returned an error.")
-                                            .to_string();
-                                        this.show_toast(
-                                            SharedString::from("Export Failed"),
-                                            Some(SharedString::from(err_summary)),
-                                            adabraka_ui::overlays::toast::ToastVariant::Error,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("[Export] Failed to run FFmpeg: {}", e);
+                        let _ = any_window.update(cx, |_, window, cx| match result {
+                            Ok(output) => {
+                                if output.status.success() {
+                                    this.clip_start = -1.0;
+                                    this.clip_end = -1.0;
                                     this.show_toast(
-                                        SharedString::from("FFmpeg Error"),
-                                        Some(SharedString::from("Could not locate or run ffmpeg.exe")),
+                                        SharedString::from("Clip Saved"),
+                                        Some(SharedString::from(format!(
+                                            "Exported to {:?}",
+                                            output_path
+                                        ))),
+                                        adabraka_ui::overlays::toast::ToastVariant::Success,
+                                        window,
+                                        cx,
+                                    );
+                                    let _ = std::process::Command::new("explorer")
+                                        .arg(&clips_dir)
+                                        .spawn();
+                                } else {
+                                    let err = String::from_utf8_lossy(&output.stderr);
+                                    log::error!("[Export] FFmpeg failed: {}", err);
+                                    let err_summary = err
+                                        .lines()
+                                        .rev()
+                                        .find(|l| !l.trim().is_empty())
+                                        .unwrap_or("FFmpeg returned an error.")
+                                        .to_string();
+                                    this.show_toast(
+                                        SharedString::from("Export Failed"),
+                                        Some(SharedString::from(err_summary)),
                                         adabraka_ui::overlays::toast::ToastVariant::Error,
                                         window,
                                         cx,
                                     );
                                 }
                             }
+                            Err(e) => {
+                                log::error!("[Export] Failed to run FFmpeg: {}", e);
+                                this.show_toast(
+                                    SharedString::from("FFmpeg Error"),
+                                    Some(SharedString::from("Could not locate or run ffmpeg.exe")),
+                                    adabraka_ui::overlays::toast::ToastVariant::Error,
+                                    window,
+                                    cx,
+                                );
+                            }
                         });
                     }
                     cx.notify();
                 });
             }
-        }).detach();
+        })
+        .detach();
     }
 
-    pub fn render_export_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_export_modal(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
 
         div()
@@ -391,31 +427,85 @@ impl LumaWorkspace {
             .child(
                 VStack::new()
                     .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("ENCODER"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.tokens.muted_foreground)
+                            .child("ENCODER"),
+                    )
                     .child(
                         HStack::new()
                             .gap_2()
-                            .child(Self::encoder_button("exp-enc-h264", "H.264", "h264_nvenc", &self.export_encoder, cx))
-                            .child(Self::encoder_button("exp-enc-hevc", "HEVC", "hevc_nvenc", &self.export_encoder, cx))
-                            .child(Self::encoder_button("exp-enc-av1", "AV1", "av1_nvenc", &self.export_encoder, cx))
-                    )
+                            .child(Self::encoder_button(
+                                "exp-enc-h264",
+                                "H.264",
+                                "h264_nvenc",
+                                &self.export_encoder,
+                                cx,
+                            ))
+                            .child(Self::encoder_button(
+                                "exp-enc-hevc",
+                                "HEVC",
+                                "hevc_nvenc",
+                                &self.export_encoder,
+                                cx,
+                            ))
+                            .child(Self::encoder_button(
+                                "exp-enc-av1",
+                                "AV1",
+                                "av1_nvenc",
+                                &self.export_encoder,
+                                cx,
+                            )),
+                    ),
             )
             .child(
                 VStack::new()
                     .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("QUALITY PRESET"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.tokens.muted_foreground)
+                            .child("QUALITY PRESET"),
+                    )
                     .child(
                         HStack::new()
                             .gap_2()
-                            .child(Self::preset_button("exp-pre-fast", "Fast", "p1", &self.export_preset, cx))
-                            .child(Self::preset_button("exp-pre-bal", "Balanced", "p4", &self.export_preset, cx))
-                            .child(Self::preset_button("exp-pre-hq", "High Quality", "p7", &self.export_preset, cx))
-                    )
+                            .child(Self::preset_button(
+                                "exp-pre-fast",
+                                "Fast",
+                                "p1",
+                                &self.export_preset,
+                                cx,
+                            ))
+                            .child(Self::preset_button(
+                                "exp-pre-bal",
+                                "Balanced",
+                                "p4",
+                                &self.export_preset,
+                                cx,
+                            ))
+                            .child(Self::preset_button(
+                                "exp-pre-hq",
+                                "High Quality",
+                                "p7",
+                                &self.export_preset,
+                                cx,
+                            )),
+                    ),
             )
             .child(
                 VStack::new()
                     .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("BITRATE (kbps)"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.tokens.muted_foreground)
+                            .child("BITRATE (kbps)"),
+                    )
                     .child(
                         HStack::new()
                             .gap_4()
@@ -424,7 +514,11 @@ impl LumaWorkspace {
                                 Button::new("exp-bit-dec", "-")
                                     .variant(ButtonVariant::Outline)
                                     .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate - 5000).max(1000); cx.notify(); }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.export_bitrate =
+                                            (this.export_bitrate - 5000).max(1000);
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 div()
@@ -432,31 +526,66 @@ impl LumaWorkspace {
                                     .p_2()
                                     .bg(theme.tokens.background)
                                     .rounded_md()
-                                    .child(div().text_center().font_weight(FontWeight::BOLD).child(format!("{}k", self.export_bitrate)))
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(format!("{}k", self.export_bitrate)),
+                                    ),
                             )
                             .child(
                                 Button::new("exp-bit-inc", "+")
                                     .variant(ButtonVariant::Outline)
                                     .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate + 5000).min(100000); cx.notify(); }))
-                            )
-                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.export_bitrate =
+                                            (this.export_bitrate + 5000).min(100000);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             )
     }
 
-    fn encoder_button(id: &str, label: &'static str, value: &str, current: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn encoder_button(
+        id: &str,
+        label: &'static str,
+        value: &str,
+        current: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let value_owned = value.to_string();
         Button::new(SharedString::from(id.to_string()), label)
-            .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
+            .variant(if current == value {
+                ButtonVariant::Default
+            } else {
+                ButtonVariant::Outline
+            })
             .size(ButtonSize::Sm)
-            .on_click(cx.listener(move |this, _, _, cx| { this.export_encoder = value_owned.clone(); cx.notify(); }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.export_encoder = value_owned.clone();
+                cx.notify();
+            }))
     }
 
-    fn preset_button(id: &str, label: &'static str, value: &str, current: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn preset_button(
+        id: &str,
+        label: &'static str,
+        value: &str,
+        current: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let value_owned = value.to_string();
         Button::new(SharedString::from(id.to_string()), label)
-            .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
+            .variant(if current == value {
+                ButtonVariant::Default
+            } else {
+                ButtonVariant::Outline
+            })
             .size(ButtonSize::Sm)
-            .on_click(cx.listener(move |this, _, _, cx| { this.export_preset = value_owned.clone(); cx.notify(); }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.export_preset = value_owned.clone();
+                cx.notify();
+            }))
     }
 }

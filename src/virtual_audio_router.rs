@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use gstreamer_app::AppSrc;
-use ringbuf::traits::{Consumer, Observer, Split, Producer};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,18 +9,26 @@ use std::time::Duration;
 use wasapi::{Direction, SampleType, StreamMode};
 
 // Wrapper structs to safely move WASAPI COM objects between threads
-struct SendClient { inner: wasapi::AudioClient }
+struct SendClient {
+    inner: wasapi::AudioClient,
+}
 unsafe impl Send for SendClient {}
 impl std::ops::Deref for SendClient {
     type Target = wasapi::AudioClient;
-    fn deref(&self) -> &Self::Target { &self.inner }
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
-struct SendCaptureClient { inner: wasapi::AudioCaptureClient }
+struct SendCaptureClient {
+    inner: wasapi::AudioCaptureClient,
+}
 unsafe impl Send for SendCaptureClient {}
 impl std::ops::Deref for SendCaptureClient {
     type Target = wasapi::AudioCaptureClient;
-    fn deref(&self) -> &Self::Target { &self.inner }
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 pub struct VirtualAudioRouter {
@@ -36,23 +44,26 @@ impl VirtualAudioRouter {
         let mut client = wasapi::AudioClient::new_application_loopback_client(target_pid, true)
             .context("Failed to create loopback client")?;
 
-        let mix_format = client.get_mixformat()
-            .context("Failed to get mix format")?;
+        let mix_format = client.get_mixformat().context("Failed to get mix format")?;
 
         // Use Polling Shared mode for lowest latency and stability
-        client.initialize_client(
-            &mix_format,
-            &Direction::Capture,
-            &StreamMode::PollingShared {
-                autoconvert: true,
-                buffer_duration_hns: 10000000,
-            },
-        ).context("Failed to init WASAPI client")?;
+        client
+            .initialize_client(
+                &mix_format,
+                &Direction::Capture,
+                &StreamMode::PollingShared {
+                    autoconvert: true,
+                    buffer_duration_hns: 10000000,
+                },
+            )
+            .context("Failed to init WASAPI client")?;
 
-        let capture_client = client.get_audiocaptureclient()
+        let capture_client = client
+            .get_audiocaptureclient()
             .context("Failed to get capture client")?;
 
-        client.start_stream()
+        client
+            .start_stream()
             .context("Failed to start WASAPI stream")?;
 
         // 2. Configure GStreamer AppSrc to match WASAPI's internal format
@@ -89,19 +100,21 @@ impl VirtualAudioRouter {
         let (mut producer, mut consumer) = rb.split();
 
         let send_client = SendClient { inner: client };
-        let send_capture_client = SendCaptureClient { inner: capture_client };
+        let send_capture_client = SendCaptureClient {
+            inner: capture_client,
+        };
 
         let handle = thread::Builder::new()
             .name(format!("AudioCapture_{}", target_pid))
             .spawn(move || {
                 let silence_buffer = vec![0u8; silence_frames * bytes_per_frame as usize];
-                
+
                 while running_clone.load(Ordering::Relaxed) {
                     let frames_avail = match send_capture_client.get_next_packet_size() {
                         Ok(Some(f)) => f,
                         _ => 0,
                     };
-                    
+
                     if frames_avail == 0 {
                         let _ = producer.push_slice(&silence_buffer);
                         thread::sleep(Duration::from_millis(5));
@@ -114,7 +127,7 @@ impl VirtualAudioRouter {
                     } else {
                         let _ = producer.push_slice(&silence_buffer);
                     }
-                    
+
                     thread::sleep(Duration::from_millis(1));
                 }
                 let _ = send_client.stop_stream();
@@ -132,19 +145,22 @@ impl VirtualAudioRouter {
                     if avail > 0 {
                         let mut chunk = vec![0u8; avail];
                         consumer.pop_slice(&mut chunk);
-                        
+
                         let mut buffer = gstreamer::Buffer::from_mut_slice(chunk);
                         let duration = gstreamer::ClockTime::from_nseconds(
-                            (avail as u64 * 1_000_000_000) / (sample_rate as u64 * bytes_per_frame as u64),
+                            (avail as u64 * 1_000_000_000)
+                                / (sample_rate as u64 * bytes_per_frame as u64),
                         );
-                        
+
                         if let Some(buffer_ref) = buffer.get_mut() {
                             buffer_ref.set_pts(gstreamer::ClockTime::from_nseconds(pts));
                             buffer_ref.set_duration(duration);
                         }
                         pts += duration.nseconds();
 
-                        if app_src.push_buffer(buffer).is_err() { break; }
+                        if app_src.push_buffer(buffer).is_err() {
+                            break;
+                        }
                     } else {
                         thread::sleep(Duration::from_millis(2));
                     }

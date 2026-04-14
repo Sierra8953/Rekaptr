@@ -848,14 +848,15 @@ impl LumaWorkspace {
                             .variant(ButtonVariant::Destructive)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                for path_str in this.selected_clips.clone() {
+                                // ⚡ Bolt Optimization: Use .drain() directly instead of .clone() + .clear()
+                                // to completely avoid O(N) heap allocations and string copies.
+                                for path_str in this.selected_clips.drain() {
                                     let path = std::path::PathBuf::from(path_str);
                                     let _ = std::fs::remove_file(&path);
                                     let mut thumb = path.clone();
                                     thumb.set_extension("jpg");
                                     let _ = std::fs::remove_file(thumb);
                                 }
-                                this.selected_clips.clear();
                                 this.refresh_clips(cx);
                                 cx.notify();
                             }))

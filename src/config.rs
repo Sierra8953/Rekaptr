@@ -155,10 +155,10 @@ fn default_export_format() -> String { "mp4".to_string() }
 
 fn default_storage_path() -> String {
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let path = PathBuf::from(local_app_data).join("Luma").join("Recordings");
+        let path = PathBuf::from(local_app_data).join("Rekaptr").join("Recordings");
         return path.to_string_lossy().to_string();
     }
-    PathBuf::from("C:\\LumaRecordings").to_string_lossy().to_string()
+    PathBuf::from("C:\\RekaptrRecordings").to_string_lossy().to_string()
 }
 
 impl Default for AppConfig {
@@ -314,8 +314,8 @@ impl AppConfig {
     pub fn get_db_path() -> PathBuf {
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("luma.db")))
-            .unwrap_or_else(|| PathBuf::from("luma.db"))
+            .and_then(|p| p.parent().map(|d| d.join("rekaptr.db")))
+            .unwrap_or_else(|| PathBuf::from("rekaptr.db"))
     }
 
     pub fn init_db() -> rusqlite::Result<()> {

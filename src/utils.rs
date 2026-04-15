@@ -4,7 +4,7 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 const STARTUP_REG_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const STARTUP_REG_VALUE: &str = "Luma";
+const STARTUP_REG_VALUE: &str = "Rekaptr";
 
 /// Assumed segment length when ffprobe is unavailable or fails.
 const DEFAULT_SEGMENT_DURATION_SECS: f64 = 6.0;
@@ -15,7 +15,7 @@ pub fn set_startup_with_windows(enable: bool) {
         Ok(key) => {
             if enable {
                 let exe_path = std::env::current_exe()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("luma.exe"));
+                    .unwrap_or_else(|_| std::path::PathBuf::from("rekaptr.exe"));
                 let value = format!("\"{}\"", exe_path.to_string_lossy());
                 if let Err(e) = key.set_value(STARTUP_REG_VALUE, &value) {
                     log::error!("[Startup] Failed to set registry value: {}", e);
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_compute_total_duration_empty_dir() {
-        let dir = std::env::temp_dir().join("luma_test_empty_dur");
+        let dir = std::env::temp_dir().join("rekaptr_test_empty_dur");
         let _ = fs::create_dir_all(&dir);
         assert_eq!(compute_total_duration(&dir), 0.0);
         let _ = fs::remove_dir_all(&dir);
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn test_compute_total_duration_with_segments() {
-        let dir = std::env::temp_dir().join("luma_test_total_dur");
+        let dir = std::env::temp_dir().join("rekaptr_test_total_dur");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::create_dir_all(&dir);
 
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn test_compute_total_duration_nonexistent_dir() {
-        let dir = Path::new("C:\\nonexistent_luma_test_dir_12345");
+        let dir = Path::new("C:\\nonexistent_rekaptr_test_dir_12345");
         assert_eq!(compute_total_duration(dir), 0.0);
     }
 }

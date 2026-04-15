@@ -1,10 +1,10 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use crate::state::GameSession;
 use crate::config::GameSettings;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_add_source_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let windows = self.app_state.available_windows.lock().clone();
         let theme = use_theme();

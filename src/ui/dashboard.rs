@@ -1,9 +1,9 @@
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_dashboard(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 

@@ -1,8 +1,8 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::{ActiveView, LumaWorkspace};
+use crate::ui::{ActiveView, RekaptrWorkspace};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_sessions(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let sessions = crate::utils::fetch_all_sessions();

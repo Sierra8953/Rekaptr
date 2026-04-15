@@ -131,7 +131,7 @@ impl Video {
             }
 
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map_err(|e| Error::Mpv(format!("GetModuleHandleW failed: {:?}", e)))?;
-            let class_name = w!("LumaGLDummyClass");
+            let class_name = w!("RekaptrGLDummyClass");
             
             REGISTER_DUMMY_CLASS.call_once(|| {
                 let wnd_class = WNDCLASSW {
@@ -250,7 +250,7 @@ impl Video {
 
             // Send auth token as HTTP header so the local HLS server can
             // authenticate both playlist and segment requests.
-            let token_header = format!("X-Luma-Token: {}", crate::get_hls_token());
+            let token_header = format!("X-Rekaptr-Token: {}", crate::get_hls_token());
             mpv.set_property("http-header-fields", &*token_header).ok();
 
             let mut render_context: *mut mpv_render_context = std::ptr::null_mut();

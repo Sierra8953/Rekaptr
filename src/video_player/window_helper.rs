@@ -30,7 +30,7 @@ impl VideoWindow {
 
         unsafe {
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
-            let class_name = w!("LumaVideoClass");
+            let class_name = w!("RekaptrVideoClass");
 
             REGISTER_CLASS.call_once(|| {
                 // Use a black brush for the background

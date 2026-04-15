@@ -1,9 +1,9 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use super::{section_header, settings_row, settings_toggle};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub(crate) fn render_settings_general(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let config = crate::config::AppConfig::load();
         let vh = view_handle.clone();

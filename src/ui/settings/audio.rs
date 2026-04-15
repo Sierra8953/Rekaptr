@@ -1,10 +1,10 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
 use gstreamer::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use super::{section_header, settings_row, settings_toggle, stepper_f32};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub(crate) fn render_settings_audio(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let vh = view_handle.clone();
         let mut devices_raw = crate::engine::enumerate_audio_devices(true);

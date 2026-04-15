@@ -8,7 +8,7 @@ mod about;
 use gpui::*;
 use adabraka_ui::prelude::*;
 use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
-use crate::ui::{LumaWorkspace, SettingsTab};
+use crate::ui::{RekaptrWorkspace, SettingsTab};
 use crate::config::VideoSettings;
 use gstreamer::prelude::*;
 use gstreamer;
@@ -108,7 +108,7 @@ fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
     Some((vk, modifiers))
 }
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_settings_view(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 

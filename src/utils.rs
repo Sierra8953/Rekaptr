@@ -660,53 +660,21 @@ pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
 
 
 fn resolve_steam_app_id(game_title: &str) -> Option<String> {
-    let sanitized: String = game_title.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .to_lowercase();
+    let url = format!(
+        "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
+        url::form_urlencoded::byte_serialize(game_title.as_bytes()).collect::<String>()
+    );
 
-    let slug = sanitized.replace(' ', "");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .user_agent("Rekaptr/1.0")
+        .build()
+        .ok()?;
 
-    let mut app_id = match slug.as_str() {
-        s if s.contains("counterstrike") || s.contains("cs2") || s.contains("csgo") => Some("730".to_string()),
-        s if s.contains("dota") => Some("570".to_string()),
-        s if s.contains("cyberpunk") => Some("1091500".to_string()),
-        s if s.contains("halflife2") => Some("220".to_string()),
-        s if s.contains("eldenring") => Some("1245620".to_string()),
-        s if s.contains("baldursgate") => Some("1086940".to_string()),
-        s if s.contains("arcraiders") => Some("1808500".to_string()),
-        s if s.contains("monitor") => Some("1144200".to_string()),
-        s if s.contains("thelastofus") => Some("1888500".to_string()),
-        s if s.contains("vivaldi") => Some("1144200".to_string()),
-        s if s.contains("rust") => Some("252490".to_string()),
-        s if s.contains("valorant") => None,
-        _ => None,
-    };
-
-    if app_id.is_none() {
-        let url = format!("https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US", url::form_urlencoded::byte_serialize(game_title.as_bytes()).collect::<String>());
-
-        if let Ok(client) = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .user_agent("Luma/1.0")
-            .build()
-        {
-            if let Ok(response) = client.get(&url).send() {
-                if let Ok(json) = response.json::<serde_json::Value>() {
-                    if let Some(items) = json.get("items").and_then(|i| i.as_array()) {
-                        if let Some(first_item) = items.first() {
-                            if let Some(id) = first_item.get("id").and_then(|id| id.as_i64()) {
-                                app_id = Some(id.to_string());
-                                log::info!("[Utils] Found Steam AppID {} for '{}' via search API", id, game_title);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    app_id
+    let json = client.get(&url).send().ok()?.json::<serde_json::Value>().ok()?;
+    let id = json.get("items")?.as_array()?.first()?.get("id")?.as_i64()?;
+    log::info!("[Utils] Found Steam AppID {} for '{}' via search API", id, game_title);
+    Some(id.to_string())
 }
 
 fn resolve_steam_artwork(game_title: &str, cdn_filename: &str, cache_suffix: &str) -> Option<String> {
@@ -755,7 +723,7 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
     const CLEANUP_POLL_INTERVAL_SECS: u64 = 30;
 
     std::thread::Builder::new()
-        .name("Luma Cleanup".to_string())
+        .name("Rekaptr Cleanup".to_string())
         .spawn(move || {
             #[cfg(windows)]
             unsafe {
@@ -905,8 +873,9 @@ mod tests {
     #[test]
     fn test_parse_segment_index_no_duration() {
         // Segments that haven't been renamed yet (no _XXXms suffix)
-        assert_eq!(parse_segment_index("seg_5.m4s"), Some(5));
-        assert_eq!(parse_segment_index("seg_0.m4s"), Some(0));
+        // Format is seg_INDEX_SESSIONID.m4s
+        assert_eq!(parse_segment_index("seg_5_1234567890.m4s"), Some(5));
+        assert_eq!(parse_segment_index("seg_0_1234567890.m4s"), Some(0));
     }
 
     #[test]

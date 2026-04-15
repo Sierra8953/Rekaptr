@@ -1,8 +1,8 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub(crate) fn render_settings_about(&self, theme: &Theme) -> impl IntoElement {
         VStack::new()
             .gap_4()
@@ -26,7 +26,7 @@ impl LumaWorkspace {
                         .child(
                             VStack::new()
                                 .items_center()
-                                .child(div().text_2xl().font_weight(FontWeight::BOLD).child("Luma Replay"))
+                                .child(div().text_2xl().font_weight(FontWeight::BOLD).child("Rekaptr"))
                                 .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Version 0.1.0 (Early Access)"))
                         )
                         .child(
@@ -46,13 +46,6 @@ impl LumaWorkspace {
                                 .child(Button::new("about-discord", "Discord").variant(ButtonVariant::Outline).size(ButtonSize::Sm))
                         )
                 )
-            )
-            .child(
-                div()
-                    .text_center()
-                    .text_xs()
-                    .text_color(theme.tokens.muted_foreground.opacity(0.5))
-                    .child("© 2024 Luma Research & Development. All rights reserved.")
             )
     }
 }

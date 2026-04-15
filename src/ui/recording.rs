@@ -1,12 +1,12 @@
 use crate::config::AppConfig;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use adabraka_ui::prelude::*;
 use gpui::*;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use std::sync::Arc;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn toggle_recording_internal(&mut self) {
         let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
         let game_dir = crate::utils::get_storage_root().join(crate::utils::clean_title(&source));

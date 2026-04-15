@@ -1,6 +1,6 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use gstreamer as gst;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub fn detect_available_encoders() -> Vec<DetectedEncoder> {
         .collect()
 }
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_setup_wizard(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let view = cx.entity().downgrade();
@@ -77,7 +77,7 @@ impl LumaWorkspace {
                             .text_2xl()
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme.tokens.foreground)
-                            .child("Welcome to Luma")
+                            .child("Welcome to Rekaptr")
                     )
             )
             .child(
@@ -107,7 +107,7 @@ impl LumaWorkspace {
                 div()
                     .text_sm()
                     .text_color(theme.tokens.muted_foreground)
-                    .child("Luma is a GPU-accelerated game recorder. This wizard will help you configure the essentials: where to store recordings and which encoder to use.")
+                    .child("Rekaptr is a GPU-accelerated game recorder. This wizard will help you configure the essentials: where to store recordings and which encoder to use.")
             )
             .child(
                 VStack::new()
@@ -159,7 +159,7 @@ impl LumaWorkspace {
                 div()
                     .text_sm()
                     .text_color(theme.tokens.muted_foreground)
-                    .child("Choose where Luma will save recordings and clips. Use an SSD with at least 50 GB of free space for best results.")
+                    .child("Choose where Rekaptr will save recordings and clips. Use an SSD with at least 50 GB of free space for best results.")
             )
             .child(
                 VStack::new()
@@ -305,7 +305,7 @@ impl LumaWorkspace {
                 div()
                     .text_sm()
                     .text_color(theme.tokens.muted_foreground)
-                    .child("Luma detected the following encoders on your system. Hardware encoders (NVENC) are recommended for minimal performance impact while gaming.")
+                    .child("Rekaptr detected the following encoders on your system. Hardware encoders (NVENC) are recommended for minimal performance impact while gaming.")
             )
             .child(encoder_list)
     }
@@ -418,7 +418,7 @@ impl LumaWorkspace {
 
         self.show_toast(
             "Setup Complete",
-            Some("Luma is ready. Add a game source from the dashboard to start recording."),
+            Some("Rekaptr is ready. Add a game source from the dashboard to start recording."),
             adabraka_ui::overlays::toast::ToastVariant::Success,
             window,
             cx,

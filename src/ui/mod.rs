@@ -22,7 +22,7 @@ use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::display::data_table::DataTable;
 
 #[allow(dead_code)]
-pub struct LumaWorkspace {
+pub struct RekaptrWorkspace {
     pub active_view: ActiveView,
     pub clips_view_mode: ClipsViewMode,
     pub settings_tab: SettingsTab,
@@ -234,7 +234,7 @@ impl SettingsTab {
     }
 }
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn new(app_state: Arc<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let toast_manager = cx.new(|cx| adabraka_ui::overlays::toast::ToastManager::new(cx));
         let config = AppConfig::load();
@@ -1239,7 +1239,7 @@ preview_vol_slider_state: cx.new(|cx| {
     }
 }
 
-impl Render for LumaWorkspace {
+impl Render for RekaptrWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_workspace(window, cx)
     }

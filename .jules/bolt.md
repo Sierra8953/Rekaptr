@@ -1,0 +1,4 @@
+
+## 2024-05-24 - Windows API EnumWindows Performance Optimization
+**Learning:** In Windows UI programming (like `src/game_detector.rs`), iterating through system windows via `EnumWindows` can be severely bottlenecked by expensive OS queries like `GetWindowThreadProcessId` and subsequent process dictionary lookups. Many "visible" windows in Windows are actually nameless background helpers. Evaluating process info before filtering by window title means wasting significant CPU cycles and allocating strings for thousands of irrelevant windows, and duplicating the same queries is highly inefficient.
+**Action:** When working with `EnumWindows` or similar system iteration APIs, always filter out irrelevant objects using fast-path checks (like `GetWindowTextW` length or specific hardcoded system titles) *before* performing expensive OS queries or memory allocations. Always check for duplicate/redundant OS API calls within the same loop.

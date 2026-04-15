@@ -1,5 +1,6 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::{LumaWorkspace, ClipsViewMode};
 use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
@@ -586,15 +587,19 @@ impl LumaWorkspace {
                             .opacity(if controls_visible { 1.0 } else { 0.0 })
                             .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(gpui::white()).child(clip.title.clone()))
                             .child(
-                                div()
-                                    .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.clip_to_preview = None;
-                                        this.preview_video_source = None;
-                                        this.preview_audio_enabled.clear();
-                                        cx.notify();
-                                    }))
-                                    .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                Tooltip::new("Close Preview")
+                                    .placement(TooltipPlacement::Bottom)
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.clip_to_preview = None;
+                                                this.preview_video_source = None;
+                                                this.preview_audio_enabled.clear();
+                                                cx.notify();
+                                            }))
+                                            .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
+                                    )
                             )
                     )
                     // 2. Bottom HUD Overlay
@@ -659,59 +664,71 @@ impl LumaWorkspace {
                                             .gap_4()
                                             .items_center()
                                             .child(
-                                                div()
-                                                    .id("preview-skip-back")
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.opacity(0.7))
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            let target = (v.position().as_secs_f64() - 5.0).max(0.0);
-                                                            let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new("rotate-ccw").size(px(22.0)).color(gpui::white()))
+                                                Tooltip::new("Skip Back 5s")
+                                                    .placement(TooltipPlacement::Top)
+                                                    .child(
+                                                        div()
+                                                            .id("preview-skip-back")
+                                                            .cursor_pointer()
+                                                            .hover(|s| s.opacity(0.7))
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                                if let Some(v) = &this.preview_video_source {
+                                                                    let target = (v.position().as_secs_f64() - 5.0).max(0.0);
+                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
+                                                                    cx.notify();
+                                                                }
+                                                            }))
+                                                            .child(Icon::new("rotate-ccw").size(px(22.0)).color(gpui::white()))
+                                                    )
                                             )
                                             .child({
                                                 let is_paused = self.preview_video_source.as_ref().map_or(true, |v| v.paused());
-                                                div()
-                                                    .id("preview-play-pause")
-                                                    .cursor_pointer()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .w(px(36.0))
-                                                    .h(px(36.0))
-                                                    .rounded_full()
-                                                    .bg(theme.tokens.primary)
-                                                    .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
-                                                                let _ = v.seek(std::time::Duration::ZERO, false);
-                                                                v.set_paused(false);
-                                                            } else {
-                                                                v.set_paused(!v.paused());
-                                                            }
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(20.0)).color(theme.tokens.primary_foreground))
+                                                Tooltip::new("Play/Pause")
+                                                    .placement(TooltipPlacement::Top)
+                                                    .child(
+                                                        div()
+                                                            .id("preview-play-pause")
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .w(px(36.0))
+                                                            .h(px(36.0))
+                                                            .rounded_full()
+                                                            .bg(theme.tokens.primary)
+                                                            .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                                if let Some(v) = &this.preview_video_source {
+                                                                    if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
+                                                                        let _ = v.seek(std::time::Duration::ZERO, false);
+                                                                        v.set_paused(false);
+                                                                    } else {
+                                                                        v.set_paused(!v.paused());
+                                                                    }
+                                                                    cx.notify();
+                                                                }
+                                                            }))
+                                                            .child(Icon::new(if is_paused { "play" } else { "pause" }).size(px(20.0)).color(theme.tokens.primary_foreground))
+                                                    )
                                             })
                                             .child(
-                                                div()
-                                                    .id("preview-skip-fwd")
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.opacity(0.7))
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            let duration = v.duration().as_secs_f64();
-                                                            let target = (v.position().as_secs_f64() + 5.0).min(duration);
-                                                            let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
-                                                            cx.notify();
-                                                        }
-                                                    }))
-                                                    .child(Icon::new("rotate-cw").size(px(22.0)).color(gpui::white()))
+                                                Tooltip::new("Skip Forward 5s")
+                                                    .placement(TooltipPlacement::Top)
+                                                    .child(
+                                                        div()
+                                                            .id("preview-skip-fwd")
+                                                            .cursor_pointer()
+                                                            .hover(|s| s.opacity(0.7))
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                                if let Some(v) = &this.preview_video_source {
+                                                                    let duration = v.duration().as_secs_f64();
+                                                                    let target = (v.position().as_secs_f64() + 5.0).min(duration);
+                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
+                                                                    cx.notify();
+                                                                }
+                                                            }))
+                                                            .child(Icon::new("rotate-cw").size(px(22.0)).color(gpui::white()))
+                                                    )
                                             )
                                     )
                                     .child(div().flex_1())
@@ -725,25 +742,29 @@ impl LumaWorkspace {
                                             .gap_3()
                                             .items_center()
                                             .child(
-                                                div()
-                                                    .id("preview-vol-icon")
-                                                    .cursor_pointer()
-                                                    .flex()
-                                                    .items_center()
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if this.preview_volume < 1.0 {
-                                                            this.preview_volume = 100.0;
-                                                        } else {
-                                                            this.preview_volume = 0.0;
-                                                        }
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            v.set_volume(this.preview_volume);
-                                                        }
-                                                        let slider_val = (this.preview_volume / 1.5) as f32;
-                                                        this.preview_vol_slider_state.update(cx, |s, cx| s.set_value(slider_val, cx));
-                                                        cx.notify();
-                                                    }))
-                                                    .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
+                                                Tooltip::new("Mute/Unmute")
+                                                    .placement(TooltipPlacement::Top)
+                                                    .child(
+                                                        div()
+                                                            .id("preview-vol-icon")
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                                if this.preview_volume < 1.0 {
+                                                                    this.preview_volume = 100.0;
+                                                                } else {
+                                                                    this.preview_volume = 0.0;
+                                                                }
+                                                                if let Some(v) = &this.preview_video_source {
+                                                                    v.set_volume(this.preview_volume);
+                                                                }
+                                                                let slider_val = (this.preview_volume / 1.5) as f32;
+                                                                this.preview_vol_slider_state.update(cx, |s, cx| s.set_value(slider_val, cx));
+                                                                cx.notify();
+                                                            }))
+                                                            .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
+                                                    )
                                             )
                                             .child({
                                                 let view_for_slider = cx.entity().downgrade();
@@ -881,13 +902,17 @@ impl LumaWorkspace {
                             .items_center()
                             .child(div().text_lg().font_weight(FontWeight::BOLD).child("Clip Details"))
                             .child(
-                                div()
-                                    .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.selected_clip_for_details = None;
-                                        cx.notify();
-                                    }))
-                                    .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
+                                Tooltip::new("Close Details")
+                                    .placement(TooltipPlacement::Bottom)
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.selected_clip_for_details = None;
+                                                cx.notify();
+                                            }))
+                                            .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
+                                    )
                             )
                     )
                     .child(

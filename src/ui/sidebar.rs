@@ -1,5 +1,6 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::{ActiveView, LumaWorkspace};
 
 impl LumaWorkspace {
@@ -16,9 +17,9 @@ impl LumaWorkspace {
             .pt(px(12.0))
             .px(px(8.0))
             .gap_2()
-            .child(self.render_nav_item("nav-dash", "layout-dashboard", ActiveView::Dashboard, active, cx))
-            .child(self.render_nav_item("nav-clips", "video", ActiveView::Clips, active, cx))
-            .child(self.render_nav_item("nav-settings", "settings", ActiveView::Settings, active, cx))
+            .child(self.render_nav_item("nav-dash", "layout-dashboard", "Dashboard", ActiveView::Dashboard, active, cx))
+            .child(self.render_nav_item("nav-clips", "video", "Clips", ActiveView::Clips, active, cx))
+            .child(self.render_nav_item("nav-settings", "settings", "Settings", ActiveView::Settings, active, cx))
             .child(Spacer::new())
             .child(
                 div()
@@ -41,6 +42,7 @@ impl LumaWorkspace {
         &self,
         id: &'static str,
         icon_name: &'static str,
+        label: &'static str,
         view: ActiveView,
         active: ActiveView,
         cx: &mut Context<Self>,
@@ -61,16 +63,20 @@ impl LumaWorkspace {
                 this.set_active_view(view, cx);
             }))
             .child(
-                div()
-                    .size(px(48.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_lg()
-                    .bg(if is_active { theme.tokens.muted } else { gpui::transparent_black() })
-                    .text_color(if is_active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
-                    .hover(|s| s.bg(theme.tokens.muted.opacity(0.5)).text_color(theme.tokens.foreground))
-                    .child(Icon::new(icon_name).size(px(24.0)))
+                Tooltip::new(label)
+                    .placement(TooltipPlacement::Right)
+                    .child(
+                        div()
+                            .size(px(48.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_lg()
+                            .bg(if is_active { theme.tokens.muted } else { gpui::transparent_black() })
+                            .text_color(if is_active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                            .hover(|s| s.bg(theme.tokens.muted.opacity(0.5)).text_color(theme.tokens.foreground))
+                            .child(Icon::new(icon_name).size(px(24.0)))
+                    )
             )
             .when(is_active, |this| {
                 this.child(

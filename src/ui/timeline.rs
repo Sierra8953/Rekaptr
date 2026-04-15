@@ -1,9 +1,9 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
 use adabraka_ui::components::slider::Slider;
-use crate::ui::{LumaWorkspace, TimelineDragTarget};
+use crate::ui::{RekaptrWorkspace, TimelineDragTarget};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_timeline(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let audio_tracks = self.get_current_audio_tracks();

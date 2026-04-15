@@ -1,8 +1,8 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::{ActiveView, LumaWorkspace};
+use crate::ui::{ActiveView, RekaptrWorkspace};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_sidebar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_view;
         let theme = use_theme();

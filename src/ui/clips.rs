@@ -1,12 +1,12 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::{LumaWorkspace, ClipsViewMode};
+use crate::ui::{RekaptrWorkspace, ClipsViewMode};
 use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
 use adabraka_ui::components::slider::Slider;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let all_clips = self.cached_clips.clone();
@@ -219,7 +219,7 @@ pub enum LibraryRow {
     GameChunk(Vec<(String, usize)>),
 }
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     /// Trigger portrait artwork fetches for a list of game titles.
     /// Everything runs off the UI thread — app_id resolution, local cache check, and download.
     pub fn fetch_portrait_artwork(&self, titles: &[String], cx: &mut Context<Self>) {

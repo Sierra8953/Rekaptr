@@ -4556,51 +4556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "luma"
-version = "0.1.0"
-dependencies = [
- "adabraka-gpui",
- "adabraka-ui",
- "anyhow",
- "chrono",
- "dashmap",
- "env_logger",
- "futures-util",
- "glib 0.22.2",
- "gpui-component",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-base",
- "gstreamer-video",
- "image",
- "libmpv2",
- "libmpv2-sys",
- "log",
- "mimalloc",
- "notify 6.1.1",
- "once_cell",
- "parking_lot",
- "rand 0.10.0",
- "regex",
- "reqwest",
- "rfd",
- "ringbuf",
- "rusqlite",
- "serde",
- "serde_json",
- "smallvec",
- "sysinfo 0.30.13",
- "thiserror 1.0.69",
- "tokio",
- "tray-icon",
- "url",
- "wasapi",
- "winapi",
- "windows 0.61.3",
- "winreg 0.52.0",
-]
-
-[[package]]
 name = "lyon"
 version = "1.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6423,6 +6378,51 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "rekaptr"
+version = "0.1.0"
+dependencies = [
+ "adabraka-gpui",
+ "adabraka-ui",
+ "anyhow",
+ "chrono",
+ "dashmap",
+ "env_logger",
+ "futures-util",
+ "glib 0.22.2",
+ "gpui-component",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-base",
+ "gstreamer-video",
+ "image",
+ "libmpv2",
+ "libmpv2-sys",
+ "log",
+ "mimalloc",
+ "notify 6.1.1",
+ "once_cell",
+ "parking_lot",
+ "rand 0.10.0",
+ "regex",
+ "reqwest",
+ "rfd",
+ "ringbuf",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "sysinfo 0.30.13",
+ "thiserror 1.0.69",
+ "tokio",
+ "tray-icon",
+ "url",
+ "wasapi",
+ "winapi",
+ "windows 0.61.3",
+ "winreg 0.52.0",
+]
 
 [[package]]
 name = "reqwest"

@@ -1,9 +1,9 @@
 use crate::config::AppConfig;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use adabraka_ui::prelude::*;
 use gpui::*;
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.clip_start >= 0.0 && self.clip_end >= 0.0 {
             self.show_export_modal = true;
@@ -58,7 +58,7 @@ impl LumaWorkspace {
         if ffmpeg_path.to_str() != Some("ffmpeg") && !ffmpeg_path.exists() {
             self.show_toast(
                 "FFmpeg Not Found",
-                Some("Place ffmpeg.exe in the bin/ folder next to Luma, or install it to PATH."),
+                Some("Place ffmpeg.exe in the bin/ folder next to Rekaptr, or install it to PATH."),
                 adabraka_ui::overlays::toast::ToastVariant::Error,
                 window,
                 cx,

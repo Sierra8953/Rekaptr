@@ -15,7 +15,7 @@ pub mod virtual_audio_router;
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use crate::state::AppState;
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use anyhow::Result;
 use gpui::*;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ impl gpui::AssetSource for Assets {
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-    log::info!("[Main] Starting Luma...");
+    log::info!("[Main] Starting Rekaptr...");
     gstreamer::init()?;
     crate::engine::boost_gpu_priority();
     let (major, minor, micro, nano) = gstreamer::version();
@@ -153,12 +153,12 @@ async fn main() -> Result<()> {
         // Start the local HLS server
         start_local_server(crate::utils::get_storage_root());
 
-        let workspace_handle: Arc<std::sync::Mutex<Option<WeakEntity<LumaWorkspace>>>> = Arc::new(std::sync::Mutex::new(None));
+        let workspace_handle: Arc<std::sync::Mutex<Option<WeakEntity<RekaptrWorkspace>>>> = Arc::new(std::sync::Mutex::new(None));
         let workspace_handle_clone = workspace_handle.clone();
 
         // --- System Tray Initialization ---
         let tray_menu = Menu::new();
-        let show_item = MenuItem::new("Open Luma", true, None);
+        let show_item = MenuItem::new("Open Rekaptr", true, None);
         let stop_item = MenuItem::new("Stop Recording", false, None); // Disabled by default
         let quit_item = MenuItem::new("Quit", true, None);
 
@@ -175,7 +175,7 @@ async fn main() -> Result<()> {
 
         let mut tray_builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Luma Recording");
+            .with_tooltip("Rekaptr Recording");
 
         if let Some(icon) = icon {
             tray_builder = tray_builder.with_icon(icon);
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
             Ok(icon) => icon,
             Err(e) => {
                 log::error!("[TrayIcon] Failed to create system tray: {}", e);
-                panic!("System tray is required for Luma to run");
+                panic!("System tray is required for Rekaptr to run");
             }
         };
         let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
@@ -229,7 +229,7 @@ async fn main() -> Result<()> {
                                     if workspace_weak.upgrade().is_some() {
                                         if let Some(window_handle) = cx.windows().first().cloned() {
                                             let _ = window_handle.update(cx, |view: AnyView, window: &mut Window, cx: &mut App| {
-                                                if let Ok(view) = view.downcast::<LumaWorkspace>() {
+                                                if let Ok(view) = view.downcast::<RekaptrWorkspace>() {
                                                     view.update(cx, |this, cx| {
                                                         if this.app_state.recording.phase.lock().is_recording() {
                                                             this.toggle_recording(window, cx);
@@ -332,7 +332,7 @@ async fn main() -> Result<()> {
                 }
                 *app_state.d3d11_device.lock() = Some(crate::video_player::SendHandle(HANDLE(device as _)));
             }
-            let view = cx.new(|cx| LumaWorkspace::new(app_state.clone(), window, cx));
+            let view = cx.new(|cx| RekaptrWorkspace::new(app_state.clone(), window, cx));
             if let Ok(mut handle) = workspace_handle_clone.lock() {
                 *handle = Some(view.downgrade());
             }
@@ -595,11 +595,11 @@ fn start_local_server(root: PathBuf) {
 
                     // Validate auth token on all requests to prevent other
                     // local processes from reading recording data.
-                    // Accept token from query param (?token=...) or HTTP header (X-Luma-Token: ...).
+                    // Accept token from query param (?token=...) or HTTP header (X-Rekaptr-Token: ...).
                     let query_token = query.split('&')
                         .find_map(|p| p.strip_prefix("token="));
                     let header_token = request.lines()
-                        .find(|l| l.to_lowercase().starts_with("x-luma-token:"))
+                        .find(|l| l.to_lowercase().starts_with("x-rekaptr-token:"))
                         .map(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim());
                     let expected = get_hls_token();
                     let token_valid = query_token.map_or(false, |t| t == expected)

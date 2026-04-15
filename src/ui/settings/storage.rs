@@ -1,10 +1,10 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
 use adabraka_ui::charts::pie_chart::{PieChart, PieChartSegment, PieChartSize, PieChartLabelPosition};
-use crate::ui::LumaWorkspace;
+use crate::ui::RekaptrWorkspace;
 use super::{section_header, settings_row, settings_toggle};
 
-impl LumaWorkspace {
+impl RekaptrWorkspace {
     pub(crate) fn render_settings_storage(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let vh = view_handle.clone();
 

@@ -85,7 +85,7 @@ pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::Builder::new()
-        .name("Luma Hotkeys".to_string())
+        .name("Rekaptr Hotkeys".to_string())
         .spawn(move || {
             unsafe {
                 use windows::Win32::UI::Input::KeyboardAndMouse::*;

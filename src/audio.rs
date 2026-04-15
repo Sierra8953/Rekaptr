@@ -25,7 +25,7 @@ pub fn start_mic_provider(
     device_id: String,
 ) {
     let _ = std::thread::Builder::new()
-        .name("Luma Mic Provider".to_string())
+        .name("Rekaptr Mic Provider".to_string())
         .spawn(move || {
             #[cfg(windows)]
             unsafe {

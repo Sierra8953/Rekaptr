@@ -5,6 +5,7 @@ mod engine;
 mod game_detector;
 mod hotkeys;
 mod mic_dsp;
+mod migration;
 mod state;
 mod ui;
 mod utils;
@@ -102,6 +103,7 @@ impl gpui::AssetSource for Assets {
 async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     log::info!("[Main] Starting Rekaptr...");
+    crate::migration::run();
     gstreamer::init()?;
     crate::engine::boost_gpu_priority();
     let (major, minor, micro, nano) = gstreamer::version();

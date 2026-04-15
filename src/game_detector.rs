@@ -63,6 +63,7 @@ impl GameDetector {
             "searchhost.exe",
             "startmenuexperiencehost.exe",
             "luma.exe",
+            "rekaptr.exe",
             "nvidia share.exe",
             "devenv.exe",
             "rustrover.exe",

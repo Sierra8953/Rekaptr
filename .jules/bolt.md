@@ -1,0 +1,3 @@
+## 2026-04-16 - EnumWindows Early Filtering Optimization
+**Learning:** In Windows UI programming within this repository (`src/game_detector.rs`), performing OS queries like PID lookups or process tree queries via `GetWindowThreadProcessId` and `sysinfo` can degrade performance if done for every window enumerated by `EnumWindows`. `GetWindowTextW` from the `windows-rs` crate returns an `i32` where `0` indicates either failure or an empty string, allowing a single `len == 0` check to safely filter out both nameless windows and API errors early on.
+**Action:** When using `EnumWindows`, filter invisible/nameless windows early using `GetWindowTextW` length checks before performing any expensive OS queries to prevent performance degradation and redundant lookups.

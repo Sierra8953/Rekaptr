@@ -385,25 +385,92 @@ fn parse_segment_session_id(name: &str) -> Option<u64> {
     }
 }
 
-/// Sum all segment durations from filenames to compute total accumulated time.
-/// This is the source of truth for decode-time-offset — matches the test pipeline's approach.
-/// Falls back to ffprobe for unrenamed segments to ensure accuracy during active/crashed sessions.
+/// Returns the end of the on-disk timeline in seconds — the value the next
+/// session's splitmuxsink should use as decode-time-offset.
+///
+/// We probe tfdt directly rather than summing filename durations: storage-cap
+/// rotation prunes older sessions, but the segments still on disk carry tfdt
+/// values that include the pruned offset, so summing what remains under-counts
+/// and the next session's tfdt collides with the retained range — mpv's
+/// HLS+fMP4 demuxer then refuses to play across the discontinuity.
+///
+/// We must also take the *max* tfdt across all sessions, not the latest
+/// session's tfdt: a previous bug let some sessions be written with offsets
+/// lower than earlier sessions still on disk. The next session's offset has
+/// to clear every existing tfdt to keep the timeline monotonic.
 pub fn compute_total_duration(game_dir: &Path) -> f64 {
-    let mut total = 0.0;
-    if let Ok(entries) = std::fs::read_dir(game_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().map_or(false, |e| e == "m4s") {
-                if let Some(dur) = get_segment_duration(&path) {
-                    total += dur;
-                } else if let Some(dur) = ffprobe_segment_duration(&path) {
-                    // Fallback to ffprobe for unrenamed segments (active or crashed session)
-                    total += dur;
+    let Ok(entries) = std::fs::read_dir(game_dir) else {
+        return 0.0;
+    };
+
+    let mut by_session: std::collections::HashMap<u64, Vec<(u64, std::path::PathBuf)>> =
+        std::collections::HashMap::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.extension().map_or(false, |e| e == "m4s") {
+            continue;
+        }
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let Some(idx) = parse_segment_index(&name) else { continue; };
+        let Some(sid) = parse_segment_session_id(&name) else { continue; };
+        by_session.entry(sid).or_default().push((idx, path));
+    }
+
+    // For each session, probe its highest-indexed segment for the end tfdt;
+    // walk back if it's a truncated orphan from a crashed pipeline. Take the
+    // max across sessions so the next session clears every existing tfdt.
+    let mut max_end: f64 = 0.0;
+    for (_, mut segs) in by_session {
+        segs.sort_by_key(|(idx, _)| *idx);
+        for (_, path) in segs.iter().rev() {
+            if let Some(end) = ffprobe_segment_end_time(path) {
+                if end > max_end {
+                    max_end = end;
+                }
+                break;
+            }
+        }
+    }
+    max_end
+}
+
+/// Read the absolute decode-time at which a segment ends (last packet PTS +
+/// its duration). For fMP4 fragments this equals the global tfdt at the start
+/// of the next fragment.
+fn ffprobe_segment_end_time(path: &Path) -> Option<f64> {
+    let ffprobe = get_ffprobe_path();
+    let output = std::process::Command::new(&ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0",
+               "-show_entries", "packet=pts_time,duration_time",
+               "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut last_pts: Option<f64> = None;
+    let mut last_frame_dur: f64 = 0.0;
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() >= 2 {
+            if let Ok(pts) = parts[0].parse::<f64>() {
+                last_pts = Some(pts);
+                if let Ok(dur) = parts[1].parse::<f64>() {
+                    last_frame_dur = dur;
                 }
             }
         }
     }
-    total
+
+    let end = last_pts? + last_frame_dur;
+    if end > 0.0 { Some(end) } else { None }
 }
 
 /// Get actual segment duration from packet-level PTS using ffprobe.
@@ -916,18 +983,19 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_total_duration_with_segments() {
+    fn test_compute_total_duration_with_unreadable_segments() {
+        // compute_total_duration now ffprobes the highest-indexed segment.
+        // Fake-byte files can't be probed, so the result must be 0.0 — and
+        // we must not crash or hang walking back through the list.
         let dir = std::env::temp_dir().join("rekaptr_test_total_dur");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::create_dir_all(&dir);
 
-        // Create fake segment files with duration in filename
         fs::write(dir.join("seg_0_6000ms.m4s"), b"fake").unwrap();
         fs::write(dir.join("seg_1_6000ms.m4s"), b"fake").unwrap();
         fs::write(dir.join("seg_2_3000ms.m4s"), b"fake").unwrap();
 
-        let total = compute_total_duration(&dir);
-        assert!((total - 15.0).abs() < 0.001, "Expected 15.0, got {}", total);
+        assert_eq!(compute_total_duration(&dir), 0.0);
 
         let _ = fs::remove_dir_all(&dir);
     }

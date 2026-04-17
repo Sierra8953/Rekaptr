@@ -1,0 +1,3 @@
+## 2024-04-17 - UI Thread Blocking on Batch File Deletion
+**Learning:** In GPUI, `on_click` listeners run directly on the main UI thread. Executing synchronous disk I/O operations (like `std::fs::remove_file` in a loop) inside these handlers causes the application to freeze and stutter during batch operations. Additionally, micro-optimizing collection iterations (e.g., using `drain()`) is ineffective if the underlying operation remains blocking.
+**Action:** Always offload blocking operations (like file system I/O) to a background thread using `cx.background_executor().spawn()`. When moving state to the background thread, use `std::mem::take` to safely and efficiently extract the collection without triggering reallocation or cloning.

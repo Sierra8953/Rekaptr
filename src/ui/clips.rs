@@ -848,16 +848,22 @@ impl RekaptrWorkspace {
                             .variant(ButtonVariant::Destructive)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                for path_str in this.selected_clips.clone() {
-                                    let path = std::path::PathBuf::from(path_str);
-                                    let _ = std::fs::remove_file(&path);
-                                    let mut thumb = path.clone();
-                                    thumb.set_extension("jpg");
-                                    let _ = std::fs::remove_file(thumb);
-                                }
-                                this.selected_clips.clear();
-                                this.refresh_clips(cx);
-                                cx.notify();
+                                let selected_clips = std::mem::take(&mut this.selected_clips);
+                                cx.spawn(|this, mut cx| async move {
+                                    cx.background_executor().spawn(async move {
+                                        for path_str in selected_clips {
+                                            let path = std::path::PathBuf::from(path_str);
+                                            let _ = std::fs::remove_file(&path);
+                                            let mut thumb = path.clone();
+                                            thumb.set_extension("jpg");
+                                            let _ = std::fs::remove_file(thumb);
+                                        }
+                                    }).await;
+                                    let _ = this.update(&mut cx, |this, cx| {
+                                        this.refresh_clips(cx);
+                                        cx.notify();
+                                    });
+                                }).detach();
                             }))
                     )
             )

@@ -1026,14 +1026,23 @@ preview_vol_slider_state: cx.new(|cx| {
     }
 
     pub fn delete_clip(&mut self, clip: crate::state::Clip, window: &mut Window, cx: &mut Context<Self>) {
-        let _ = std::fs::remove_file(&clip.path);
-        if let Some(thumb) = &clip.thumbnail_path {
-            let _ = std::fs::remove_file(thumb);
-        }
+        // Show toast immediately before deletion to keep it on the main thread and responsive
         self.show_toast("Clip Deleted", Some("The file has been removed from disk."), adabraka_ui::overlays::toast::ToastVariant::Default, window, cx);
         self.clip_to_delete = None;
-        self.refresh_clips(cx);
-        cx.notify();
+
+        cx.spawn(|this, mut cx| async move {
+            cx.background_executor().spawn(async move {
+                let _ = std::fs::remove_file(&clip.path);
+                if let Some(thumb) = &clip.thumbnail_path {
+                    let _ = std::fs::remove_file(thumb);
+                }
+            }).await;
+
+            let _ = this.update(&mut cx, |this, cx| {
+                this.refresh_clips(cx);
+                cx.notify();
+            });
+        }).detach();
     }
 
     pub fn render_workspace(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

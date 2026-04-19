@@ -1,6 +1,7 @@
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip};
 use crate::ui::RekaptrWorkspace;
 
 impl RekaptrWorkspace {
@@ -233,15 +234,15 @@ impl RekaptrWorkspace {
                                                 HStack::new()
                                                     .gap_2()
                                                     .child(
-                                                        Button::new("btn-record", "")
+                                                        Tooltip::new(if is_recording { "Stop Recording" } else { "Start Recording" }).child(Button::new("btn-record", "")
                                                             .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
                                                             .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
                                                             .on_click(cx.listener(|this: &mut Self, _, window, cx| {
                                                                 this.toggle_recording(window, cx);
-                                                            }))
+                                                            })))
                                                     )
                                                     .child(
-                                                        Button::new("btn-back", "")
+                                                        Tooltip::new("Rewind 10s").child(Button::new("btn-back", "")
                                                             .icon(IconSource::Named("rotate-ccw".to_string()))
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
@@ -249,19 +250,19 @@ impl RekaptrWorkspace {
                                                                     let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
                                                                     let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
                                                                 }
-                                                            }))
+                                                            })))
                                                     )
                                                     .child({
                                                         let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
-                                                        Button::new("btn-play", "")
+                                                        Tooltip::new(if is_paused { "Play" } else { "Pause" }).child(Button::new("btn-play", "")
                                                             .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
                                                                 this.toggle_play_pause(cx);
-                                                            }))
+                                                            })))
                                                     })
                                                     .child(
-                                                        Button::new("btn-fwd", "")
+                                                        Tooltip::new("Forward 30s").child(Button::new("btn-fwd", "")
                                                             .icon(IconSource::Named("rotate-cw".to_string()))
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
@@ -269,26 +270,26 @@ impl RekaptrWorkspace {
                                                                     let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
                                                                     let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
                                                                 }
-                                                            }))
+                                                            })))
                                                     )
                                                     .child(
-                                                        Button::new("btn-refresh", "")
+                                                        Tooltip::new("Refresh Video").child(Button::new("btn-refresh", "")
                                                             .icon(IconSource::Named("rotate-cw".to_string()))
                                                             .variant(ButtonVariant::Secondary)
                                                             .on_click(cx.listener(|this: &mut Self, _, window, cx| {
                                                                 let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
                                                                 this.load_video(&source, window, cx);
-                                                            }))
+                                                            })))
                                                     )
                                                     .child(div().w(px(10.0)))
                                                     .children(crate::state::MarkerKind::ALL.iter().map(|&kind| {
-                                                        Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
+                                                        Tooltip::new(SharedString::from(format!("Add {} Marker", kind.label()))).child(Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
                                                             .icon(IconSource::Named(kind.icon_name().to_string()))
                                                             .variant(ButtonVariant::Secondary)
                                                             .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
                                                                 this.add_marker_with_kind(kind, cx);
                                                             }))
-                                                            .into_any_element()
+                                                            .into_any_element())
                                                     }))
                                                     .child(div().w(px(6.0)))
                                                     .child(

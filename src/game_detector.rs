@@ -1,4 +1,4 @@
-use sysinfo::{System, ProcessRefreshKind};
+use sysinfo::{ProcessRefreshKind, System};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
@@ -27,7 +27,8 @@ impl GameDetector {
     fn refresh_if_needed(&mut self) {
         if self.last_refresh.elapsed() > std::time::Duration::from_secs(2) {
             // Only refresh process names — skip CPU, memory, and disk stats
-            self.sys.refresh_processes_specifics(ProcessRefreshKind::new());
+            self.sys
+                .refresh_processes_specifics(ProcessRefreshKind::new());
             self.last_refresh = std::time::Instant::now();
         }
     }
@@ -92,22 +93,13 @@ struct WindowEnumState<'a> {
     blacklist: &'a [&'a str],
 }
 
-unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+unsafe extern "system" fn enumerate_windows_callback(
+    hwnd: HWND,
+    lparam: LPARAM,
+) -> windows::core::BOOL {
     let state = &mut *(lparam.0 as *mut WindowEnumState);
 
     if IsWindowVisible(hwnd).as_bool() {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-
-        if pid != 0 {
-            if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
-                let proc_name = process.name().to_string().to_lowercase();
-                if state.blacklist.contains(&proc_name.as_str()) {
-                    return true.into();
-                }
-            }
-        }
-
         let mut text = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut text);
 
@@ -123,10 +115,17 @@ unsafe extern "system" fn enumerate_windows_callback(hwnd: HWND, lparam: LPARAM)
 
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
             let proc_name = if pid != 0 {
-                state.sys.process(sysinfo::Pid::from_u32(pid))
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
+                if let Some(process) = state.sys.process(sysinfo::Pid::from_u32(pid)) {
+                    let name = process.name();
+                    if state.blacklist.contains(&name.to_lowercase().as_str()) {
+                        return true.into();
+                    }
+                    name.to_string()
+                } else {
+                    "Unknown".to_string()
+                }
             } else {
                 "Unknown".to_string()
             };

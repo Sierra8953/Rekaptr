@@ -1,14 +1,18 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
-use crate::ui::RekaptrWorkspace;
-use crate::state::GameSession;
 use crate::config::GameSettings;
+use crate::state::GameSession;
+use crate::ui::RekaptrWorkspace;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl RekaptrWorkspace {
-    pub fn render_add_source_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_add_source_modal(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let windows = self.app_state.available_windows.lock().clone();
         let theme = use_theme();
-        
+
         let mut window_list = div()
             .id("add-source-window-list")
             .flex()
@@ -21,7 +25,7 @@ impl RekaptrWorkspace {
             let hwnd = win.hwnd;
             let title = win.title.clone();
             let is_selected = self.form_hwnd == Some(hwnd);
-            
+
             window_list = window_list.child(
                 div()
                     .id(("win", hwnd as usize))
@@ -29,17 +33,30 @@ impl RekaptrWorkspace {
                     .py(px(8.0))
                     .rounded_md()
                     .cursor_pointer()
-                    .bg(if is_selected { theme.tokens.accent } else { gpui::transparent_black() })
+                    .bg(if is_selected {
+                        theme.tokens.accent
+                    } else {
+                        gpui::transparent_black()
+                    })
                     .hover(|style| style.bg(theme.tokens.accent))
                     .child(
                         HStack::new()
                             .justify_between()
-                            .child(div().text_sm().text_color(theme.tokens.foreground).child(title.clone()))
-                            .when(is_selected, |this| this.child(
+                            .child(
                                 div()
-                                    .id(("check", hwnd as usize))
-                                    .child(Icon::new("check.svg").size(px(14.0)).color(theme.tokens.primary))
-                            ))
+                                    .text_sm()
+                                    .text_color(theme.tokens.foreground)
+                                    .child(title.clone()),
+                            )
+                            .when(is_selected, |this| {
+                                this.child(
+                                    div().id(("check", hwnd as usize)).child(
+                                        Icon::new("check.svg")
+                                            .size(px(14.0))
+                                            .color(theme.tokens.primary),
+                                    ),
+                                )
+                            }),
                     )
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
@@ -48,7 +65,7 @@ impl RekaptrWorkspace {
                         this.form_hwnd = Some(hwnd);
                         this.form_title = title.clone();
                         cx.notify();
-                    }))
+                    })),
             );
         }
 
@@ -304,7 +321,7 @@ impl RekaptrWorkspace {
                                             if let Some(track_idx) = self.form_editing_track_index {
                                                 let track = &self.form_audio_tracks[track_idx];
                                                 let windows = self.app_state.available_windows.lock().clone();
-                                                
+
                                                 VStack::new()
                                                     .gap_4()
                                                     .child(
@@ -318,7 +335,7 @@ impl RekaptrWorkspace {
                                                                 windows.iter().map(|win| {
                                                                     let proc_name = win.process_name.clone();
                                                                     let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
-                                                                    
+
                                                                     HStack::new().justify_between().p_2().rounded_md().bg(if is_selected { theme.tokens.accent } else { gpui::transparent_black() })
                                                                         .child(VStack::new().child(div().text_sm().child(win.title.clone())).child(div().text_xs().text_color(theme.tokens.muted_foreground).child(proc_name.clone())))
                                                                         .child(Button::new(SharedString::from(format!("sel-app-{}-{}", track_idx, proc_name)), if is_selected { "REMOVE" } else { "ADD" }).variant(if is_selected { ButtonVariant::Destructive } else { ButtonVariant::Outline }).size(ButtonSize::Sm).on_click(cx.listener(move |this, _, _, cx| {
@@ -388,7 +405,7 @@ impl RekaptrWorkspace {
                                             let form_lookahead = self.form_lookahead;
                                             let form_spatial_aq = self.form_spatial_aq;
                                             let form_temporal_aq = self.form_temporal_aq;
-                                            
+
                                             VStack::new()
                                                 .gap_4()
                                                 .child(

@@ -41,7 +41,8 @@ pub fn is_startup_with_windows() -> bool {
 }
 
 pub fn clean_title(title: &str) -> String {
-    title.chars()
+    title
+        .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>()
         .to_lowercase()
@@ -57,13 +58,17 @@ pub fn get_ffmpeg_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let path = dir.join("bin").join("ffmpeg.exe");
-            if path.exists() { return path; }
+            if path.exists() {
+                return path;
+            }
         }
     }
     // Try current directory
     if let Ok(cwd) = std::env::current_dir() {
         let path = cwd.join("bin").join("ffmpeg.exe");
-        if path.exists() { return path; }
+        if path.exists() {
+            return path;
+        }
     }
     // Fallback to PATH
     PathBuf::from("ffmpeg")
@@ -115,7 +120,9 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
             if path.is_dir() {
                 // Game folder
                 let folder_name = entry.file_name().to_string_lossy().to_string();
-                let game_title = config.game_registry.iter()
+                let game_title = config
+                    .game_registry
+                    .iter()
                     .find(|(t, _)| clean_title(t) == folder_name)
                     .map(|(t, _)| t.clone())
                     .unwrap_or_else(|| folder_name.replace('_', " "));
@@ -123,18 +130,24 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
                 if let Ok(clip_entries) = std::fs::read_dir(&path) {
                     for clip_entry in clip_entries.filter_map(|e| e.ok()) {
                         let clip_path = clip_entry.path();
-                        if clip_path.extension().map_or(false, |ext| ext == "mp4" || ext == "mkv") {
+                        if clip_path
+                            .extension()
+                            .map_or(false, |ext| ext == "mp4" || ext == "mkv")
+                        {
                             if let Ok(meta) = clip_path.metadata() {
-                                let timestamp = meta.modified()
+                                let timestamp = meta
+                                    .modified()
                                     .unwrap_or(std::time::SystemTime::now())
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs();
 
                                 let size_mb = meta.len() / (1024 * 1024);
-                                let date = chrono::DateTime::<chrono::Local>::from(meta.modified().unwrap_or(std::time::SystemTime::now()))
-                                    .format("%Y-%m-%d %H:%M")
-                                    .to_string();
+                                let date = chrono::DateTime::<chrono::Local>::from(
+                                    meta.modified().unwrap_or(std::time::SystemTime::now()),
+                                )
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string();
 
                                 let mut thumb_path = clip_path.clone();
                                 thumb_path.set_extension("jpg");
@@ -185,7 +198,9 @@ pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
 
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
 
         let folder_name = entry.file_name().to_string_lossy().to_string();
         if folder_name == "Clips" || folder_name == "Cache" || folder_name.starts_with('.') {
@@ -202,7 +217,8 @@ pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
                 let seg_path = seg.path();
                 if seg_path.extension().map_or(false, |ext| ext == "m4s") {
                     segment_count += 1;
-                    total_duration += get_segment_duration(&seg_path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
+                    total_duration +=
+                        get_segment_duration(&seg_path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                     if let Ok(meta) = seg.metadata() {
                         let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                         if modified > latest_modified {
@@ -213,9 +229,13 @@ pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
             }
         }
 
-        if segment_count == 0 { continue; }
+        if segment_count == 0 {
+            continue;
+        }
 
-        let game_title = config.game_registry.iter()
+        let game_title = config
+            .game_registry
+            .iter()
             .find(|(t, _)| clean_title(t) == folder_name)
             .map(|(t, _)| t.clone())
             .unwrap_or_else(|| folder_name.clone());
@@ -248,7 +268,9 @@ pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
 fn generate_thumbnail(video_path: &Path, thumb_path: &Path) {
     // Skip if we already know this file is truly corrupt
     let marker = thumb_path.with_extension("noThumb");
-    if marker.exists() { return; }
+    if marker.exists() {
+        return;
+    }
 
     let ffmpeg = get_ffmpeg_path();
 
@@ -265,18 +287,27 @@ fn generate_thumbnail(video_path: &Path, thumb_path: &Path) {
         for arg in *hwaccel_args {
             cmd.arg(arg);
         }
-        cmd.arg("-i").arg(video_path)
-            .arg("-ss").arg("1")
-            .arg("-vframes").arg("1")
-            .arg("-update").arg("1")
-            .arg("-q:v").arg("2")
+        cmd.arg("-i")
+            .arg(video_path)
+            .arg("-ss")
+            .arg("1")
+            .arg("-vframes")
+            .arg("1")
+            .arg("-update")
+            .arg("1")
+            .arg("-q:v")
+            .arg("2")
             .arg(thumb_path)
             .creation_flags(0x08000000);
 
         match cmd.output() {
             Ok(o) if o.status.success() => {
                 if i > 0 {
-                    log::info!("[Utils] Thumbnail generated with strategy {} for {}", i, video_path.display());
+                    log::info!(
+                        "[Utils] Thumbnail generated with strategy {} for {}",
+                        i,
+                        video_path.display()
+                    );
                 }
                 return; // success
             }
@@ -284,16 +315,27 @@ fn generate_thumbnail(video_path: &Path, thumb_path: &Path) {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 // Only mark as truly corrupt for container-level errors
                 if stderr.contains("moov atom not found") {
-                    log::warn!("[Utils] Clip is corrupt, skipping thumbnail: {}", video_path.display());
+                    log::warn!(
+                        "[Utils] Clip is corrupt, skipping thumbnail: {}",
+                        video_path.display()
+                    );
                     let _ = std::fs::write(&marker, b"");
                     return;
                 }
                 // For decode errors (like AV1 "No sequence header"), try next strategy
                 if i < strategies.len() - 1 {
-                    log::debug!("[Utils] Thumbnail strategy {} failed for {}, trying next", i, video_path.display());
+                    log::debug!(
+                        "[Utils] Thumbnail strategy {} failed for {}, trying next",
+                        i,
+                        video_path.display()
+                    );
                     continue;
                 }
-                log::warn!("[Utils] All thumbnail strategies failed for {}: {}", video_path.display(), stderr.chars().take(200).collect::<String>());
+                log::warn!(
+                    "[Utils] All thumbnail strategies failed for {}: {}",
+                    video_path.display(),
+                    stderr.chars().take(200).collect::<String>()
+                );
             }
             Err(e) => {
                 log::warn!("[Utils] Failed to run ffmpeg for thumbnail: {}", e);
@@ -308,12 +350,16 @@ fn get_ffprobe_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let path = dir.join("bin").join("ffprobe.exe");
-            if path.exists() { return path; }
+            if path.exists() {
+                return path;
+            }
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
         let path = cwd.join("bin").join("ffprobe.exe");
-        if path.exists() { return path; }
+        if path.exists() {
+            return path;
+        }
     }
     PathBuf::from("ffprobe")
 }
@@ -321,8 +367,11 @@ fn get_ffprobe_path() -> PathBuf {
 #[allow(dead_code)]
 fn get_exact_duration(file_path: &std::path::Path) -> f64 {
     // Check duration cache first to avoid N+1 ffprobe spawns
-    static DURATION_CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, f64>>> = std::sync::OnceLock::new();
-    let cache = DURATION_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    static DURATION_CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, f64>>,
+    > = std::sync::OnceLock::new();
+    let cache =
+        DURATION_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
     if let Some(&cached) = cache.lock().get(file_path) {
         return cached;
@@ -331,10 +380,13 @@ fn get_exact_duration(file_path: &std::path::Path) -> f64 {
     let ffprobe = get_ffprobe_path();
     let output = std::process::Command::new(&ffprobe)
         .args([
-            "-v", "error",
-            "-show_entries", "format=duration,start_time",
-            "-of", "default=noprint_wrappers=1",
-            &file_path.to_string_lossy()
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,start_time",
+            "-of",
+            "default=noprint_wrappers=1",
+            &file_path.to_string_lossy(),
         ])
         .output();
 
@@ -359,7 +411,10 @@ fn get_exact_duration(file_path: &std::path::Path) -> f64 {
             2.0
         }
     } else {
-        log::warn!("[Utils] ffprobe not found at {:?}, falling back to default duration", ffprobe);
+        log::warn!(
+            "[Utils] ffprobe not found at {:?}, falling back to default duration",
+            ffprobe
+        );
         2.0
     };
 
@@ -413,8 +468,12 @@ pub fn compute_total_duration(game_dir: &Path) -> f64 {
         let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
             continue;
         };
-        let Some(idx) = parse_segment_index(&name) else { continue; };
-        let Some(sid) = parse_segment_session_id(&name) else { continue; };
+        let Some(idx) = parse_segment_index(&name) else {
+            continue;
+        };
+        let Some(sid) = parse_segment_session_id(&name) else {
+            continue;
+        };
         by_session.entry(sid).or_default().push((idx, path));
     }
 
@@ -442,9 +501,16 @@ pub fn compute_total_duration(game_dir: &Path) -> f64 {
 fn ffprobe_segment_end_time(path: &Path) -> Option<f64> {
     let ffprobe = get_ffprobe_path();
     let output = std::process::Command::new(&ffprobe)
-        .args(["-v", "error", "-select_streams", "v:0",
-               "-show_entries", "packet=pts_time,duration_time",
-               "-of", "csv=p=0"])
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time,duration_time",
+            "-of",
+            "csv=p=0",
+        ])
         .arg(path)
         .output()
         .ok()?;
@@ -470,7 +536,11 @@ fn ffprobe_segment_end_time(path: &Path) -> Option<f64> {
     }
 
     let end = last_pts? + last_frame_dur;
-    if end > 0.0 { Some(end) } else { None }
+    if end > 0.0 {
+        Some(end)
+    } else {
+        None
+    }
 }
 
 /// Get actual segment duration from packet-level PTS using ffprobe.
@@ -478,9 +548,16 @@ fn ffprobe_segment_end_time(path: &Path) -> Option<f64> {
 fn ffprobe_segment_duration(path: &Path) -> Option<f64> {
     let ffprobe = get_ffprobe_path();
     let output = std::process::Command::new(&ffprobe)
-        .args(["-v", "error", "-select_streams", "v:0",
-               "-show_entries", "packet=pts_time,duration_time",
-               "-of", "csv=p=0"])
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time,duration_time",
+            "-of",
+            "csv=p=0",
+        ])
         .arg(path)
         .output()
         .ok()?;
@@ -512,7 +589,11 @@ fn ffprobe_segment_duration(path: &Path) -> Option<f64> {
     let start = first_pts?;
     let end = last_pts? + last_frame_dur;
     let dur = end - start;
-    if dur > 0.0 { Some(dur) } else { None }
+    if dur > 0.0 {
+        Some(dur)
+    } else {
+        None
+    }
 }
 
 /// Post-pipeline fixup for EOS segments.
@@ -526,7 +607,10 @@ pub fn fixup_eos_segments(game_dir: &Path) {
             .map(|e| e.path())
             .filter(|p| {
                 p.extension().map_or(false, |e| e == "m4s") && {
-                    let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let name = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
                     name.starts_with("seg_") && !name.contains("ms")
                 }
             })
@@ -539,17 +623,27 @@ pub fn fixup_eos_segments(game_dir: &Path) {
                 Some(s) => s.to_string_lossy().to_string(),
                 None => continue,
             };
-            let display_name = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            let display_name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
             if let Some(dur_secs) = ffprobe_segment_duration(&path) {
                 let dur_ms = (dur_secs * 1000.0).round() as u64;
                 let mut new_path = path.clone();
                 new_path.set_file_name(format!("{}_{}ms.m4s", stem, dur_ms));
-                let new_display = new_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                let new_display = new_path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 if let Err(e) = std::fs::rename(&path, &new_path) {
                     log::warn!("[SegmentFixup] Failed to rename {}: {}", display_name, e);
                 } else {
-                    log::info!("[SegmentFixup] Renamed {} -> {} (ffprobe: {:.3}s)",
-                        display_name, new_display, dur_secs);
+                    log::info!(
+                        "[SegmentFixup] Renamed {} -> {} (ffprobe: {:.3}s)",
+                        display_name,
+                        new_display,
+                        dur_secs
+                    );
                 }
             } else {
                 log::warn!("[SegmentFixup] ffprobe failed for {}", display_name);
@@ -564,7 +658,10 @@ pub fn fixup_eos_segments(game_dir: &Path) {
             .map(|e| e.path())
             .filter(|p| {
                 p.extension().map_or(false, |e| e == "m4s") && {
-                    let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let name = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
                     name.starts_with("seg_") && name.contains("ms")
                 }
             })
@@ -577,7 +674,10 @@ pub fn fixup_eos_segments(game_dir: &Path) {
                 Some(s) => s.to_string_lossy().to_string(),
                 None => continue,
             };
-            let display_name = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            let display_name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
             let filename_dur = get_segment_duration(&path);
             let actual_dur = ffprobe_segment_duration(&path);
 
@@ -588,12 +688,24 @@ pub fn fixup_eos_segments(game_dir: &Path) {
                     let correct_ms = (a_dur * 1000.0).round() as u64;
                     let mut new_path = path.clone();
                     new_path.set_file_name(format!("{}_{}ms.m4s", base, correct_ms));
-                    let new_display = new_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                    let new_display = new_path
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_default();
                     if let Err(e) = std::fs::rename(&path, &new_path) {
-                        log::warn!("[SegmentFixup] Duration fix failed for {}: {}", display_name, e);
+                        log::warn!(
+                            "[SegmentFixup] Duration fix failed for {}: {}",
+                            display_name,
+                            e
+                        );
                     } else {
-                        log::info!("[SegmentFixup] Duration fix: {} -> {} (was {:.0}ms, actual {:.0}ms)",
-                            display_name, new_display, f_dur * 1000.0, a_dur * 1000.0);
+                        log::info!(
+                            "[SegmentFixup] Duration fix: {} -> {} (was {:.0}ms, actual {:.0}ms)",
+                            display_name,
+                            new_display,
+                            f_dur * 1000.0,
+                            a_dur * 1000.0
+                        );
                     }
                 }
             }
@@ -606,7 +718,10 @@ fn get_segment_duration(path: &Path) -> Option<f64> {
     // Look for the _XXXXms pattern in the filename
     if let Some(ms_pos) = name.rfind('_') {
         let part = &name[ms_pos + 1..];
-        if let Some(ms_str) = part.strip_suffix("ms.m4s").or_else(|| part.strip_suffix("ms")) {
+        if let Some(ms_str) = part
+            .strip_suffix("ms.m4s")
+            .or_else(|| part.strip_suffix("ms"))
+        {
             if let Ok(ms) = ms_str.parse::<u64>() {
                 return Some(ms as f64 / 1000.0);
             }
@@ -621,26 +736,35 @@ type SegmentEntry = (std::time::SystemTime, std::path::PathBuf, f64, Option<u64>
 /// Scan a game directory for .m4s segments, deduplicate by index (keep most recent).
 /// Returns a BTreeMap sorted by segment index.
 fn scan_segments(game_dir: &Path) -> std::collections::BTreeMap<u64, SegmentEntry> {
-    let mut segment_map: std::collections::BTreeMap<u64, SegmentEntry> = std::collections::BTreeMap::new();
+    let mut segment_map: std::collections::BTreeMap<u64, SegmentEntry> =
+        std::collections::BTreeMap::new();
     let entries = match std::fs::read_dir(game_dir) {
         Ok(e) => e,
         Err(_) => return segment_map,
     };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
-        if !path.extension().map_or(false, |ext| ext == "m4s") { continue; }
+        if !path.extension().map_or(false, |ext| ext == "m4s") {
+            continue;
+        }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let duration = match get_segment_duration(&path).or_else(|| ffprobe_segment_duration(&path)) {
+        let duration = match get_segment_duration(&path).or_else(|| ffprobe_segment_duration(&path))
+        {
             Some(d) => d,
             None => continue,
         };
-        let modified = entry.metadata()
+        let modified = entry
+            .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::now());
-        let Some(idx) = parse_segment_index(&name) else { continue };
+        let Some(idx) = parse_segment_index(&name) else {
+            continue;
+        };
         let sid = parse_segment_session_id(&name);
         match segment_map.entry(idx) {
-            std::collections::btree_map::Entry::Vacant(e) => { e.insert((modified, path, duration, sid)); }
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert((modified, path, duration, sid));
+            }
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 if modified > e.get().0 {
                     e.insert((modified, path, duration, sid));
@@ -652,16 +776,27 @@ fn scan_segments(game_dir: &Path) -> std::collections::BTreeMap<u64, SegmentEntr
 }
 
 fn game_dir_for(game_title: &str) -> PathBuf {
-    let safe_title = if game_title == "monitor" { "monitor".to_string() } else { clean_title(game_title) };
+    let safe_title = if game_title == "monitor" {
+        "monitor".to_string()
+    } else {
+        clean_title(game_title)
+    };
     get_storage_root().join(safe_title)
 }
 
-pub fn generate_session_playlist(game_title: &str, _active_session_id: Option<u64>) -> Option<(PathBuf, Vec<crate::state::SessionBlock>)> {
+pub fn generate_session_playlist(
+    game_title: &str,
+    _active_session_id: Option<u64>,
+) -> Option<(PathBuf, Vec<crate::state::SessionBlock>)> {
     let game_dir = game_dir_for(game_title);
-    if !game_dir.exists() { return None; }
+    if !game_dir.exists() {
+        return None;
+    }
 
     let segment_map = scan_segments(&game_dir);
-    if segment_map.is_empty() { return None; }
+    if segment_map.is_empty() {
+        return None;
+    }
 
     let total_duration: f64 = segment_map.values().map(|s| s.2).sum();
     let session_blocks = vec![crate::state::SessionBlock {
@@ -677,10 +812,14 @@ pub fn generate_session_playlist(game_title: &str, _active_session_id: Option<u6
 
 pub fn generate_master_playlist(game_title: &str) -> Option<PathBuf> {
     let game_dir = game_dir_for(game_title);
-    if !game_dir.exists() { return None; }
+    if !game_dir.exists() {
+        return None;
+    }
 
     let segment_map = scan_segments(&game_dir);
-    if segment_map.is_empty() { return None; }
+    if segment_map.is_empty() {
+        return None;
+    }
 
     let master_playlist_path = game_dir.join("master.m3u8");
     let mut m3u8 = String::from("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n");
@@ -706,10 +845,14 @@ pub fn generate_master_playlist(game_title: &str) -> Option<PathBuf> {
 #[allow(dead_code)]
 pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
     let game_dir = game_dir_for(game_title);
-    if !game_dir.exists() { return None; }
+    if !game_dir.exists() {
+        return None;
+    }
 
     let segment_map = scan_segments(&game_dir);
-    if segment_map.is_empty() { return None; }
+    if segment_map.is_empty() {
+        return None;
+    }
 
     let ffconcat_path = game_dir.join("view.ffconcat");
     let mut content = String::from("ffconcat version 1.0\n");
@@ -725,7 +868,6 @@ pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
     Some(ffconcat_path)
 }
 
-
 fn resolve_steam_app_id(game_title: &str) -> Option<String> {
     let url = format!(
         "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
@@ -738,13 +880,31 @@ fn resolve_steam_app_id(game_title: &str) -> Option<String> {
         .build()
         .ok()?;
 
-    let json = client.get(&url).send().ok()?.json::<serde_json::Value>().ok()?;
-    let id = json.get("items")?.as_array()?.first()?.get("id")?.as_i64()?;
-    log::info!("[Utils] Found Steam AppID {} for '{}' via search API", id, game_title);
+    let json = client
+        .get(&url)
+        .send()
+        .ok()?
+        .json::<serde_json::Value>()
+        .ok()?;
+    let id = json
+        .get("items")?
+        .as_array()?
+        .first()?
+        .get("id")?
+        .as_i64()?;
+    log::info!(
+        "[Utils] Found Steam AppID {} for '{}' via search API",
+        id,
+        game_title
+    );
     Some(id.to_string())
 }
 
-fn resolve_steam_artwork(game_title: &str, cdn_filename: &str, cache_suffix: &str) -> Option<String> {
+fn resolve_steam_artwork(
+    game_title: &str,
+    cdn_filename: &str,
+    cache_suffix: &str,
+) -> Option<String> {
     let app_id = resolve_steam_app_id(game_title)?;
 
     let cache_dir = get_storage_root().join("Cache").join("Artwork");
@@ -765,7 +925,10 @@ fn resolve_steam_artwork(game_title: &str, cdn_filename: &str, cache_suffix: &st
         }
     }
 
-    let url = format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/{}", app_id, cdn_filename);
+    let url = format!(
+        "https://cdn.cloudflare.steamstatic.com/steam/apps/{}/{}",
+        app_id, cdn_filename
+    );
     Some(url)
 }
 
@@ -784,7 +947,7 @@ pub fn find_steam_logo(game_title: &str) -> Option<String> {
     resolve_steam_artwork(game_title, "logo.png", "logo")
 }
 pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
-    use notify::{RecursiveMode, Watcher, Config};
+    use notify::{Config, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
 
     const CLEANUP_POLL_INTERVAL_SECS: u64 = 30;
@@ -802,9 +965,14 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
             let mut watcher = match notify::RecommendedWatcher::new(tx, Config::default()) {
                 Ok(w) => w,
                 Err(e) => {
-                    log::error!("[Cleanup] Failed to create file watcher: {}. Falling back to polling.", e);
+                    log::error!(
+                        "[Cleanup] Failed to create file watcher: {}. Falling back to polling.",
+                        e
+                    );
                     loop {
-                        std::thread::sleep(std::time::Duration::from_secs(CLEANUP_POLL_INTERVAL_SECS));
+                        std::thread::sleep(std::time::Duration::from_secs(
+                            CLEANUP_POLL_INTERVAL_SECS,
+                        ));
                     }
                 }
             };
@@ -817,7 +985,7 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                         // Debounce: let simultaneous segment closures finish before scanning.
                         const DEBOUNCE_SECS: u64 = 5;
                         std::thread::sleep(std::time::Duration::from_secs(DEBOUNCE_SECS));
-                        
+
                         // Drain any other pending events in the channel
                         while let Ok(_) = rx.try_recv() {}
 
@@ -829,14 +997,23 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                         if let Ok(entries) = std::fs::read_dir(&root_dir) {
                             for entry in entries.filter_map(|e| e.ok()) {
                                 if entry.path().is_dir() {
-                                    let game_title = entry.file_name().to_string_lossy().to_string();
-                                    if game_title == "Clips" || game_title == "Cache" || game_title.starts_with(".") { continue; }
-                                    
+                                    let game_title =
+                                        entry.file_name().to_string_lossy().to_string();
+                                    if game_title == "Clips"
+                                        || game_title == "Cache"
+                                        || game_title.starts_with(".")
+                                    {
+                                        continue;
+                                    }
+
                                     // 1. Get retention for this specific game
                                     let retention_mins = if game_title == "monitor" {
                                         config.global_video.retention_minutes as f64
                                     } else {
-                                        config.game_registry.iter().find(|(t, _)| clean_title(t) == game_title)
+                                        config
+                                            .game_registry
+                                            .iter()
+                                            .find(|(t, _)| clean_title(t) == game_title)
                                             .map(|(_, s)| s.retention_minutes as f64)
                                             .unwrap_or(config.global_video.retention_minutes as f64)
                                     };
@@ -848,14 +1025,22 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                                             let path = seg.path();
                                             if path.extension().map_or(false, |ex| ex == "m4s") {
                                                 let file_name = match path.file_name() {
-            Some(f) => f.to_string_lossy(),
-            None => continue,
-        };
-                                                if !file_name.starts_with("seg_") { continue; }
-                                                
+                                                    Some(f) => f.to_string_lossy(),
+                                                    None => continue,
+                                                };
+                                                if !file_name.starts_with("seg_") {
+                                                    continue;
+                                                }
+
                                                 if let Ok(meta) = seg.metadata() {
-                                                    let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
-                                                    game_segments.push((path, modified, meta.len()));
+                                                    let modified = meta
+                                                        .modified()
+                                                        .unwrap_or(std::time::SystemTime::now());
+                                                    game_segments.push((
+                                                        path,
+                                                        modified,
+                                                        meta.len(),
+                                                    ));
                                                 }
                                             }
                                         }
@@ -866,12 +1051,16 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                                         // 3. ENFORCE PER-GAME RETENTION (Duration-based)
                                         let mut total_game_duration = 0.0;
                                         for (path, _, _) in &game_segments {
-                                            total_game_duration += get_segment_duration(path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
+                                            total_game_duration += get_segment_duration(path)
+                                                .unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                                         }
-                                        
+
                                         for (path, _, _) in game_segments.iter() {
-                                            if total_game_duration <= retention_secs { break; }
-                                            let dur = get_segment_duration(path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
+                                            if total_game_duration <= retention_secs {
+                                                break;
+                                            }
+                                            let dur = get_segment_duration(path)
+                                                .unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
                                             let _ = std::fs::remove_file(path);
                                             total_game_duration -= dur;
                                         }
@@ -893,7 +1082,9 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                             global_segments.sort_by(|a, b| a.1.cmp(&b.1));
                             let mut current_size = total_size;
                             for (path, _, size) in global_segments {
-                                if current_size <= max_bytes { break; }
+                                if current_size <= max_bytes {
+                                    break;
+                                }
                                 if path.exists() {
                                     current_size -= size;
                                     let _ = std::fs::remove_file(path);
@@ -907,7 +1098,8 @@ pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
                     }
                 }
             }
-        }).ok();
+        })
+        .ok();
 }
 
 #[cfg(test)]

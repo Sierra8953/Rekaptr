@@ -87,11 +87,17 @@ fn migrate_startup_registry() {
         .unwrap_or_else(|_| "\"rekaptr.exe\"".to_string());
 
     if let Err(e) = key.set_value(NEW_STARTUP_REG_VALUE, &exe_path) {
-        log::error!("[Migration] Failed to write new startup registry value: {}", e);
+        log::error!(
+            "[Migration] Failed to write new startup registry value: {}",
+            e
+        );
         return;
     }
     if let Err(e) = key.delete_value(LEGACY_STARTUP_REG_VALUE) {
-        log::warn!("[Migration] Failed to delete legacy startup registry value: {}", e);
+        log::warn!(
+            "[Migration] Failed to delete legacy startup registry value: {}",
+            e
+        );
     }
     log::info!("[Migration] Startup registry entry migrated to Rekaptr.");
 }

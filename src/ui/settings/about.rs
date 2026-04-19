@@ -1,6 +1,6 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl RekaptrWorkspace {
     pub(crate) fn render_settings_about(&self, theme: &Theme) -> impl IntoElement {

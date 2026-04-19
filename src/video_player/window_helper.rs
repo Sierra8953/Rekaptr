@@ -1,14 +1,13 @@
 use anyhow::Result;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, HINSTANCE, COLORREF};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, SetWindowPos, ShowWindow,
-    CS_HREDRAW, CS_VREDRAW, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
-    SWP_NOMOVE, SWP_NOSIZE,
-    WINDOW_EX_STYLE, WNDCLASSW, WS_CHILD, WS_VISIBLE, RegisterClassW,
-};
-use windows::Win32::Graphics::Gdi::CreateSolidBrush;
-use windows::core::w;
 use std::sync::Once;
+use windows::core::w;
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::CreateSolidBrush;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
+    CS_HREDRAW, CS_VREDRAW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOW,
+    WINDOW_EX_STYLE, WNDCLASSW, WS_CHILD, WS_VISIBLE,
+};
 
 static REGISTER_CLASS: Once = Once::new();
 
@@ -65,8 +64,11 @@ impl VideoWindow {
             let _ = SetWindowPos(
                 hwnd,
                 Some(HWND(std::ptr::null_mut())), // HWND_TOP
-                0, 0, 0, 0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
             );
 
             let _ = ShowWindow(hwnd, SW_SHOW);

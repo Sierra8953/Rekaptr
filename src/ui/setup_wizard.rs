@@ -1,6 +1,6 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
+use adabraka_ui::prelude::*;
+use gpui::*;
 use gstreamer as gst;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -29,7 +29,11 @@ pub fn detect_available_encoders() -> Vec<DetectedEncoder> {
 }
 
 impl RekaptrWorkspace {
-    pub fn render_setup_wizard(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_setup_wizard(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let view = cx.entity().downgrade();
 
@@ -46,21 +50,23 @@ impl RekaptrWorkspace {
             .items_center()
             .justify_center()
             .child(
-                Card::new()
-                    .w(px(560.0))
-                    .content(
-                        VStack::new()
-                            .p_6()
-                            .gap_6()
-                            .child(self.render_wizard_header(step, &theme))
-                            .child(match step {
-                                0 => self.render_wizard_welcome(&theme).into_any_element(),
-                                1 => self.render_wizard_storage(&storage_path, &view, &theme).into_any_element(),
-                                2 => self.render_wizard_encoder(&encoders, &selected_encoder, &view, &theme).into_any_element(),
-                                _ => self.render_wizard_finish(&theme).into_any_element(),
-                            })
-                            .child(self.render_wizard_nav(step, &view, &theme))
-                    )
+                Card::new().w(px(560.0)).content(
+                    VStack::new()
+                        .p_6()
+                        .gap_6()
+                        .child(self.render_wizard_header(step, &theme))
+                        .child(match step {
+                            0 => self.render_wizard_welcome(&theme).into_any_element(),
+                            1 => self
+                                .render_wizard_storage(&storage_path, &view, &theme)
+                                .into_any_element(),
+                            2 => self
+                                .render_wizard_encoder(&encoders, &selected_encoder, &view, &theme)
+                                .into_any_element(),
+                            _ => self.render_wizard_finish(&theme).into_any_element(),
+                        })
+                        .child(self.render_wizard_nav(step, &view, &theme)),
+                ),
             )
     }
 
@@ -69,27 +75,24 @@ impl RekaptrWorkspace {
         VStack::new()
             .gap_3()
             .child(
-                HStack::new()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_2xl()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.tokens.foreground)
-                            .child("Welcome to Rekaptr")
-                    )
+                HStack::new().items_center().gap_3().child(
+                    div()
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.tokens.foreground)
+                        .child("Welcome to Rekaptr"),
+                ),
             )
             .child(
                 HStack::new()
                     .gap_1()
                     .children((0..total_steps).map(move |i| {
-                        div()
-                            .h(px(3.0))
-                            .flex_1()
-                            .rounded(px(2.0))
-                            .bg(if i <= step { theme.tokens.primary } else { theme.tokens.muted })
-                    }))
+                        div().h(px(3.0)).flex_1().rounded(px(2.0)).bg(if i <= step {
+                            theme.tokens.primary
+                        } else {
+                            theme.tokens.muted
+                        })
+                    })),
             )
     }
 
@@ -127,13 +130,13 @@ impl RekaptrWorkspace {
             .child(
                 Icon::new("check-circle")
                     .size(px(16.0))
-                    .color(theme.tokens.primary)
+                    .color(theme.tokens.primary),
             )
             .child(
                 div()
                     .text_sm()
                     .text_color(theme.tokens.foreground)
-                    .child(text.to_string())
+                    .child(text.to_string()),
             )
     }
 
@@ -255,8 +258,16 @@ impl RekaptrWorkspace {
                     .py_2()
                     .rounded(px(6.0))
                     .border_1()
-                    .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
-                    .bg(if is_selected { theme.tokens.accent } else { theme.tokens.card })
+                    .border_color(if is_selected {
+                        theme.tokens.primary
+                    } else {
+                        theme.tokens.border
+                    })
+                    .bg(if is_selected {
+                        theme.tokens.accent
+                    } else {
+                        theme.tokens.card
+                    })
                     .cursor(CursorStyle::PointingHand)
                     .hover(|s| s.bg(theme.tokens.accent))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -272,23 +283,29 @@ impl RekaptrWorkspace {
                             .h(px(16.0))
                             .rounded_full()
                             .border_2()
-                            .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.muted })
-                            .when(is_selected, |d| d.child(
-                                div()
-                                    .w(px(8.0))
-                                    .h(px(8.0))
-                                    .m(px(2.0))
-                                    .rounded_full()
-                                    .bg(theme.tokens.primary)
-                            ))
+                            .border_color(if is_selected {
+                                theme.tokens.primary
+                            } else {
+                                theme.tokens.muted
+                            })
+                            .when(is_selected, |d| {
+                                d.child(
+                                    div()
+                                        .w(px(8.0))
+                                        .h(px(8.0))
+                                        .m(px(2.0))
+                                        .rounded_full()
+                                        .bg(theme.tokens.primary),
+                                )
+                            }),
                     )
                     .child(
                         div()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.tokens.foreground)
-                            .child(enc_label)
-                    )
+                            .child(enc_label),
+                    ),
             );
         }
 
@@ -311,7 +328,9 @@ impl RekaptrWorkspace {
     }
 
     fn render_wizard_finish(&self, theme: &Theme) -> impl IntoElement {
-        let encoder_label = self.setup_detected_encoders.iter()
+        let encoder_label = self
+            .setup_detected_encoders
+            .iter()
             .find(|e| e.id == self.setup_selected_encoder)
             .map(|e| e.label.as_str())
             .unwrap_or("Unknown");
@@ -364,43 +383,39 @@ impl RekaptrWorkspace {
 
         HStack::new()
             .justify_between()
-            .child(
-                if step > 0 {
-                    Button::new("wizard-back", "Back")
-                        .variant(ButtonVariant::Ghost)
-                        .on_click(move |_, _, cx| {
-                            let _ = view_back.update(cx, |this, cx| {
-                                this.setup_wizard_step = this.setup_wizard_step.saturating_sub(1);
-                                cx.notify();
-                            });
-                        })
-                        .into_any_element()
-                } else {
-                    div().into_any_element()
-                }
-            )
-            .child(
-                if step < total_steps - 1 {
-                    Button::new("wizard-next", "Continue")
-                        .variant(ButtonVariant::Default)
-                        .on_click(move |_, _, cx| {
-                            let _ = view_next.update(cx, |this, cx| {
-                                this.setup_wizard_step += 1;
-                                cx.notify();
-                            });
-                        })
-                        .into_any_element()
-                } else {
-                    Button::new("wizard-finish", "Get Started")
-                        .variant(ButtonVariant::Default)
-                        .on_click(move |_, window, cx| {
-                            let _ = view_next.update(cx, |this, cx| {
-                                this.finish_setup_wizard(window, cx);
-                            });
-                        })
-                        .into_any_element()
-                }
-            )
+            .child(if step > 0 {
+                Button::new("wizard-back", "Back")
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        let _ = view_back.update(cx, |this, cx| {
+                            this.setup_wizard_step = this.setup_wizard_step.saturating_sub(1);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(if step < total_steps - 1 {
+                Button::new("wizard-next", "Continue")
+                    .variant(ButtonVariant::Default)
+                    .on_click(move |_, _, cx| {
+                        let _ = view_next.update(cx, |this, cx| {
+                            this.setup_wizard_step += 1;
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            } else {
+                Button::new("wizard-finish", "Get Started")
+                    .variant(ButtonVariant::Default)
+                    .on_click(move |_, window, cx| {
+                        let _ = view_next.update(cx, |this, cx| {
+                            this.finish_setup_wizard(window, cx);
+                        });
+                    })
+                    .into_any_element()
+            })
     }
 
     pub fn finish_setup_wizard(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -19,14 +19,46 @@ struct HotkeyBinding {
 }
 
 const BINDINGS: &[HotkeyBinding] = &[
-    HotkeyBinding { id: 1, action: HotkeyAction::ToggleRecording, label: "Toggle Recording" },
-    HotkeyBinding { id: 2, action: HotkeyAction::SaveClip,        label: "Save Clip" },
-    HotkeyBinding { id: 3, action: HotkeyAction::ToggleMic,       label: "Toggle Mic" },
-    HotkeyBinding { id: 4, action: HotkeyAction::PushToTalk,      label: "Push-to-Talk" },
-    HotkeyBinding { id: 5, action: HotkeyAction::MarkerFlag,      label: "Marker Flag" },
-    HotkeyBinding { id: 6, action: HotkeyAction::MarkerKill,      label: "Marker Kill" },
-    HotkeyBinding { id: 7, action: HotkeyAction::MarkerDeath,     label: "Marker Death" },
-    HotkeyBinding { id: 8, action: HotkeyAction::MarkerHighlight, label: "Marker Highlight" },
+    HotkeyBinding {
+        id: 1,
+        action: HotkeyAction::ToggleRecording,
+        label: "Toggle Recording",
+    },
+    HotkeyBinding {
+        id: 2,
+        action: HotkeyAction::SaveClip,
+        label: "Save Clip",
+    },
+    HotkeyBinding {
+        id: 3,
+        action: HotkeyAction::ToggleMic,
+        label: "Toggle Mic",
+    },
+    HotkeyBinding {
+        id: 4,
+        action: HotkeyAction::PushToTalk,
+        label: "Push-to-Talk",
+    },
+    HotkeyBinding {
+        id: 5,
+        action: HotkeyAction::MarkerFlag,
+        label: "Marker Flag",
+    },
+    HotkeyBinding {
+        id: 6,
+        action: HotkeyAction::MarkerKill,
+        label: "Marker Kill",
+    },
+    HotkeyBinding {
+        id: 7,
+        action: HotkeyAction::MarkerDeath,
+        label: "Marker Death",
+    },
+    HotkeyBinding {
+        id: 8,
+        action: HotkeyAction::MarkerHighlight,
+        label: "Marker Highlight",
+    },
 ];
 
 pub fn vk_to_string(vk: u32, modifiers: u32) -> String {
@@ -35,10 +67,18 @@ pub fn vk_to_string(vk: u32, modifiers: u32) -> String {
     }
 
     let mut res = String::new();
-    if modifiers & 0x0002 != 0 { res.push_str("Ctrl+"); }
-    if modifiers & 0x0001 != 0 { res.push_str("Alt+"); }
-    if modifiers & 0x0004 != 0 { res.push_str("Shift+"); }
-    if modifiers & 0x0008 != 0 { res.push_str("Win+"); }
+    if modifiers & 0x0002 != 0 {
+        res.push_str("Ctrl+");
+    }
+    if modifiers & 0x0001 != 0 {
+        res.push_str("Alt+");
+    }
+    if modifiers & 0x0004 != 0 {
+        res.push_str("Shift+");
+    }
+    if modifiers & 0x0008 != 0 {
+        res.push_str("Win+");
+    }
 
     let key = match vk {
         0x70..=0x7B => format!("F{}", vk - 0x6F),
@@ -86,45 +126,42 @@ pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
 
     std::thread::Builder::new()
         .name("Rekaptr Hotkeys".to_string())
-        .spawn(move || {
-            unsafe {
-                use windows::Win32::UI::Input::KeyboardAndMouse::*;
-                use windows::Win32::UI::WindowsAndMessaging::*;
+        .spawn(move || unsafe {
+            use windows::Win32::UI::Input::KeyboardAndMouse::*;
+            use windows::Win32::UI::WindowsAndMessaging::*;
 
-                let config = crate::config::AppConfig::load();
-                let hk = &config.hotkeys;
+            let config = crate::config::AppConfig::load();
+            let hk = &config.hotkeys;
 
-                for binding in BINDINGS {
-                    let (modifiers, vk) = get_binding_keys(hk, binding.id);
-                    if vk == 0 { continue; }
-                    let ok = RegisterHotKey(
-                        None,
-                        binding.id,
-                        HOT_KEY_MODIFIERS(modifiers | 0x4000),
-                        vk,
-                    ).is_ok();
-                    if ok {
-                        log::info!("[Hotkeys] Registered: {} (vk=0x{:02X})", binding.label, vk);
-                    } else {
-                        log::warn!("[Hotkeys] Failed to register {} hotkey", binding.label);
+            for binding in BINDINGS {
+                let (modifiers, vk) = get_binding_keys(hk, binding.id);
+                if vk == 0 {
+                    continue;
+                }
+                let ok =
+                    RegisterHotKey(None, binding.id, HOT_KEY_MODIFIERS(modifiers | 0x4000), vk)
+                        .is_ok();
+                if ok {
+                    log::info!("[Hotkeys] Registered: {} (vk=0x{:02X})", binding.label, vk);
+                } else {
+                    log::warn!("[Hotkeys] Failed to register {} hotkey", binding.label);
+                }
+            }
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if msg.message == WM_HOTKEY {
+                    let id = msg.wParam.0 as i32;
+                    if let Some(binding) = BINDINGS.iter().find(|b| b.id == id) {
+                        log::info!("[Hotkeys] Action triggered: {:?}", binding.action);
+                        let _ = tx.send(binding.action);
                     }
                 }
+                DispatchMessageW(&msg);
+            }
 
-                let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                    if msg.message == WM_HOTKEY {
-                        let id = msg.wParam.0 as i32;
-                        if let Some(binding) = BINDINGS.iter().find(|b| b.id == id) {
-                            log::info!("[Hotkeys] Action triggered: {:?}", binding.action);
-                            let _ = tx.send(binding.action);
-                        }
-                    }
-                    DispatchMessageW(&msg);
-                }
-
-                for binding in BINDINGS {
-                    let _ = UnregisterHotKey(None, binding.id);
-                }
+            for binding in BINDINGS {
+                let _ = UnregisterHotKey(None, binding.id);
             }
         })
         .ok();

@@ -3,8 +3,8 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app::AppSrc;
 use parking_lot::Mutex;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub struct MicProvider {
     pub subscribers: Arc<DashMap<u64, AppSrc>>,

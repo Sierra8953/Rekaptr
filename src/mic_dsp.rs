@@ -134,7 +134,8 @@ impl MicDsp {
                 self.comp_envelope = coeff * self.comp_envelope + (1.0 - coeff) * peak;
 
                 if self.comp_envelope > self.comp_threshold_linear {
-                    let over_db = linear_to_db(self.comp_envelope) - linear_to_db(self.comp_threshold_linear);
+                    let over_db =
+                        linear_to_db(self.comp_envelope) - linear_to_db(self.comp_threshold_linear);
                     let gain_reduction_db = over_db * (1.0 - 1.0 / self.comp_ratio);
                     let gain = db_to_linear(-gain_reduction_db);
                     for ch in frame.iter_mut() {

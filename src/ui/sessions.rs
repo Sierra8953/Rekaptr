@@ -50,7 +50,7 @@ impl RekaptrWorkspace {
     fn render_session_card(&self, session: crate::state::SessionInfo, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let title = session.game_title.clone();
-        
+
         // Try to find artwork
         let artwork = self.app_state.artwork_cache.get(&title).map(|v| v.value().clone()).flatten();
         let image_path = artwork.map(std::path::PathBuf::from);

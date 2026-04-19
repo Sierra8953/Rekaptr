@@ -16,16 +16,16 @@ pub mod virtual_audio_router;
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use crate::state::AppState;
+use crate::state::TrayCommand;
 use crate::ui::RekaptrWorkspace;
 use anyhow::Result;
 use gpui::*;
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIconBuilder, TrayIconEvent,
 };
-use crate::state::TrayCommand;
 
 /// Cryptographically random token for authenticating local HLS server requests.
 /// Prevents other local processes from accessing recording segments.
@@ -46,10 +46,7 @@ fn percent_decode_path(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (
-                hex_val(bytes[i + 1]),
-                hex_val(bytes[i + 2]),
-            ) {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
                 result.push(hi << 4 | lo);
                 i += 3;
                 continue;
@@ -107,7 +104,13 @@ async fn main() -> Result<()> {
     gstreamer::init()?;
     crate::engine::boost_gpu_priority();
     let (major, minor, micro, nano) = gstreamer::version();
-    log::info!("[Main] GStreamer version: {}.{}.{}.{}", major, minor, micro, nano);
+    log::info!(
+        "[Main] GStreamer version: {}.{}.{}.{}",
+        major,
+        minor,
+        micro,
+        nano
+    );
     // Validate configured encoder is available, auto-fallback if not
     {
         let mut config = crate::config::AppConfig::load();
@@ -428,7 +431,7 @@ async fn main() -> Result<()> {
         // Auto-Record Event-Driven Logic
         let app_state_auto = app_state.clone();
         let workspace_handle_auto = workspace_handle.clone();
-        
+
         cx.spawn(|cx: &mut AsyncApp| {
             let cx = cx.clone();
             async move {
@@ -481,9 +484,9 @@ async fn main() -> Result<()> {
                 });
 
                 let mut detector = crate::game_detector::GameDetector::new();
-                
+
                 // Initial scan on startup
-                let _ = detector.enumerate_windows(); 
+                let _ = detector.enumerate_windows();
 
                 loop {
                     // Wait for either a focus change event or a periodic fallback (every 60s)
@@ -505,9 +508,9 @@ async fn main() -> Result<()> {
 
                     let config = crate::config::AppConfig::load();
                     let windows = detector.enumerate_windows();
-                    
+
                     let mut target_match = None;
-                    
+
                     for (game_title, settings) in &config.game_registry {
                         if !settings.auto_record { continue; }
 
@@ -551,13 +554,14 @@ fn start_local_server(root: PathBuf) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::error!("[Server] Failed to build tokio runtime: {}", e);
-                    return;
-                }
-            };
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::error!("[Server] Failed to build tokio runtime: {}", e);
+                return;
+            }
+        };
 
         rt.block_on(async move {
             let listener = match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
@@ -568,13 +572,13 @@ fn start_local_server(root: PathBuf) {
                 }
             };
             log::info!("[Server] Local HLS server listening on http://127.0.0.1:8080");
-            
+
             loop {
                 let (mut socket, _) = match listener.accept().await {
                     Ok(res) => res,
                     Err(_) => continue,
                 };
-                
+
                 let root = root.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -583,12 +587,12 @@ fn start_local_server(root: PathBuf) {
                         Ok(n) if n > 0 => n,
                         _ => return,
                     };
-                    
+
                     let request = String::from_utf8_lossy(&buf[..n]);
                     let first_line = request.lines().next().unwrap_or("");
                     let parts: Vec<&str> = first_line.split_whitespace().collect();
                     if parts.len() < 2 || parts[0] != "GET" { return; }
-                    
+
                     let raw_path = parts[1];
                     let (url_path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
                     let url_path = url_path.trim_start_matches('/');
@@ -631,7 +635,7 @@ fn start_local_server(root: PathBuf) {
                         return;
                     }
                     let file_path = canonical;
-                    
+
                     let range_header = request.lines().find(|l| l.to_lowercase().starts_with("range:"));
 
                     if file_path.exists() && file_path.is_file() {
@@ -642,7 +646,7 @@ fn start_local_server(root: PathBuf) {
                             Some("ts") => "video/mp2t",
                             _ => "application/octet-stream",
                         };
-                        
+
                         if let Ok(mut file) = tokio::fs::File::open(&file_path).await {
                             let file_len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
                             let mut start = 0;
@@ -665,7 +669,7 @@ fn start_local_server(root: PathBuf) {
                             let content_len = (end + 1).saturating_sub(start);
                             use tokio::io::AsyncSeekExt;
                             let _ = file.seek(std::io::SeekFrom::Start(start)).await;
-                            
+
                             let status = if is_partial { "206 Partial Content" } else { "200 OK" };
                             let mut response = format!(
                                 "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: http://127.0.0.1:8080\r\nCache-Control: no-cache\r\n",
@@ -675,7 +679,7 @@ fn start_local_server(root: PathBuf) {
                                 response.push_str(&format!("Content-Range: bytes {}-{}/{}\r\n", start, end, file_len));
                             }
                             response.push_str("\r\n");
-                            
+
                             if socket.write_all(response.as_bytes()).await.is_ok() {
                                 let mut remaining = content_len;
                                 let mut read_buf = [0u8; 16384];
@@ -693,7 +697,7 @@ fn start_local_server(root: PathBuf) {
                             return;
                         }
                     }
-                    
+
                     let _ = socket.write_all(b"HTTP/1.1 404 NOT FOUND\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").await;
                 });
             }

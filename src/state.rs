@@ -176,11 +176,17 @@ impl RecordingState {
     /// Reset recording stats when a new recording starts.
     pub fn reset_stats(&self) {
         *self.rec_stats.fps.lock() = 0.0;
-        self.rec_stats.dropped_frames.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.rec_stats
+            .dropped_frames
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         *self.rec_stats.bitrate_kbps.lock() = 0.0;
         *self.rec_stats.disk_write_mbps.lock() = 0.0;
-        self.rec_stats.segments_written.store(0, std::sync::atomic::Ordering::Relaxed);
-        self.rec_stats.last_segment_bytes.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.rec_stats
+            .segments_written
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.rec_stats
+            .last_segment_bytes
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -252,14 +258,28 @@ impl AppState {
     pub fn evict_caches(&self) {
         if self.artwork_cache.len() > CACHE_MAX_ENTRIES {
             let excess = self.artwork_cache.len() - CACHE_MAX_ENTRIES;
-            let keys: Vec<String> = self.artwork_cache.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys { self.artwork_cache.remove(&key); }
+            let keys: Vec<String> = self
+                .artwork_cache
+                .iter()
+                .take(excess)
+                .map(|e| e.key().clone())
+                .collect();
+            for key in keys {
+                self.artwork_cache.remove(&key);
+            }
             log::debug!("[Cache] Evicted {} artwork cache entries", excess);
         }
         if self.portrait_cache.len() > CACHE_MAX_ENTRIES {
             let excess = self.portrait_cache.len() - CACHE_MAX_ENTRIES;
-            let keys: Vec<String> = self.portrait_cache.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys { self.portrait_cache.remove(&key); }
+            let keys: Vec<String> = self
+                .portrait_cache
+                .iter()
+                .take(excess)
+                .map(|e| e.key().clone())
+                .collect();
+            for key in keys {
+                self.portrait_cache.remove(&key);
+            }
             log::debug!("[Cache] Evicted {} portrait cache entries", excess);
         }
     }

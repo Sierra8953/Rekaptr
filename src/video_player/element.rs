@@ -1,8 +1,8 @@
 use crate::video_player::video::Video;
-use windows::core::Interface;
 use gpui::{
     Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Window,
 };
+use windows::core::Interface;
 
 pub struct VideoElement {
     video: Video,
@@ -45,7 +45,7 @@ impl VideoElement {
 
         let dest_w = frame_w * scale;
         let dest_h = frame_h * scale;
-        
+
         let offset_x = ((container_w - dest_w) / 2.0).max(0.0);
         let offset_y = ((container_h - dest_h) / 2.0).max(0.0);
 

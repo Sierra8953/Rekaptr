@@ -1,49 +1,61 @@
-use gpui::*;
-use adabraka_ui::prelude::*;
-use adabraka_ui::components::slider::Slider;
 use crate::ui::{RekaptrWorkspace, TimelineDragTarget};
+use adabraka_ui::components::slider::Slider;
+use adabraka_ui::prelude::*;
+use gpui::*;
 
 impl RekaptrWorkspace {
-    pub fn render_timeline(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_timeline(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let audio_tracks = self.get_current_audio_tracks();
         let enabled_audio_tracks: Vec<_> = audio_tracks.into_iter().filter(|t| t.enabled).collect();
 
         // Use direct video player duration and position for the unified master playlist
         let (position, duration) = if let Some(v) = &self.video_source {
-            (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
+            (
+                v.position().as_secs_f64(),
+                v.duration().as_secs_f64().max(1.0),
+            )
         } else {
             (0.0, 1.0)
         };
 
-        let progress = if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::Playhead) {
-            self.scrubbing_progress
-        } else {
-            (position / duration) as f32
-        };
+        let progress =
+            if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::Playhead) {
+                self.scrubbing_progress
+            } else {
+                (position / duration) as f32
+            };
 
-        let clip_start_prog = if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::InMarker) {
-            self.scrubbing_progress
-        } else if duration > 0.0 && self.clip_start >= 0.0 {
-            (self.clip_start / duration) as f32
-        } else {
-            -1.0
-        };
+        let clip_start_prog =
+            if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::InMarker) {
+                self.scrubbing_progress
+            } else if duration > 0.0 && self.clip_start >= 0.0 {
+                (self.clip_start / duration) as f32
+            } else {
+                -1.0
+            };
 
-        let clip_end_prog = if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::OutMarker) {
-            self.scrubbing_progress
-        } else if duration > 0.0 && self.clip_end >= 0.0 {
-            (self.clip_end / duration) as f32
-        } else {
-            -1.0
-        };
+        let clip_end_prog =
+            if self.is_scrubbing && self.drag_target == Some(TimelineDragTarget::OutMarker) {
+                self.scrubbing_progress
+            } else if duration > 0.0 && self.clip_end >= 0.0 {
+                (self.clip_end / duration) as f32
+            } else {
+                -1.0
+            };
 
         let view = cx.entity().downgrade();
         let zoom = self.timeline_zoom;
         let scroll = self.timeline_scroll;
 
         // Marker positions + kinds for the canvas
-        let marker_data: Vec<(f32, crate::state::MarkerKind)> = self.timeline_markers.iter()
+        let marker_data: Vec<(f32, crate::state::MarkerKind)> = self
+            .timeline_markers
+            .iter()
             .map(|m| ((m.time_secs / duration) as f32, m.kind))
             .collect();
 
@@ -490,14 +502,30 @@ impl RekaptrWorkspace {
         }
     }
 
-    fn render_track_header(&self, name: &str, audio_idx: Option<usize>, _volume: Option<f32>, color: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_track_header(
+        &self,
+        name: &str,
+        audio_idx: Option<usize>,
+        _volume: Option<f32>,
+        color: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = use_theme();
         let is_video = audio_idx.is_none();
-        
-        let is_selected = self.audio_track_volume_popover.is_some() && self.audio_track_volume_popover == audio_idx;
-        let bg_color = if is_selected { theme.tokens.muted } else { theme.tokens.card };
-        let border_color = if is_selected { theme.tokens.primary } else { theme.tokens.border };
-        
+
+        let is_selected = self.audio_track_volume_popover.is_some()
+            && self.audio_track_volume_popover == audio_idx;
+        let bg_color = if is_selected {
+            theme.tokens.muted
+        } else {
+            theme.tokens.card
+        };
+        let border_color = if is_selected {
+            theme.tokens.primary
+        } else {
+            theme.tokens.border
+        };
+
         div()
             .w(px(160.0))
             .h(px(if is_video { 54.0 } else { 38.0 }))
@@ -507,10 +535,12 @@ impl RekaptrWorkspace {
             .border_1()
             .border_color(border_color)
             .when_some(audio_idx, |this, idx| {
-                this.cursor(CursorStyle::PointingHand)
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.cursor(CursorStyle::PointingHand).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
                         this.open_volume_popover(idx, cx);
-                    }))
+                    }),
+                )
             })
             .child(
                 HStack::new()
@@ -521,14 +551,23 @@ impl RekaptrWorkspace {
                         HStack::new()
                             .gap_3()
                             .items_center()
-                            .when(is_video, |this| this.child(Icon::new("video").size(px(16.0)).color(color)))
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
+                            .when(is_video, |this| {
+                                this.child(Icon::new("video").size(px(16.0)).color(color))
+                            })
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(name.to_string()),
+                            ),
                     )
                     .when_some(audio_idx, |this, _| {
-                        this.child(
-                            Icon::new("speaker").size(px(14.0)).color(if is_selected { theme.tokens.primary } else { theme.tokens.muted_foreground })
-                        )
-                    })
+                        this.child(Icon::new("speaker").size(px(14.0)).color(if is_selected {
+                            theme.tokens.primary
+                        } else {
+                            theme.tokens.muted_foreground
+                        }))
+                    }),
             )
     }
 
@@ -565,7 +604,7 @@ impl RekaptrWorkspace {
                                 .text_color(theme.tokens.muted_foreground.opacity(0.7))
                                 .child(label)
                         })
-                    })
+                    }),
             )
     }
 
@@ -590,12 +629,7 @@ impl RekaptrWorkspace {
                     .w(relative(zoom))
                     .h_full()
                     // Progress fill with gradient fade-out at the edge
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(progress))
-                            .bg(color.opacity(0.08))
-                    )
+                    .child(div().h_full().w(relative(progress)).bg(color.opacity(0.08)))
                     // Visual Filmstrip for Video Lane
                     .when(is_video, |this| {
                         this.child(
@@ -614,9 +648,9 @@ impl RekaptrWorkspace {
                                         .h_full()
                                         .rounded(px(3.0))
                                         .bg(theme.tokens.muted_foreground.opacity(shade))
-                                }))
+                                })),
                         )
-                    })
+                    }),
             )
     }
 
@@ -626,13 +660,14 @@ impl RekaptrWorkspace {
         let scroll_px = px(self.timeline_scroll);
 
         if zoomed_width > px(0.0) {
-            let relative_x = (mouse_x - self.timeline_bounds.left() + scroll_px).clamp(px(0.0), zoomed_width);
+            let relative_x =
+                (mouse_x - self.timeline_bounds.left() + scroll_px).clamp(px(0.0), zoomed_width);
             let mut percentage = f32::from(relative_x) / f32::from(zoomed_width);
-            
+
             // Magnetic Snapping
             let snap_threshold_secs = 0.5; // Snap within 0.5s
             let snap_threshold_prog = (snap_threshold_secs / duration.max(1.0)) as f32;
-            
+
             let blocks = self.app_state.recording.current_session_blocks.lock();
             let mut cumulative_duration = 0.0;
             for block in blocks.iter() {
@@ -643,7 +678,7 @@ impl RekaptrWorkspace {
                     break;
                 }
             }
-            
+
             self.scrubbing_progress = percentage;
         }
     }

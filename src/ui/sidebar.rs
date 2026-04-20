@@ -1,5 +1,6 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::{ActiveView, RekaptrWorkspace};
 
 impl RekaptrWorkspace {
@@ -48,6 +49,12 @@ impl RekaptrWorkspace {
         let theme = use_theme();
         let is_active = active == view;
 
+        let tooltip_text = match view {
+            ActiveView::Dashboard => "Dashboard",
+            ActiveView::Clips => "Clips",
+            ActiveView::Settings => "Settings",
+        };
+
         div()
             .id(id)
             .w_full()
@@ -61,16 +68,18 @@ impl RekaptrWorkspace {
                 this.set_active_view(view, cx);
             }))
             .child(
-                div()
-                    .size(px(48.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_lg()
-                    .bg(if is_active { theme.tokens.muted } else { gpui::transparent_black() })
-                    .text_color(if is_active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
-                    .hover(|s| s.bg(theme.tokens.muted.opacity(0.5)).text_color(theme.tokens.foreground))
-                    .child(Icon::new(icon_name).size(px(24.0)))
+                Tooltip::new(tooltip_text).placement(TooltipPlacement::Right).child(
+                    div()
+                        .size(px(48.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_lg()
+                        .bg(if is_active { theme.tokens.muted } else { gpui::transparent_black() })
+                        .text_color(if is_active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                        .hover(|s| s.bg(theme.tokens.muted.opacity(0.5)).text_color(theme.tokens.foreground))
+                        .child(Icon::new(icon_name).size(px(24.0)))
+                )
             )
             .when(is_active, |this| {
                 this.child(

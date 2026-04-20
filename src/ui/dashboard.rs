@@ -1,6 +1,7 @@
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 use crate::ui::RekaptrWorkspace;
 
 impl RekaptrWorkspace {
@@ -612,16 +613,17 @@ impl RekaptrWorkspace {
                             .right_2()
                             .child({
                                 let title_settings = title.clone();
-                                div()
-                                    .id(("session-settings-btn-hitbox", session_key))
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .text_color(theme.tokens.muted_foreground)
-                                    .hover(|s| s.text_color(theme.tokens.primary))
-                                    .child(
-                                        svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
-                                    )
-                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                Tooltip::new("Session Settings").placement(TooltipPlacement::Left).child(
+                                    div()
+                                        .id(("session-settings-btn-hitbox", session_key))
+                                        .cursor_pointer()
+                                        .p_1()
+                                        .text_color(theme.tokens.muted_foreground)
+                                        .hover(|s| s.text_color(theme.tokens.primary))
+                                        .child(
+                                            svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
+                                        )
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.advanced_settings_source = Some(title_settings.clone());
                                         
@@ -660,6 +662,7 @@ impl RekaptrWorkspace {
                                         
                                         cx.notify();
                                     }))
+                                )
                             })
                     )
             );

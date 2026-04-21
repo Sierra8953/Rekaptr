@@ -1,0 +1,3 @@
+## 2024-05-20 - Adabraka UI Tooltip Pattern
+**Learning:** In the Adabraka UI system used by Rekaptr, standard HTML ARIA labels (`aria-label`) are not available. Instead, when adding or modifying icon-only UI controls (like skip, play, close), accessibility and discoverability must be implemented by wrapping the control in an `adabraka_ui::components::tooltip::Tooltip` component.
+**Action:** When acting as Palette to improve accessibility on GPUI desktop apps using Adabraka, default to using `Tooltip::new("Label").placement(TooltipPlacement::Top).child(...)` rather than searching for an ARIA equivalent.

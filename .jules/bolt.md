@@ -1,0 +1,3 @@
+## 2024-05-24 - Optimize EnumWindows callback
+**Learning:** In Windows UI programming within this repository (e.g., `src/game_detector.rs`), `EnumWindows` callbacks should filter invisible or nameless windows early using `GetWindowTextW` length checks *before* performing expensive OS queries like PID lookups (`GetWindowThreadProcessId` and `sysinfo::System::process`). Also, redundant process queries can be avoided by returning early or combining them.
+**Action:** When working on Windows UI callbacks, delay OS-level process lookups and string allocations until after fast, low-level filtering (like visibility or text length checks) confirms they are necessary.

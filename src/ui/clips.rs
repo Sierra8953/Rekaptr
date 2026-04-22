@@ -5,6 +5,7 @@ use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
 use adabraka_ui::components::slider::Slider;
+use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
 
 impl RekaptrWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -75,28 +76,36 @@ impl RekaptrWorkspace {
                                             .p_1()
                                             .rounded_md()
                                             .child(
-                                                Button::new("view-grid", "")
-                                                    .icon(IconSource::Named("layout-dashboard".to_string()))
-                                                    .variant(if self.clips_view_mode == ClipsViewMode::Grid { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                    .size(ButtonSize::Sm)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.clips_view_mode = ClipsViewMode::Grid;
-                                                        cx.notify();
-                                                    }))
+                                                Tooltip::new("Grid View")
+                                                    .placement(TooltipPlacement::Bottom)
+                                                    .child(
+                                                        Button::new("view-grid", "")
+                                                            .icon(IconSource::Named("layout-dashboard".to_string()))
+                                                            .variant(if self.clips_view_mode == ClipsViewMode::Grid { ButtonVariant::Default } else { ButtonVariant::Ghost })
+                                                            .size(ButtonSize::Sm)
+                                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                                this.clips_view_mode = ClipsViewMode::Grid;
+                                                                cx.notify();
+                                                            }))
+                                                    )
                                             )
                                             .child(
-                                                Button::new("view-table", "")
-                                                    .icon(IconSource::Named("video".to_string()))
-                                                    .variant(if self.clips_view_mode == ClipsViewMode::Table { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                    .size(ButtonSize::Sm)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.clips_view_mode = ClipsViewMode::Table;
-                                                        let clips = this.cached_clips.clone();
-                                                        this.clip_table.update(cx, |table, cx| {
-                                                            table.set_data(clips, cx);
-                                                        });
-                                                        cx.notify();
-                                                    }))
+                                                Tooltip::new("Table View")
+                                                    .placement(TooltipPlacement::Bottom)
+                                                    .child(
+                                                        Button::new("view-table", "")
+                                                            .icon(IconSource::Named("video".to_string()))
+                                                            .variant(if self.clips_view_mode == ClipsViewMode::Table { ButtonVariant::Default } else { ButtonVariant::Ghost })
+                                                            .size(ButtonSize::Sm)
+                                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                                this.clips_view_mode = ClipsViewMode::Table;
+                                                                let clips = this.cached_clips.clone();
+                                                                this.clip_table.update(cx, |table, cx| {
+                                                                    table.set_data(clips, cx);
+                                                                });
+                                                                cx.notify();
+                                                            }))
+                                                    )
                                             )
                                     )
                             )

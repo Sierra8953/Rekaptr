@@ -46,7 +46,7 @@ impl RekaptrWorkspace {
                                     .when_some(self.selected_game_filter.clone(), |this, game| {
                                         this.child(
                                             Button::new("back-to-library", "")
-                                                .icon(IconSource::Named("chevron-left".to_string()))
+                                                .icon(IconSource::Named("chevron-left".into()))
                                                 .variant(ButtonVariant::Default)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.selected_game_filter = None;
@@ -76,7 +76,7 @@ impl RekaptrWorkspace {
                                             .rounded_md()
                                             .child(
                                                 Button::new("view-grid", "")
-                                                    .icon(IconSource::Named("layout-dashboard".to_string()))
+                                                    .icon(IconSource::Named("layout-dashboard".into()))
                                                     .variant(if self.clips_view_mode == ClipsViewMode::Grid { ButtonVariant::Default } else { ButtonVariant::Ghost })
                                                     .size(ButtonSize::Sm)
                                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -86,7 +86,7 @@ impl RekaptrWorkspace {
                                             )
                                             .child(
                                                 Button::new("view-table", "")
-                                                    .icon(IconSource::Named("video".to_string()))
+                                                    .icon(IconSource::Named("video".into()))
                                                     .variant(if self.clips_view_mode == ClipsViewMode::Table { ButtonVariant::Default } else { ButtonVariant::Ghost })
                                                     .size(ButtonSize::Sm)
                                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -401,7 +401,7 @@ impl RekaptrWorkspace {
                                 .top_2()
                                 .left_2()
                                 .text_color(gpui::rgba(0xfbbf24ff))
-                                .child(Icon::new(IconSource::Named("star".to_string())).size(px(16.0)))
+                                .child(Icon::new(IconSource::Named("star".into())).size(px(16.0)))
                         )
                     })
                     .child(
@@ -418,7 +418,7 @@ impl RekaptrWorkspace {
                             .text_color(gpui::rgba(0xffffffaa))
                             .hover(|this| this.text_color(gpui::white()))
                             .child(
-                                Icon::new(IconSource::Named("play".to_string()))
+                                Icon::new(IconSource::Named("play".into()))
                                     .size(px(32.0))
                             )
                             .on_mouse_down(MouseButton::Left, {
@@ -459,7 +459,7 @@ impl RekaptrWorkspace {
                                 div()
                                     .child(
                                         Button::new(("actions-btn", clip.timestamp), "")
-                                            .icon(IconSource::Named("plus".to_string()))
+                                            .icon(IconSource::Named("plus".into()))
                                             .variant(ButtonVariant::Ghost)
                                             .size(ButtonSize::Sm)
                                             .on_click({
@@ -919,7 +919,7 @@ impl RekaptrWorkspace {
                             .child(
                                 Button::new("play-details", "Preview Clip")
                                     .w_full()
-                                    .icon(IconSource::Named("play".to_string()))
+                                    .icon(IconSource::Named("play".into()))
                                     .on_click(cx.listener({
                                         let clip = clip.clone();
                                         move |this, _, _, cx| {
@@ -944,7 +944,7 @@ impl RekaptrWorkspace {
                                 Button::new("open-folder-details", "Show in Folder")
                                     .w_full()
                                     .variant(ButtonVariant::Outline)
-                                    .icon(IconSource::Named("folder".to_string()))
+                                    .icon(IconSource::Named("folder".into()))
                                     .on_click({
                                         let clip = clip.clone();
                                         move |_, _, _| {

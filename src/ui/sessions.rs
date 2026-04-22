@@ -87,7 +87,7 @@ impl RekaptrWorkspace {
                                             .id(("play-session", session.timestamp))
                                             .child(
                                                 Button::new(("btn-play-session", session.timestamp), "")
-                                                    .icon(IconSource::Named("play".to_string()))
+                                                    .icon(IconSource::Named("play".into()))
                                                     .variant(ButtonVariant::Default)
                                                     .size(ButtonSize::Icon)
                                             )

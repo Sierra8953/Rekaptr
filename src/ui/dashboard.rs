@@ -234,7 +234,7 @@ impl RekaptrWorkspace {
                                                     .gap_2()
                                                     .child(
                                                         Button::new("btn-record", "")
-                                                            .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
+                                                            .icon(if is_recording { IconSource::Named("square".into()) } else { IconSource::Named("circle-dot".into()) })
                                                             .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
                                                             .on_click(cx.listener(|this: &mut Self, _, window, cx| {
                                                                 this.toggle_recording(window, cx);
@@ -242,7 +242,7 @@ impl RekaptrWorkspace {
                                                     )
                                                     .child(
                                                         Button::new("btn-back", "")
-                                                            .icon(IconSource::Named("rotate-ccw".to_string()))
+                                                            .icon(IconSource::Named("rotate-ccw".into()))
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
                                                                 if let Some(v) = &this.video_source {
@@ -254,7 +254,7 @@ impl RekaptrWorkspace {
                                                     .child({
                                                         let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
                                                         Button::new("btn-play", "")
-                                                            .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
+                                                            .icon(if is_paused { IconSource::Named("play".into()) } else { IconSource::Named("pause".into()) })
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
                                                                 this.toggle_play_pause(cx);
@@ -262,7 +262,7 @@ impl RekaptrWorkspace {
                                                     })
                                                     .child(
                                                         Button::new("btn-fwd", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
+                                                            .icon(IconSource::Named("rotate-cw".into()))
                                                             .variant(ButtonVariant::Outline)
                                                             .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
                                                                 if let Some(v) = &this.video_source {
@@ -273,7 +273,7 @@ impl RekaptrWorkspace {
                                                     )
                                                     .child(
                                                         Button::new("btn-refresh", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
+                                                            .icon(IconSource::Named("rotate-cw".into()))
                                                             .variant(ButtonVariant::Secondary)
                                                             .on_click(cx.listener(|this: &mut Self, _, window, cx| {
                                                                 let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
@@ -283,7 +283,7 @@ impl RekaptrWorkspace {
                                                     .child(div().w(px(10.0)))
                                                     .children(crate::state::MarkerKind::ALL.iter().map(|&kind| {
                                                         Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
-                                                            .icon(IconSource::Named(kind.icon_name().to_string()))
+                                                            .icon(IconSource::Named(kind.icon_name().into()))
                                                             .variant(ButtonVariant::Secondary)
                                                             .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
                                                                 this.add_marker_with_kind(kind, cx);

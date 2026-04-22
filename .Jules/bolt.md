@@ -1,0 +1,3 @@
+## 2026-04-22 - SharedString in GPUI
+**Learning:** GPUI components often prefer `SharedString` over `String` to avoid redundant heap allocations during immediate-mode rendering since they are cloned frequently on every frame. In UI files (like dashboard.rs and clips.rs), many icons are created with `IconSource::Named("icon-name".to_string())`. Using `SharedString::from("icon-name")` or simply letting the `Into<SharedString>` trait handle `&str` (i.e. `IconSource::Named("icon-name".into())` or `SharedString::from_static("icon-name")`) avoids copying the string every frame.
+**Action:** Find and replace `"string".to_string()` with `"string".into()` or `SharedString::from()` in high-frequency rendering paths to reduce allocation overhead.

@@ -368,7 +368,7 @@ impl RekaptrWorkspace {
                                     )
                                     .child(
                                         Button::new("close-settings", "")
-                                            .icon(IconSource::Named("x".to_string()))
+                                            .icon(IconSource::Named("x".into()))
                                             .variant(ButtonVariant::Ghost)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.advanced_settings_source = None;

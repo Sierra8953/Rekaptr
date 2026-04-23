@@ -14,6 +14,15 @@ use crate::{
     Point, Size, platform::AtlasTextureList,
 };
 
+// Time-based eviction runs per texture, not per tile. A texture is considered
+// "in use" as long as any of its tiles are sampled during draw — `get_texture_view`
+// refreshes the texture's last_used_frame. This correctly handles scene.replay,
+// which re-draws sprites from the previous frame without going through
+// `get_or_insert_with`: replay still calls `get_texture_view` during draw, which
+// keeps the texture alive.
+const EVICT_TEXTURE_AFTER_FRAMES: u64 = 600; // ~10 seconds at 60fps
+const EVICT_CHECK_INTERVAL: u64 = 120; // check every ~2 seconds
+
 pub(crate) struct DirectXAtlas(Mutex<DirectXAtlasState>);
 
 struct DirectXAtlasState {
@@ -22,6 +31,7 @@ struct DirectXAtlasState {
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
+    current_frame: u64,
 }
 
 struct DirectXAtlasTexture {
@@ -31,6 +41,7 @@ struct DirectXAtlasTexture {
     texture: ID3D11Texture2D,
     view: [Option<ID3D11ShaderResourceView>; 1],
     live_atlas_keys: u32,
+    last_used_frame: u64,
 }
 
 impl DirectXAtlas {
@@ -41,16 +52,24 @@ impl DirectXAtlas {
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             tiles_by_key: Default::default(),
+            current_frame: 0,
         }))
     }
 
     pub(crate) fn get_texture_view(
         &self,
         id: AtlasTextureId,
-    ) -> [Option<ID3D11ShaderResourceView>; 1] {
-        let lock = self.0.lock();
-        let tex = lock.texture(id);
-        tex.view.clone()
+    ) -> Option<[Option<ID3D11ShaderResourceView>; 1]> {
+        let mut lock = self.0.lock();
+        let frame = lock.current_frame;
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
+            AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
+        };
+        let slot = textures.textures.get_mut(id.index as usize)?;
+        let tex = slot.as_mut()?;
+        tex.last_used_frame = frame;
+        Some(tex.view.clone())
     }
 
     pub(crate) fn handle_device_lost(
@@ -77,19 +96,19 @@ impl PlatformAtlas for DirectXAtlas {
     ) -> anyhow::Result<Option<AtlasTile>> {
         let mut lock = self.0.lock();
         if let Some(tile) = lock.tiles_by_key.get(key) {
-            Ok(Some(tile.clone()))
-        } else {
-            let Some((size, bytes)) = build()? else {
-                return Ok(None);
-            };
-            let tile = lock
-                .allocate(size, key.texture_kind())
-                .ok_or_else(|| anyhow::anyhow!("failed to allocate"))?;
-            let texture = lock.texture(tile.texture_id);
-            texture.upload(&lock.device_context, tile.bounds, &bytes);
-            lock.tiles_by_key.insert(key.clone(), tile.clone());
-            Ok(Some(tile))
+            return Ok(Some(tile.clone()));
         }
+
+        let Some((size, bytes)) = build()? else {
+            return Ok(None);
+        };
+        let tile = lock
+            .allocate(size, key.texture_kind())
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate atlas tile"))?;
+        let texture = lock.texture(tile.texture_id);
+        texture.upload(&lock.device_context, tile.bounds, &bytes);
+        lock.tiles_by_key.insert(key.clone(), tile.clone());
+        Ok(Some(tile))
     }
 
     fn update_tile_from_hardware(
@@ -97,19 +116,25 @@ impl PlatformAtlas for DirectXAtlas {
         tile: &AtlasTile,
         texture_ptr: *mut std::ffi::c_void,
     ) -> anyhow::Result<()> {
-        let lock = self.0.lock();
-        let dst_texture = lock.texture(tile.texture_id);
-        
+        let mut lock = self.0.lock();
+        let frame = lock.current_frame;
+        let Some(dst_texture) = lock.try_texture_mut(tile.texture_id) else {
+            anyhow::bail!(
+                "atlas texture {:?} missing in update_tile_from_hardware",
+                tile.texture_id
+            );
+        };
+        dst_texture.last_used_frame = frame;
+
         unsafe {
             use windows::Win32::Graphics::Direct3D11::ID3D11Resource;
             use windows::core::Interface;
             use std::mem::ManuallyDrop;
-            
-            // Use ManuallyDrop to prevent the wrapper from calling Release() on our borrowed pointer
+
             let src_tex: ManuallyDrop<ID3D11Texture2D> = std::mem::transmute_copy(&texture_ptr);
             let src_resource: ID3D11Resource = src_tex.cast()?;
             let dst_resource: ID3D11Resource = dst_texture.texture.cast()?;
-            
+
             lock.device_context.CopySubresourceRegion(
                 &dst_resource,
                 0,
@@ -121,39 +146,99 @@ impl PlatformAtlas for DirectXAtlas {
                 None,
             );
         }
-        
+
         Ok(())
     }
 
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
+        lock.remove_tile(key);
+    }
 
-        let Some(id) = lock.tiles_by_key.remove(key).map(|tile| tile.texture_id) else {
-            return;
-        };
+    fn end_frame(&self) {
+        let mut lock = self.0.lock();
+        lock.current_frame += 1;
 
-        let textures = match id.kind {
-            AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
-            AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
-        };
-
-        let Some(texture_slot) = textures.textures.get_mut(id.index as usize) else {
-            return;
-        };
-
-        if let Some(mut texture) = texture_slot.take() {
-            texture.decrement_ref_count();
-            if texture.is_unreferenced() {
-                textures.free_list.push(texture.id.index as usize);
-                lock.tiles_by_key.remove(key);
-            } else {
-                *texture_slot = Some(texture);
-            }
+        if lock.current_frame % EVICT_CHECK_INTERVAL == 0 {
+            lock.evict_stale_textures();
         }
     }
 }
 
 impl DirectXAtlasState {
+    fn evict_stale_textures(&mut self) {
+        let frame = self.current_frame;
+        let threshold = frame.saturating_sub(EVICT_TEXTURE_AFTER_FRAMES);
+
+        let freed_mono = Self::evict_stale_in_list(&mut self.monochrome_textures, threshold);
+        let freed_poly = Self::evict_stale_in_list(&mut self.polychrome_textures, threshold);
+
+        if freed_mono.is_empty() && freed_poly.is_empty() {
+            return;
+        }
+
+        // Drop any tiles_by_key entries whose tile pointed at a freed texture slot.
+        // A slot may later be reused by push_texture, which would give different
+        // tiles the same AtlasTextureId — so we can't keep stale entries around.
+        let before = self.tiles_by_key.len();
+        self.tiles_by_key.retain(|_, tile| {
+            let freed_for_kind = match tile.texture_id.kind {
+                AtlasTextureKind::Monochrome => &freed_mono,
+                AtlasTextureKind::Polychrome => &freed_poly,
+            };
+            !freed_for_kind.contains(&(tile.texture_id.index as usize))
+        });
+        let after = self.tiles_by_key.len();
+        log::debug!(
+            "Atlas eviction: {} mono + {} poly textures freed, tiles_by_key {} -> {}",
+            freed_mono.len(), freed_poly.len(), before, after
+        );
+    }
+
+    fn evict_stale_in_list(
+        list: &mut AtlasTextureList<DirectXAtlasTexture>,
+        threshold: u64,
+    ) -> Vec<usize> {
+        let mut freed = Vec::new();
+        for (idx, slot) in list.textures.iter_mut().enumerate() {
+            if let Some(tex) = slot.as_ref()
+                && tex.last_used_frame < threshold
+            {
+                slot.take();
+                list.free_list.push(idx);
+                freed.push(idx);
+            }
+        }
+        freed
+    }
+
+    fn remove_tile(&mut self, key: &AtlasKey) {
+        let Some(tile) = self.tiles_by_key.remove(key) else {
+            return;
+        };
+
+        let texture_id = tile.texture_id;
+        let tile_id = tile.tile_id;
+
+        let textures = match texture_id.kind {
+            AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
+            AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+        };
+
+        let Some(texture_slot) = textures.textures.get_mut(texture_id.index as usize) else {
+            return;
+        };
+
+        if let Some(texture) = texture_slot.as_mut() {
+            texture.allocator.deallocate(tile_id.into());
+            texture.decrement_ref_count();
+            if texture.is_unreferenced() {
+                texture_slot.take();
+                textures.free_list.push(texture_id.index as usize);
+            }
+        }
+    }
+
     fn allocate(
         &mut self,
         size: Size<DevicePixels>,
@@ -187,13 +272,12 @@ impl DirectXAtlasState {
             width: DevicePixels(1024),
             height: DevicePixels(1024),
         };
-        // Max texture size for DirectX. See:
-        // https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-resources-limits
         const MAX_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(16384),
             height: DevicePixels(16384),
         };
         let size = min_size.min(&MAX_ATLAS_SIZE).max(&DEFAULT_ATLAS_SIZE);
+        let current_frame = self.current_frame;
         let pixel_format;
         let bind_flag;
         let bytes_per_pixel;
@@ -226,8 +310,6 @@ impl DirectXAtlasState {
         };
         let mut texture: Option<ID3D11Texture2D> = None;
         unsafe {
-            // This only returns None if the device is lost, which we will recreate later.
-            // So it's ok to return None here.
             self.device
                 .CreateTexture2D(&texture_desc, None, Some(&mut texture))
                 .ok()?;
@@ -256,6 +338,7 @@ impl DirectXAtlasState {
             texture,
             view,
             live_atlas_keys: 0,
+            last_used_frame: current_frame,
         };
         if let Some(ix) = index {
             texture_list.textures[ix] = Some(atlas_texture);
@@ -272,6 +355,14 @@ impl DirectXAtlasState {
             crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
         };
         textures[id.index as usize].as_ref().unwrap()
+    }
+
+    fn try_texture_mut(&mut self, id: AtlasTextureId) -> Option<&mut DirectXAtlasTexture> {
+        let textures = match id.kind {
+            crate::AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
+            crate::AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+        };
+        textures.textures.get_mut(id.index as usize).and_then(|slot| slot.as_mut())
     }
 }
 
@@ -317,7 +408,7 @@ impl DirectXAtlasTexture {
     }
 
     fn decrement_ref_count(&mut self) {
-        self.live_atlas_keys -= 1;
+        self.live_atlas_keys = self.live_atlas_keys.saturating_sub(1);
     }
 
     fn is_unreferenced(&mut self) -> bool {

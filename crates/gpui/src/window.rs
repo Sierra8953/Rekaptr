@@ -2022,6 +2022,7 @@ impl Window {
     fn present(&self) {
         self.platform_window.draw(&self.rendered_frame.scene);
         self.needs_present.set(false);
+        self.sprite_atlas.end_frame();
         profiling::finish_frame!();
     }
 

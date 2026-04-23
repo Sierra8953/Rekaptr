@@ -1,15 +1,15 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use adabraka_ui::components::slider::Slider;
 use crate::ui::{RekaptrWorkspace, TimelineDragTarget};
 
 impl RekaptrWorkspace {
-    pub fn render_timeline(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_timeline(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let audio_tracks = self.get_current_audio_tracks();
         let enabled_audio_tracks: Vec<_> = audio_tracks.into_iter().filter(|t| t.enabled).collect();
 
-        // Use direct video player duration and position for the unified master playlist
+        self.ensure_track_vol_sliders(enabled_audio_tracks.len(), cx);
+
         let (position, duration) = if let Some(v) = &self.video_source {
             (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
         } else {
@@ -42,12 +42,18 @@ impl RekaptrWorkspace {
         let zoom = self.timeline_zoom;
         let scroll = self.timeline_scroll;
 
-        // Marker positions + kinds for the canvas
         let marker_data: Vec<(f32, crate::state::MarkerKind)> = self.timeline_markers.iter()
             .map(|m| ((m.time_secs / duration) as f32, m.kind))
             .collect();
 
-        // Outer card wrapper for the entire timeline
+        let track_colors = [
+            gpui::hsla(187.0 / 360.0, 0.82, 0.55, 1.0), // cyan
+            gpui::hsla(330.0 / 360.0, 0.81, 0.71, 1.0), // pink
+            gpui::hsla(142.0 / 360.0, 0.69, 0.58, 1.0), // green
+            gpui::hsla(45.0 / 360.0, 0.93, 0.58, 1.0),  // amber
+            gpui::hsla(210.0 / 360.0, 0.78, 0.60, 1.0), // blue
+        ];
+
         div()
             .w_full()
             .bg(theme.tokens.card)
@@ -56,113 +62,64 @@ impl RekaptrWorkspace {
             .rounded_lg()
             .p_3()
             .child(
-                HStack::new()
+                div()
+                    .flex()
                     .w_full()
-                    .gap_2()
-                    .when_some(self.audio_track_volume_popover, |this, track_idx| {
-                        let theme = theme.clone();
-
-                        let current_vol_percentage = self.playback_volumes.get(track_idx).copied().unwrap_or(100.0);
-
-                        this.child(
-                            div()
-                                .w(px(52.0))
-                                .bg(theme.tokens.card)
-                                .border_1()
-                                .border_color(theme.tokens.border)
-                                .rounded_md()
-                                .py_3()
-                                .px_1()
-                                .child(
-                                    VStack::new()
-                                        .size_full()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(theme.tokens.foreground)
-                                                .child(format!("{:.0}%", current_vol_percentage))
-                                        )
-                                        .child({
-                                            let view_for_slider = view.clone();
-                                            div()
-                                                .flex_1()
-                                                .flex()
-                                                .justify_center()
-                                                .h(px(120.0))
-                                                .child(
-                                                    Slider::new(self.volume_slider_state.clone())
-                                                        .vertical()
-                                                        .on_change(move |value: f32, _window, cx| {
-                                                            let _ = view_for_slider.update(cx, |this, cx| {
-                                                                let volume = (value * 1.5) as f64; // 0-100 slider -> 0-150 volume
-                                                                if let Some(idx) = this.last_audio_track_volume_popover {
-                                                                    if this.playback_volumes.len() <= idx {
-                                                                        this.playback_volumes.resize(idx + 1, 100.0);
-                                                                    }
-                                                                    this.playback_volumes[idx] = volume;
-                                                                    this.volume_slider_last_value = volume as f32;
-
-                                                                    // Throttle mpv updates to avoid lag
-                                                                    let now = std::time::Instant::now();
-                                                                    if now.duration_since(this.last_volume_update_at).as_millis() > 50 {
-                                                                        this.last_volume_update_at = now;
-                                                                        this.update_mpv_audio_mix();
-                                                                    }
-                                                                }
-                                                                cx.notify();
-                                                            });
-                                                        })
-                                                )
-                                        })
-                                )
-                        )
-                    })
+                    .gap(px(8.0))
+                    // Track headers with inline mixers
                     .child(
-                        // 1. Headers Column
-                        VStack::new()
-                            .w(px(160.0))
-                            .pt(px(26.0)) // match marker icon area padding
-                            .gap_1()
-                            .child(self.render_track_header("Video", None, None, theme.tokens.primary, cx))
-                            .children(enabled_audio_tracks.iter().enumerate().map(|(i, track)| {
-                                self.render_track_header(&track.name, Some(i), Some(track.volume), theme.tokens.primary, cx)
-                            }))
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .w(px(220.0))
+                            .pt(px(22.0))
+                            .child(self.render_video_track_header(theme.tokens.primary))
+                            .children(
+                                enabled_audio_tracks.iter().enumerate().map(|(i, track)| {
+                                    let color = track_colors[i % track_colors.len()];
+                                    let icon = match track.source_type.as_str() {
+                                        "Mic" => "mic",
+                                        "App" => "gamepad-2",
+                                        _ => "speaker",
+                                    };
+                                    let slider = self.track_vol_sliders.get(i).cloned();
+                                    self.render_audio_track_header(&track.name, icon, color, slider)
+                                }),
+                            ),
                     )
+                    // Track lanes
                     .child(
-                        // 2. Multi-Lane Track Area
                         div()
                             .id("timeline-tracks")
                             .relative()
                             .flex_1()
                             .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
                                 if event.modifiers.control {
-                                    // Zooming
                                     let old_zoom = this.timeline_zoom;
                                     let delta = event.delta.pixel_delta(px(1.0)).y.0;
                                     let zoom_factor = if delta > 0.0 { 1.1 } else { 0.9 };
                                     this.timeline_zoom = (this.timeline_zoom * zoom_factor).clamp(1.0, 100.0);
-
                                     this.timeline_scroll *= this.timeline_zoom / old_zoom;
                                 } else {
-                                    // Scrolling
                                     let delta_x = event.delta.pixel_delta(px(1.0)).x.0;
                                     this.timeline_scroll = (this.timeline_scroll - delta_x).max(0.0);
                                 }
                                 cx.notify();
                             }))
                             .child(
-                                VStack::new()
-                                    .pt(px(24.0)) // space for marker icons above tracks
-                                    .gap_1()
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .pt(px(22.0))
                                     .child(self.render_track_lane(progress, true, theme.tokens.primary))
-                                    .children(enabled_audio_tracks.iter().map(|_| {
-                                        self.render_track_lane(progress, false, theme.tokens.primary)
+                                    .children(enabled_audio_tracks.iter().enumerate().map(|(i, _)| {
+                                        let color = track_colors[i % track_colors.len()];
+                                        self.render_track_lane(progress, false, color)
                                     }))
                             )
-                            // Overlays (Playhead & Markers)
+                            // Canvas overlays
                             .child(
                                 canvas(
                                     move |_, window, cx| {
@@ -190,10 +147,9 @@ impl RekaptrWorkspace {
                                             let scroll_px = px(scroll);
                                             let visible_left = left - scroll_px;
 
-                                            // Helper to convert progress (0.0 - 1.0) to screen X
                                             let to_x = |p: f32| visible_left + zoomed_width * p;
 
-                                            // 1. Draw Clip Range Highlight with border edges
+                                            // Clip range highlight
                                             if clip_start_prog >= 0.0 {
                                                 let end = if clip_end_prog < 0.0 { 1.0 } else { clip_end_prog };
                                                 let x_start = to_x(clip_start_prog).max(left);
@@ -204,14 +160,11 @@ impl RekaptrWorkspace {
                                                         point(x_start, top),
                                                         size(x_end - x_start, height)
                                                     );
-                                                    // Filled highlight
                                                     window.paint_quad(fill(range_rect, theme.tokens.primary.opacity(0.08)));
-                                                    // Top edge accent
                                                     window.paint_quad(fill(
                                                         Bounds::new(point(x_start, top), size(x_end - x_start, px(2.0))),
                                                         theme.tokens.primary.opacity(0.3)
                                                     ));
-                                                    // Bottom edge accent
                                                     window.paint_quad(fill(
                                                         Bounds::new(point(x_start, top + height - px(2.0)), size(x_end - x_start, px(2.0))),
                                                         theme.tokens.primary.opacity(0.3)
@@ -219,24 +172,21 @@ impl RekaptrWorkspace {
                                                 }
                                             }
 
-                                            // 2. Draw Playhead with glow and triangle head
+                                            // Playhead
                                             let playhead_x = to_x(progress);
                                             if playhead_x >= left && playhead_x <= left + width {
-                                                // Glow behind playhead line
                                                 let glow_rect = Bounds::new(
                                                     point(playhead_x - px(4.0), top),
                                                     size(px(8.0), height)
                                                 );
                                                 window.paint_quad(fill(glow_rect, gpui::white().opacity(0.06)));
 
-                                                // Main playhead line (2px for visibility)
                                                 let line_rect = Bounds::new(
                                                     point(playhead_x - px(1.0), top),
                                                     size(px(2.0), height)
                                                 );
                                                 window.paint_quad(fill(line_rect, gpui::white().opacity(0.9)));
 
-                                                // Triangle head (downward-pointing arrow)
                                                 let head_w = px(12.0);
                                                 let head_h = px(10.0);
                                                 if let Ok(path) = {
@@ -250,7 +200,6 @@ impl RekaptrWorkspace {
                                                     window.paint_path(path, gpui::white());
                                                 }
 
-                                                // Bottom line cap (small rounded rect)
                                                 let cap_rect = Bounds::new(
                                                     point(playhead_x - px(3.0), top + height - px(4.0)),
                                                     size(px(6.0), px(4.0))
@@ -258,69 +207,49 @@ impl RekaptrWorkspace {
                                                 window.paint_quad(fill(cap_rect, gpui::white().opacity(0.7)).corner_radii(px(1.0)));
                                             }
 
-                                            // 3. Draw In/Out Markers with bracket handles
+                                            // In/Out markers
                                             let in_color = gpui::hsla(142.0/360.0, 0.71, 0.45, 1.0);
                                             let out_color = gpui::hsla(346.0/360.0, 0.84, 0.61, 1.0);
 
-                                            // Helper to draw a polished marker
                                             let draw_marker = |window: &mut Window, marker_x: Pixels, color: Hsla, is_in: bool| {
                                                 let bracket_w = px(10.0);
                                                 let bracket_h = px(16.0);
                                                 let bracket_thickness = px(2.0);
 
-                                                // Glow behind marker
-                                                let glow_rect = Bounds::new(
-                                                    point(marker_x - px(3.0), top),
-                                                    size(px(6.0), height)
-                                                );
-                                                window.paint_quad(fill(glow_rect, color.opacity(0.1)));
+                                                window.paint_quad(fill(
+                                                    Bounds::new(point(marker_x - px(3.0), top), size(px(6.0), height)),
+                                                    color.opacity(0.1)
+                                                ));
+                                                window.paint_quad(fill(
+                                                    Bounds::new(point(marker_x - px(1.0), top), size(bracket_thickness, height)),
+                                                    color.opacity(0.8)
+                                                ).corner_radii(px(1.0)));
 
-                                                // Main vertical line (2px)
-                                                let line_rect = Bounds::new(
-                                                    point(marker_x - px(1.0), top),
-                                                    size(bracket_thickness, height)
-                                                );
-                                                window.paint_quad(fill(line_rect, color.opacity(0.8)).corner_radii(px(1.0)));
-
-                                                // Top bracket
                                                 if is_in {
-                                                    // [ shape — bracket extends right
-                                                    // Horizontal top
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x, top), size(bracket_w, bracket_thickness)),
-                                                        color
+                                                        Bounds::new(point(marker_x, top), size(bracket_w, bracket_thickness)), color
                                                     ).corner_radii(Corners { top_left: px(2.0), top_right: px(2.0), bottom_left: px(0.0), bottom_right: px(0.0) }));
-                                                    // Vertical side
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x, top), size(bracket_thickness, bracket_h)),
-                                                        color
+                                                        Bounds::new(point(marker_x, top), size(bracket_thickness, bracket_h)), color
                                                     ).corner_radii(px(1.0)));
-                                                    // Bottom bracket
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x, top + height - bracket_thickness), size(bracket_w, bracket_thickness)),
-                                                        color
+                                                        Bounds::new(point(marker_x, top + height - bracket_thickness), size(bracket_w, bracket_thickness)), color
                                                     ).corner_radii(Corners { top_left: px(0.0), top_right: px(0.0), bottom_left: px(2.0), bottom_right: px(2.0) }));
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x, top + height - bracket_h), size(bracket_thickness, bracket_h)),
-                                                        color
+                                                        Bounds::new(point(marker_x, top + height - bracket_h), size(bracket_thickness, bracket_h)), color
                                                     ).corner_radii(px(1.0)));
                                                 } else {
-                                                    // ] shape — bracket extends left
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x - bracket_w, top), size(bracket_w, bracket_thickness)),
-                                                        color
+                                                        Bounds::new(point(marker_x - bracket_w, top), size(bracket_w, bracket_thickness)), color
                                                     ).corner_radii(Corners { top_left: px(2.0), top_right: px(2.0), bottom_left: px(0.0), bottom_right: px(0.0) }));
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x - bracket_thickness, top), size(bracket_thickness, bracket_h)),
-                                                        color
+                                                        Bounds::new(point(marker_x - bracket_thickness, top), size(bracket_thickness, bracket_h)), color
                                                     ).corner_radii(px(1.0)));
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x - bracket_w, top + height - bracket_thickness), size(bracket_w, bracket_thickness)),
-                                                        color
+                                                        Bounds::new(point(marker_x - bracket_w, top + height - bracket_thickness), size(bracket_w, bracket_thickness)), color
                                                     ).corner_radii(Corners { top_left: px(0.0), top_right: px(0.0), bottom_left: px(2.0), bottom_right: px(2.0) }));
                                                     window.paint_quad(fill(
-                                                        Bounds::new(point(marker_x - bracket_thickness, top + height - bracket_h), size(bracket_thickness, bracket_h)),
-                                                        color
+                                                        Bounds::new(point(marker_x - bracket_thickness, top + height - bracket_h), size(bracket_thickness, bracket_h)), color
                                                     ).corner_radii(px(1.0)));
                                                 }
                                             };
@@ -338,7 +267,7 @@ impl RekaptrWorkspace {
                                                 }
                                             }
 
-                                            // 4. Draw user markers (icon above track + full-height line)
+                                            // User markers
                                             let icon_sz = px(18.0);
                                             let icon_y = top - icon_sz - px(4.0);
                                             for &(prog, kind) in &marker_data {
@@ -352,13 +281,11 @@ impl RekaptrWorkspace {
                                                     crate::state::MarkerKind::Highlight => gpui::hsla(50.0/360.0, 1.0, 0.55, 1.0),
                                                 };
 
-                                                // Full-height vertical line like the playhead
                                                 window.paint_quad(fill(
                                                     Bounds::new(point(mx - px(1.0), top), size(px(2.0), height)),
                                                     color.opacity(0.5)
                                                 ));
 
-                                                // SVG icon sitting just above the track
                                                 let icon_path = SharedString::from(format!("icons/{}.svg", kind.icon_name()));
                                                 let icon_bounds = Bounds::new(
                                                     point(mx - icon_sz / 2.0, icon_y),
@@ -379,7 +306,7 @@ impl RekaptrWorkspace {
                                 .inset_0()
                                 .size_full()
                             )
-                            // Global Interaction Area
+                            // Interaction overlay
                             .child(
                                 div()
                                     .absolute()
@@ -398,7 +325,6 @@ impl RekaptrWorkspace {
 
                                         let hit_threshold = 0.02 / this.timeline_zoom;
 
-                                        // Check user markers first — clicking one seeks to it
                                         let clicked_user_marker = this.timeline_markers.iter().position(|m| {
                                             let m_prog = (m.time_secs / duration) as f32;
                                             (percentage - m_prog).abs() < hit_threshold
@@ -435,7 +361,6 @@ impl RekaptrWorkspace {
 
                                         let hit_threshold = 0.02 / this.timeline_zoom;
 
-                                        // Right-click on a user marker removes it
                                         let clicked_marker = this.timeline_markers.iter().position(|m| {
                                             let m_prog = (m.time_secs / duration) as f32;
                                             (percentage - m_prog).abs() < hit_threshold
@@ -473,7 +398,7 @@ impl RekaptrWorkspace {
                                         }
                                     }))
                             )
-                    )
+                    ),
             )
     }
 
@@ -490,46 +415,80 @@ impl RekaptrWorkspace {
         }
     }
 
-    fn render_track_header(&self, name: &str, audio_idx: Option<usize>, _volume: Option<f32>, color: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_video_track_header(&self, color: Hsla) -> impl IntoElement {
         let theme = use_theme();
-        let is_video = audio_idx.is_none();
-        
-        let is_selected = self.audio_track_volume_popover.is_some() && self.audio_track_volume_popover == audio_idx;
-        let bg_color = if is_selected { theme.tokens.muted } else { theme.tokens.card };
-        let border_color = if is_selected { theme.tokens.primary } else { theme.tokens.border };
-        
         div()
-            .w(px(160.0))
-            .h(px(if is_video { 54.0 } else { 38.0 }))
-            .px_3()
-            .bg(bg_color)
+            .w(px(220.0))
+            .h(px(50.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .bg(theme.tokens.card)
             .rounded_md()
             .border_1()
-            .border_color(border_color)
-            .when_some(audio_idx, |this, idx| {
-                this.cursor(CursorStyle::PointingHand)
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        this.open_volume_popover(idx, cx);
-                    }))
-            })
+            .border_color(theme.tokens.border)
+            .flex()
+            .items_center()
+            .gap(px(8.0))
             .child(
-                HStack::new()
-                    .size_full()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        HStack::new()
-                            .gap_3()
-                            .items_center()
-                            .when(is_video, |this| this.child(Icon::new("video").size(px(16.0)).color(color)))
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(name.to_string()))
-                    )
-                    .when_some(audio_idx, |this, _| {
-                        this.child(
-                            Icon::new("speaker").size(px(14.0)).color(if is_selected { theme.tokens.primary } else { theme.tokens.muted_foreground })
-                        )
-                    })
+                div()
+                    .w(px(3.0))
+                    .h(px(14.0))
+                    .rounded(px(2.0))
+                    .bg(color),
             )
+            .child(Icon::new("video").size(px(13.0)).color(color))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.tokens.foreground)
+                    .child("Video"),
+            )
+    }
+
+    fn render_audio_track_header(
+        &self,
+        name: &str,
+        icon: &str,
+        color: Hsla,
+        slider: Option<Entity<super::volume_slider::VolumeSlider>>,
+    ) -> impl IntoElement {
+        let theme = use_theme();
+        div()
+            .w(px(220.0))
+            .h(px(50.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .bg(theme.tokens.card)
+            .rounded_md()
+            .border_1()
+            .border_color(theme.tokens.border)
+            .flex()
+            .flex_col()
+            .justify_center()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(3.0))
+                            .h(px(14.0))
+                            .rounded(px(2.0))
+                            .bg(color),
+                    )
+                    .child(Icon::new(icon).size(px(13.0)).color(color))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.tokens.foreground)
+                            .child(name.to_string()),
+                    ),
+            )
+            .when_some(slider, |this, s| this.child(s))
     }
 
     #[allow(dead_code)]
@@ -569,14 +528,14 @@ impl RekaptrWorkspace {
             )
     }
 
-    fn render_track_lane(&self, progress: f32, is_video: bool, color: Hsla) -> Div {
+    fn render_track_lane(&self, progress: f32, _is_video: bool, color: Hsla) -> Div {
         let theme = use_theme();
         let zoom = self.timeline_zoom;
         let scroll = self.timeline_scroll;
 
         div()
             .flex_1()
-            .h(px(if is_video { 54.0 } else { 38.0 }))
+            .h(px(50.0))
             .bg(theme.tokens.background)
             .rounded_md()
             .border_1()
@@ -589,34 +548,12 @@ impl RekaptrWorkspace {
                     .left(px(-scroll))
                     .w(relative(zoom))
                     .h_full()
-                    // Progress fill with gradient fade-out at the edge
                     .child(
                         div()
                             .h_full()
                             .w(relative(progress))
                             .bg(color.opacity(0.08))
                     )
-                    // Visual Filmstrip for Video Lane
-                    .when(is_video, |this| {
-                        this.child(
-                            HStack::new()
-                                .absolute()
-                                .inset_0()
-                                .size_full()
-                                .opacity(0.12)
-                                .gap(px(3.0))
-                                .px(px(2.0))
-                                .py(px(3.0))
-                                .children((0..20).map(|i| {
-                                    let shade = if i % 2 == 0 { 0.6 } else { 0.4 };
-                                    div()
-                                        .w(px(80.0))
-                                        .h_full()
-                                        .rounded(px(3.0))
-                                        .bg(theme.tokens.muted_foreground.opacity(shade))
-                                }))
-                        )
-                    })
             )
     }
 
@@ -628,11 +565,10 @@ impl RekaptrWorkspace {
         if zoomed_width > px(0.0) {
             let relative_x = (mouse_x - self.timeline_bounds.left() + scroll_px).clamp(px(0.0), zoomed_width);
             let mut percentage = f32::from(relative_x) / f32::from(zoomed_width);
-            
-            // Magnetic Snapping
-            let snap_threshold_secs = 0.5; // Snap within 0.5s
+
+            let snap_threshold_secs = 0.5;
             let snap_threshold_prog = (snap_threshold_secs / duration.max(1.0)) as f32;
-            
+
             let blocks = self.app_state.recording.current_session_blocks.lock();
             let mut cumulative_duration = 0.0;
             for block in blocks.iter() {
@@ -643,7 +579,7 @@ impl RekaptrWorkspace {
                     break;
                 }
             }
-            
+
             self.scrubbing_progress = percentage;
         }
     }

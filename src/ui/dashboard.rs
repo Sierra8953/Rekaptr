@@ -4,7 +4,7 @@ use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
 
 impl RekaptrWorkspace {
-    pub fn render_dashboard(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 
         let (position, duration) = if let Some(v) = &self.video_source {
@@ -219,125 +219,334 @@ impl RekaptrWorkspace {
                                 )
                             })
                     })
-                    .child(
-                        Card::new()
-                            .p_4()
-                            .content(
-                                VStack::new()
-                                    .gap_4()
+                    .child({
+                        let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
+                        let has_clip_range = self.clip_start >= 0.0;
+
+                        let show_hours = duration >= 3600.0;
+                        let fmt = |s: f64| {
+                            let total = s.max(0.0) as u64;
+                            let h = total / 3600;
+                            let m = (total % 3600) / 60;
+                            let sec = total % 60;
+                            if show_hours {
+                                format!("{:01}:{:02}:{:02}", h, m, sec)
+                            } else {
+                                format!("{:01}:{:02}", m, sec)
+                            }
+                        };
+                        let time_display: SharedString = format!("{} / {}", fmt(position), fmt(duration)).into();
+
+                        let clip_in_text: SharedString = if self.clip_start >= 0.0 {
+                            fmt(self.clip_start).into()
+                        } else {
+                            "--:--".into()
+                        };
+                        let clip_out_text: SharedString = if self.clip_end >= 0.0 {
+                            fmt(self.clip_end).into()
+                        } else {
+                            "--:--".into()
+                        };
+
+                        let divider = || div().w(px(1.0)).h(px(18.0)).bg(theme.tokens.border);
+
+                        let marker_colors = [
+                            hsla(210.0 / 360.0, 0.78, 0.60, 1.0), // Flag - blue
+                            hsla(0.0, 0.7, 0.55, 1.0),             // Kill - red
+                            hsla(30.0 / 360.0, 0.9, 0.55, 1.0),    // Death - orange
+                            hsla(50.0 / 360.0, 0.9, 0.55, 1.0),    // Highlight - yellow
+                        ];
+
+                        div()
+                            .w_full()
+                            .bg(theme.tokens.card)
+                            .border_1()
+                            .border_color(theme.tokens.border)
+                            .rounded_lg()
+                            .p(px(12.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.0))
+                            // Row 1: Transport + Time + Refresh
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
                                     .child(
-                                        HStack::new()
-                                            .justify_between()
+                                        div()
+                                            .flex()
                                             .items_center()
-                                            .child(
-                                                HStack::new()
-                                                    .gap_2()
-                                                    .child(
-                                                        Button::new("btn-record", "")
-                                                            .icon(if is_recording { IconSource::Named("square".to_string()) } else { IconSource::Named("circle-dot".to_string()) })
-                                                            .variant(if is_recording { ButtonVariant::Destructive } else { ButtonVariant::Default })
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                this.toggle_recording(window, cx);
-                                                            }))
-                                                    )
-                                                    .child(
-                                                        Button::new("btn-back", "")
-                                                            .icon(IconSource::Named("rotate-ccw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
-                                                    )
-                                                    .child({
-                                                        let is_paused = self.video_source.as_ref().map_or(true, |v| v.paused());
-                                                        Button::new("btn-play", "")
-                                                            .icon(if is_paused { IconSource::Named("play".to_string()) } else { IconSource::Named("pause".to_string()) })
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                this.toggle_play_pause(cx);
-                                                            }))
-                                                    })
-                                                    .child(
-                                                        Button::new("btn-fwd", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Outline)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, _cx| {
-                                                                if let Some(v) = &this.video_source {
-                                                                    let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
-                                                                    let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
-                                                                }
-                                                            }))
-                                                    )
-                                                    .child(
-                                                        Button::new("btn-refresh", "")
-                                                            .icon(IconSource::Named("rotate-cw".to_string()))
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-                                                                this.load_video(&source, window, cx);
-                                                            }))
-                                                    )
-                                                    .child(div().w(px(10.0)))
-                                                    .children(crate::state::MarkerKind::ALL.iter().map(|&kind| {
-                                                        Button::new(SharedString::from(format!("btn-marker-{}", kind.label())), "")
-                                                            .icon(IconSource::Named(kind.icon_name().to_string()))
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                                                                this.add_marker_with_kind(kind, cx);
-                                                            }))
-                                                            .into_any_element()
-                                                    }))
-                                                    .child(div().w(px(6.0)))
-                                                    .child(
-                                                        Button::new("btn-in", "IN")
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                this.set_clip_in(cx);
-                                                            }))
-                                                    )
-                                                    .child(
-                                                        Button::new("btn-out", "OUT")
-                                                            .variant(ButtonVariant::Secondary)
-                                                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                                                this.set_clip_out(cx);
-                                                            }))
-                                                    )
-                                                    .child(
-                                                        Button::new("btn-save", "SAVE")
-                                                            .variant(ButtonVariant::Default)
-                                                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
-                                                                this.save_clip(window, cx);
-                                                            }))
-                                                    )
-                                            )
+                                            .gap(px(4.0))
+                                            // Record
                                             .child(
                                                 div()
-                                                    .text_color(theme.tokens.muted_foreground)
+                                                    .id("btn-rec")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(32.0))
+                                                    .h(px(32.0))
+                                                    .rounded(px(6.0))
+                                                    .cursor_pointer()
+                                                    .when(!is_recording, |el| {
+                                                        el.hover(|s| s.bg(hsla(0.0, 0.7, 0.5, 0.15)))
+                                                    })
+                                                    .when(is_recording, |el| {
+                                                        el.bg(hsla(0.0, 0.7, 0.5, 0.2))
+                                                            .border_1()
+                                                            .border_color(hsla(0.0, 0.7, 0.5, 0.4))
+                                                    })
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, window, cx| {
+                                                        this.toggle_recording(window, cx);
+                                                    }))
+                                                    .child(if is_recording {
+                                                        Icon::new("square")
+                                                            .size(px(14.0))
+                                                            .color(theme.tokens.destructive)
+                                                            .into_any_element()
+                                                    } else {
+                                                        div()
+                                                            .w(px(12.0))
+                                                            .h(px(12.0))
+                                                            .rounded_full()
+                                                            .bg(theme.tokens.destructive)
+                                                            .into_any_element()
+                                                    }),
+                                            )
+                                            .child(divider())
+                                            // Skip back
+                                            .child(
+                                                div()
+                                                    .id("btn-back")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(32.0))
+                                                    .h(px(32.0))
+                                                    .rounded(px(6.0))
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(theme.tokens.accent))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, _cx| {
+                                                        if let Some(v) = &this.video_source {
+                                                            let new_pos = (v.position().as_secs_f64() - 10.0).max(0.0);
+                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                        }
+                                                    }))
+                                                    .child(Icon::new("skip-back").size(px(16.0)).color(theme.tokens.muted_foreground)),
+                                            )
+                                            // Play/Pause
+                                            .child(
+                                                div()
+                                                    .id("btn-play")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(36.0))
+                                                    .h(px(36.0))
+                                                    .rounded(px(8.0))
+                                                    .bg(theme.tokens.primary)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(hsla(258.0 / 360.0, 0.9, 0.60, 1.0)))
+                                                    .active(|s| s.bg(hsla(258.0 / 360.0, 0.9, 0.53, 1.0)))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
+                                                        this.toggle_play_pause(cx);
+                                                    }))
+                                                    .child(
+                                                        Icon::new(if is_paused { "play" } else { "pause" })
+                                                            .size(px(18.0))
+                                                            .color(theme.tokens.primary_foreground),
+                                                    ),
+                                            )
+                                            // Skip forward
+                                            .child(
+                                                div()
+                                                    .id("btn-fwd")
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .w(px(32.0))
+                                                    .h(px(32.0))
+                                                    .rounded(px(6.0))
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(theme.tokens.accent))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, _cx| {
+                                                        if let Some(v) = &this.video_source {
+                                                            let new_pos = (v.position().as_secs_f64() + 30.0).min(v.duration().as_secs_f64());
+                                                            let _ = v.seek(std::time::Duration::from_secs_f64(new_pos), true);
+                                                        }
+                                                    }))
+                                                    .child(Icon::new("skip-forward").size(px(16.0)).color(theme.tokens.muted_foreground)),
+                                            )
+                                            .child(divider())
+                                            // Time display
+                                            .child(
+                                                div()
                                                     .text_sm()
                                                     .font_family("Consolas")
-                                                    .child({
-                                                        let show_hours = duration >= 3600.0;
-                                                        let fmt = |s: f64| {
-                                                            let total = s.max(0.0) as u64;
-                                                            let h = total / 3600;
-                                                            let m = (total % 3600) / 60;
-                                                            let sec = total % 60;
-                                                            if show_hours {
-                                                                format!("{:01}:{:02}:{:02}", h, m, sec)
-                                                            } else {
-                                                                format!("{:01}:{:02}", m, sec)
-                                                            }
-                                                        };
-                                                        format!("{} / {}", fmt(position), fmt(duration))
-                                                    })
-                                            )
+                                                    .text_color(theme.tokens.muted_foreground)
+                                                    .child(time_display),
+                                            ),
                                     )
-                                    .child(self.render_timeline(window, cx))
+                                    // Right: refresh
+                                    .child(
+                                        div()
+                                            .id("btn-refresh")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(32.0))
+                                            .h(px(32.0))
+                                            .rounded(px(6.0))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(theme.tokens.accent))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, window, cx| {
+                                                let source = this.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                                                this.load_video(&source, window, cx);
+                                            }))
+                                            .child(Icon::new("rotate-cw").size(px(14.0)).color(theme.tokens.muted_foreground)),
+                                    ),
                             )
-                    )
+                            // Row 2: Markers + Clip controls
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    // Left: markers
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.tokens.muted_foreground)
+                                                    .mr(px(4.0))
+                                                    .child("Markers"),
+                                            )
+                                            .children(
+                                                crate::state::MarkerKind::ALL.iter().enumerate().map(|(i, &kind)| {
+                                                    let color = marker_colors[i % marker_colors.len()];
+                                                    div()
+                                                        .id(SharedString::from(format!("mk-{}", kind.label())))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(28.0))
+                                                        .h(px(28.0))
+                                                        .rounded(px(6.0))
+                                                        .cursor_pointer()
+                                                        .bg(color.opacity(0.1))
+                                                        .hover(|s| s.bg(color.opacity(0.25)))
+                                                        .active(|s| s.bg(color.opacity(0.35)))
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
+                                                            this.add_marker_with_kind(kind, cx);
+                                                        }))
+                                                        .child(Icon::new(kind.icon_name()).size(px(14.0)).color(color))
+                                                        .into_any_element()
+                                                }),
+                                            ),
+                                    )
+                                    // Right: clip controls
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            // IN
+                                            .child(
+                                                div()
+                                                    .id("btn-in")
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(4.0))
+                                                    .px(px(8.0))
+                                                    .h(px(26.0))
+                                                    .rounded(px(5.0))
+                                                    .cursor_pointer()
+                                                    .bg(theme.tokens.accent)
+                                                    .hover(|s| s.bg(theme.tokens.border))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
+                                                        this.set_clip_in(cx);
+                                                    }))
+                                                    .child(Icon::new("chevron-right").size(px(12.0)).color(theme.tokens.muted_foreground))
+                                                    .child(
+                                                        div().text_xs().font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(theme.tokens.muted_foreground).child("IN"),
+                                                    )
+                                                    .child(
+                                                        div().text_xs().font_family("Consolas")
+                                                            .text_color(theme.tokens.muted_foreground).ml(px(2.0))
+                                                            .child(clip_in_text),
+                                                    ),
+                                            )
+                                            // OUT
+                                            .child(
+                                                div()
+                                                    .id("btn-out")
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(4.0))
+                                                    .px(px(8.0))
+                                                    .h(px(26.0))
+                                                    .rounded(px(5.0))
+                                                    .cursor_pointer()
+                                                    .bg(theme.tokens.accent)
+                                                    .hover(|s| s.bg(theme.tokens.border))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
+                                                        this.set_clip_out(cx);
+                                                    }))
+                                                    .child(Icon::new("chevron-left").size(px(12.0)).color(theme.tokens.muted_foreground))
+                                                    .child(
+                                                        div().text_xs().font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(theme.tokens.muted_foreground).child("OUT"),
+                                                    )
+                                                    .child(
+                                                        div().text_xs().font_family("Consolas")
+                                                            .text_color(theme.tokens.muted_foreground).ml(px(2.0))
+                                                            .child(clip_out_text),
+                                                    ),
+                                            )
+                                            .child(divider())
+                                            // Save clip
+                                            .child(
+                                                div()
+                                                    .id("btn-save")
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(5.0))
+                                                    .px(px(10.0))
+                                                    .h(px(28.0))
+                                                    .rounded(px(6.0))
+                                                    .cursor_pointer()
+                                                    .when(has_clip_range, |el| {
+                                                        el.bg(theme.tokens.primary)
+                                                            .hover(|s| s.bg(hsla(258.0 / 360.0, 0.9, 0.60, 1.0)))
+                                                    })
+                                                    .when(!has_clip_range, |el| {
+                                                        el.bg(theme.tokens.accent)
+                                                            .hover(|s| s.bg(theme.tokens.border))
+                                                    })
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, window, cx| {
+                                                        this.save_clip(window, cx);
+                                                    }))
+                                                    .child(
+                                                        Icon::new("scissors").size(px(13.0))
+                                                            .color(if has_clip_range { theme.tokens.primary_foreground } else { theme.tokens.muted_foreground }),
+                                                    )
+                                                    .child(
+                                                        div().text_xs().font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(if has_clip_range { theme.tokens.primary_foreground } else { theme.tokens.muted_foreground })
+                                                            .child("SAVE"),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            // Row 3: Timeline
+                            .child(self.render_timeline(window, cx))
+                    })
                     .child(
                         VStack::new()
                             .gap_4()

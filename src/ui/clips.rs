@@ -1,184 +1,49 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
-use crate::ui::{RekaptrWorkspace, ClipsViewMode};
+use crate::ui::RekaptrWorkspace;
 use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
-use adabraka_ui::components::slider::Slider;
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ClipsFilter {
+    All,
+    Favorites,
+    Recent,
+    Game(String),
+}
 
 impl RekaptrWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = use_theme();
-        let all_clips = self.cached_clips.clone();
-        
-        let search_query = self.clips_search_input.read(cx).content.to_lowercase();
-        let mut filtered_clips: Vec<Clip> = all_clips.into_iter()
-            .filter(|c| {
-                if search_query.is_empty() { return true; }
-                c.title.to_lowercase().contains(&search_query) || 
-                c.path.to_string_lossy().to_lowercase().contains(&search_query)
-            })
-            .collect();
-
-        // Global sort by timestamp DESC
-        filtered_clips.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-
         let has_selection = !self.selected_clips.is_empty();
+        let filtered = self.clips_filtered(cx);
+        let (hero_clip, groups) = self.clips_groups(&filtered);
 
         let mut root = div()
             .size_full()
             .flex()
             .relative()
             .child(
-                VStack::new()
+                HStack::new()
                     .flex_1()
+                    .h_full()
+                    .child(self.render_clips_filter_rail(cx))
                     .child(
-                        // Header Area
-                        HStack::new()
-                            .px_8()
-                            .py_6()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                HStack::new()
-                                    .gap_4()
-                                    .items_center()
-                                    .when_some(self.selected_game_filter.clone(), |this, game| {
-                                        this.child(
-                                            Button::new("back-to-library", "")
-                                                .icon(IconSource::Named("chevron-left".to_string()))
-                                                .variant(ButtonVariant::Default)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.selected_game_filter = None;
-                                                    this.rebuild_library_items(cx);
-                                                    cx.notify();
-                                                }))
-                                        )
-                                        .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child(game))
-                                    })
-                                    .when(self.selected_game_filter.is_none(), |this| {
-                                        this.child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).child("Clips Library"))
-                                    })
-                            )
-                            .child(
-                                HStack::new()
-                                    .gap_4()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .w(px(300.0))
-                                            .child(Input::new(&self.clips_search_input).placeholder("Search clips..."))
-                                    )
-                                    .child(
-                                        HStack::new()
-                                            .bg(theme.tokens.muted)
-                                            .p_1()
-                                            .rounded_md()
-                                            .child(
-                                                Button::new("view-grid", "")
-                                                    .icon(IconSource::Named("layout-dashboard".to_string()))
-                                                    .variant(if self.clips_view_mode == ClipsViewMode::Grid { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                    .size(ButtonSize::Sm)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.clips_view_mode = ClipsViewMode::Grid;
-                                                        cx.notify();
-                                                    }))
-                                            )
-                                            .child(
-                                                Button::new("view-table", "")
-                                                    .icon(IconSource::Named("video".to_string()))
-                                                    .variant(if self.clips_view_mode == ClipsViewMode::Table { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                    .size(ButtonSize::Sm)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.clips_view_mode = ClipsViewMode::Table;
-                                                        let clips = this.cached_clips.clone();
-                                                        this.clip_table.update(cx, |table, cx| {
-                                                            table.set_data(clips, cx);
-                                                        });
-                                                        cx.notify();
-                                                    }))
-                                            )
-                                    )
-                            )
-                    )
-                    .child(
-                        div()
-                            .id("clips-scroll-area")
+                        VStack::new()
                             .flex_1()
+                            .h_full()
+                            .child(self.render_clips_top_bar(filtered.len(), cx))
                             .child(
-                                match self.clips_view_mode {
-                                    ClipsViewMode::Grid => {
-                                        if self.library_items.is_empty() && !self.is_loading_clips {
-                                            div().flex_1().flex().items_center().justify_center().py_20().child(
-                                                VStack::new()
-                                                    .items_center()
-                                                    .gap_4()
-                                                    .child(Icon::new("video").size(px(64.0)).color(theme.tokens.muted_foreground.opacity(0.5)))
-                                                    .child(div().text_xl().text_color(theme.tokens.muted_foreground).child("No clips found"))
-                                                    .child(div().text_sm().text_color(theme.tokens.muted_foreground.opacity(0.7)).child("Start recording to see your clips here"))
-                                            ).into_any_element()
-                                        } else {
-                                            let view_handle = cx.entity().downgrade();
-                                            let app_state = self.app_state.clone();
-                                            list(self.clips_list_state.clone(), move |i, _window, cx| {
-                                                let Some(view) = view_handle.upgrade() else {
-                                                    return div().into_any_element();
-                                                };
-                                                let row = &view.read(cx).library_items[i];
-                                                
-                                                match row {
-                                                    LibraryRow::SectionHeader(title) => {
-                                                        div()
-                                                            .px_8()
-                                                            .py_3()
-                                                            .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(use_theme().tokens.muted_foreground).child(title.clone()))
-                                                            .into_any_element()
-                                                    }
-                                                    LibraryRow::ClipChunk(clips) => {
-                                                        let chunk_view_handle = view_handle.clone();
-                                                        let mut row = HStack::new().px_8().gap_6().py_2();
-                                                        let ws = view.read(cx);
-                                                        let is_selected_map: Vec<bool> = clips.iter().map(|c| {
-                                                            let path = c.path.to_string_lossy().to_string();
-                                                            ws.selected_clips.contains(&path)
-                                                        }).collect();
-                                                        let is_fav_map: Vec<bool> = clips.iter().map(|c| {
-                                                            let path = c.path.to_string_lossy().to_string();
-                                                            ws.favorite_clips.contains(&path)
-                                                        }).collect();
-
-                                                        for (idx, clip) in clips.iter().enumerate() {
-                                                            row = row.child(Self::render_clip_card_advanced(clip.clone(), &chunk_view_handle, is_selected_map[idx], is_fav_map[idx]));
-                                                        }
-                                                        row.into_any_element()
-                                                    }
-                                                    LibraryRow::GameChunk(games) => {
-                                                        let chunk_view_handle = view_handle.clone();
-                                                        let chunk_app_state = app_state.clone();
-                                                        HStack::new()
-                                                            .px_8()
-                                                            .gap_6()
-                                                            .py_3()
-                                                            .children(games.iter().map(|(title, count)| {
-                                                                Self::render_game_card_vertical(title.clone(), *count, &chunk_app_state, chunk_view_handle.clone())
-                                                            }))
-                                                            .into_any_element()
-                                                    }
-                                                }
-                                            })
-                                            .size_full()
-                                            .into_any_element()
-                                        }
-                                    }
-                                    ClipsViewMode::Table => {
-                                        div().p_8().pt_0().child(self.clip_table.clone()).into_any_element()
-                                    }
-                                }
+                                div()
+                                    .id("clips-scroll")
+                                    .flex_1()
+                                    .overflow_y_scroll()
+                                    .child(self.render_clips_body(hero_clip, groups, cx)),
                             )
-                    )
-                    .when(has_selection, |this| {
-                        this.child(self.render_batch_actions_bar(cx))
-                    })
+                            .when(has_selection, |this| {
+                                this.child(self.render_batch_actions_bar(cx))
+                            }),
+                    ),
             )
             .when_some(self.selected_clip_for_details.clone(), |this, clip| {
                 this.child(self.render_clip_details_sidebar(clip, cx))
@@ -192,7 +57,7 @@ impl RekaptrWorkspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(Spinner::new().size(SpinnerSize::Xl))
+                        .child(Spinner::new().size(SpinnerSize::Xl)),
                 )
             });
 
@@ -210,13 +75,628 @@ impl RekaptrWorkspace {
             ColumnDef::new("size", "Size", |c: &Clip| c.size.clone().into()).width(px(100.0)),
         ]
     }
-}
 
-#[derive(Clone)]
-pub enum LibraryRow {
-    SectionHeader(String),
-    ClipChunk(Vec<Clip>),
-    GameChunk(Vec<(String, usize)>),
+    fn clips_filtered(&self, cx: &mut Context<Self>) -> Vec<Clip> {
+        let q = self.clips_search_input.read(cx).content.to_lowercase();
+        let favs = &self.favorite_clips;
+        let mut clips: Vec<Clip> = self
+            .cached_clips
+            .iter()
+            .filter(|c| match &self.clips_filter {
+                ClipsFilter::All => true,
+                ClipsFilter::Favorites => favs.contains(&c.path.to_string_lossy().to_string()),
+                ClipsFilter::Recent => true,
+                ClipsFilter::Game(g) => &c.title == g,
+            })
+            .filter(|c| {
+                if q.is_empty() {
+                    return true;
+                }
+                c.title.to_lowercase().contains(&q)
+                    || c.path.to_string_lossy().to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect();
+
+        clips.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        if matches!(self.clips_filter, ClipsFilter::Recent) {
+            clips.truncate(12);
+        }
+
+        clips
+    }
+
+    /// Split filtered clips into (hero, groups-by-game). Hero is the newest clip
+    /// when there's no specific filter. Groups preserve timestamp DESC order.
+    fn clips_groups(&self, clips: &[Clip]) -> (Option<Clip>, Vec<(String, Vec<Clip>)>) {
+        if clips.is_empty() {
+            return (None, Vec::new());
+        }
+
+        let hero = if matches!(self.clips_filter, ClipsFilter::All) {
+            Some(clips[0].clone())
+        } else {
+            None
+        };
+
+        let mut groups: Vec<(String, Vec<Clip>)> = Vec::new();
+        for c in clips {
+            if let Some(entry) = groups.iter_mut().find(|(g, _)| g == &c.title) {
+                entry.1.push(c.clone());
+            } else {
+                groups.push((c.title.clone(), vec![c.clone()]));
+            }
+        }
+
+        (hero, groups)
+    }
+
+    fn render_clips_filter_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let total = self.cached_clips.len();
+        let fav_count = self
+            .cached_clips
+            .iter()
+            .filter(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
+            .count();
+
+        let mut games: Vec<(String, usize)> = Vec::new();
+        for c in &self.cached_clips {
+            if let Some(entry) = games.iter_mut().find(|(g, _)| g == &c.title) {
+                entry.1 += 1;
+            } else {
+                games.push((c.title.clone(), 1));
+            }
+        }
+        games.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        VStack::new()
+            .w(px(240.0))
+            .h_full()
+            .bg(theme.tokens.card.opacity(0.5))
+            .border_r_1()
+            .border_color(theme.tokens.border)
+            .py_5()
+            .px_3()
+            .gap_1()
+            .child(
+                div()
+                    .px_3()
+                    .pb_3()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.tokens.muted_foreground)
+                    .child("LIBRARY"),
+            )
+            .child(self.clips_rail_item(cx, "layout-dashboard", "All Clips", total, ClipsFilter::All))
+            .child(self.clips_rail_item(cx, "star", "Favorites", fav_count, ClipsFilter::Favorites))
+            .child(self.clips_rail_item(cx, "rotate-ccw", "Recent", total.min(12), ClipsFilter::Recent))
+            .child(
+                div()
+                    .px_3()
+                    .pt_5()
+                    .pb_2()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.tokens.muted_foreground)
+                    .child("GAMES"),
+            )
+            .children(
+                games
+                    .into_iter()
+                    .map(|(g, n)| self.clips_rail_item(cx, "gamepad-2", &g.clone(), n, ClipsFilter::Game(g))),
+            )
+    }
+
+    fn clips_rail_item(
+        &self,
+        cx: &mut Context<Self>,
+        icon: &str,
+        label: &str,
+        count: usize,
+        filter: ClipsFilter,
+    ) -> impl IntoElement {
+        let theme = use_theme();
+        let active = self.clips_filter == filter;
+        let label_owned = label.to_string();
+        let icon_owned = icon.to_string();
+        let filter_clone = filter.clone();
+
+        div()
+            .id(SharedString::from(format!("clips-rail-{}", label)))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .h(px(36.0))
+            .px_3()
+            .rounded_md()
+            .cursor_pointer()
+            .bg(if active { theme.tokens.muted } else { gpui::transparent_black() })
+            .hover(|s| s.bg(theme.tokens.muted.opacity(0.5)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.clips_filter = filter_clone.clone();
+                    cx.notify();
+                }),
+            )
+            .child(
+                Icon::new(IconSource::Named(icon_owned))
+                    .size(px(16.0))
+                    .color(if active { theme.tokens.primary } else { theme.tokens.muted_foreground }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                    .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                    .child(label_owned),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.tokens.muted_foreground)
+                    .child(format!("{}", count)),
+            )
+    }
+
+    fn render_clips_top_bar(&self, visible_count: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let title = match &self.clips_filter {
+            ClipsFilter::All => "All Clips".to_string(),
+            ClipsFilter::Favorites => "Favorites".to_string(),
+            ClipsFilter::Recent => "Recent".to_string(),
+            ClipsFilter::Game(g) => g.clone(),
+        };
+        let subtitle = format!("{} clips", visible_count);
+
+        HStack::new()
+            .px_8()
+            .py_5()
+            .border_b_1()
+            .border_color(theme.tokens.border)
+            .justify_between()
+            .items_center()
+            .child(
+                VStack::new()
+                    .gap_1()
+                    .child(div().text_2xl().font_weight(FontWeight::BOLD).child(title))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(subtitle),
+                    ),
+            )
+            .child(
+                HStack::new()
+                    .gap_3()
+                    .items_center()
+                    .child(self.render_clips_search(cx))
+                    .child(
+                        Button::new("clips-topbar-sort", "")
+                            .icon(IconSource::Named("chevron-down".to_string()))
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm),
+                    )
+                    .child(
+                        Button::new("clips-topbar-more", "")
+                            .icon(IconSource::Named("settings".to_string()))
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm),
+                    ),
+            )
+    }
+
+    fn render_clips_search(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = use_theme();
+        if self.clips_search_expanded {
+            HStack::new()
+                .gap_1()
+                .items_center()
+                .child(
+                    div()
+                        .w(px(280.0))
+                        .child(Input::new(&self.clips_search_input).placeholder("Search clips...")),
+                )
+                .child(
+                    Button::new("clips-search-collapse", "")
+                        .icon(IconSource::Named("x".to_string()))
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.clips_search_input
+                                .update(cx, |s, cx| s.set_value("", window, cx));
+                            this.clips_search_expanded = false;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id("clips-search-icon")
+                .size(px(32.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.tokens.muted))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.clips_search_expanded = true;
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    Icon::new(IconSource::Named("search".to_string()))
+                        .size(px(16.0))
+                        .color(theme.tokens.muted_foreground),
+                )
+                .into_any_element()
+        }
+    }
+
+    fn render_clips_body(
+        &self,
+        hero: Option<Clip>,
+        groups: Vec<(String, Vec<Clip>)>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = use_theme();
+        if self.cached_clips.is_empty() && !self.is_loading_clips {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py_20()
+                .child(
+                    VStack::new()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            Icon::new(IconSource::Named("video".to_string()))
+                                .size(px(64.0))
+                                .color(theme.tokens.muted_foreground.opacity(0.5)),
+                        )
+                        .child(div().text_xl().text_color(theme.tokens.muted_foreground).child("No clips found"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.tokens.muted_foreground.opacity(0.7))
+                                .child("Start recording to see your clips here"),
+                        ),
+                )
+                .into_any_element();
+        }
+
+        let view_handle = cx.entity().downgrade();
+
+        VStack::new()
+            .gap_10()
+            .pb_10()
+            .when_some(hero, |this, clip| {
+                this.child(self.render_clips_hero(clip, cx))
+            })
+            .children(groups.into_iter().map(|(game, clips)| {
+                self.render_clips_group_row(game, clips, view_handle.clone(), cx)
+                    .into_any_element()
+            }))
+            .into_any_element()
+    }
+
+    fn render_clips_hero(&self, clip: Clip, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let clip_path = clip.path.to_string_lossy().to_string();
+        let is_fav = self.favorite_clips.contains(&clip_path);
+        let clip_for_play = clip.clone();
+        let thumb = clip.thumbnail_path.clone();
+        let title = clip.title.clone();
+        let date = clip.date.clone();
+        let duration = clip.duration.clone();
+
+        div().px_8().pt_8().child(
+            div()
+                .w_full()
+                .h(px(320.0))
+                .rounded_xl()
+                .overflow_hidden()
+                .relative()
+                .bg(theme.tokens.muted)
+                .border_1()
+                .border_color(theme.tokens.border)
+                .when_some(thumb, |this, path| {
+                    let p = path.to_string_lossy().to_string();
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset(px(-40.0))
+                            .child(
+                                img(p.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .opacity(0.55),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .inset(px(-40.0))
+                            .child(
+                                img(p.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .opacity(0.35),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .inset(px(-40.0))
+                            .child(
+                                img(p)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .opacity(0.25),
+                            ),
+                    )
+                })
+                .child(div().absolute().inset_0().bg(gpui::rgba(0x0a0a0a99)))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::linear_gradient(
+                            180.0,
+                            gpui::linear_color_stop(gpui::rgba(0x0a0a0a33), 0.0),
+                            gpui::linear_color_stop(gpui::rgba(0x0a0a0acc), 1.0),
+                        )),
+                )
+                .child(
+                    VStack::new()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .w_full()
+                        .p_8()
+                        .gap_3()
+                        .child(
+                            HStack::new()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme.tokens.primary)
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.tokens.foreground)
+                                        .child("LATEST"),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.tokens.muted_foreground)
+                                        .child(format!("{} · {}", date, duration)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_3xl()
+                                .font_weight(FontWeight::BOLD)
+                                .child(title),
+                        )
+                        .child(
+                            HStack::new()
+                                .gap_2()
+                                .pt_2()
+                                .child(
+                                    Button::new("clips-hero-play", "Play")
+                                        .icon(IconSource::Named("play".to_string()))
+                                        .variant(ButtonVariant::Default)
+                                        .size(ButtonSize::Lg)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_clip_preview(clip_for_play.clone(), window, cx);
+                                        })),
+                                )
+                                .child({
+                                    let fav_path = clip_path.clone();
+                                    Button::new("clips-hero-fav", "")
+                                        .icon(IconSource::Named("star".to_string()))
+                                        .variant(if is_fav {
+                                            ButtonVariant::Default
+                                        } else {
+                                            ButtonVariant::Ghost
+                                        })
+                                        .size(ButtonSize::Lg)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.toggle_favorite(&fav_path, cx);
+                                        }))
+                                })
+                                .child(
+                                    Button::new("clips-hero-export", "Export")
+                                        .icon(IconSource::Named("scissors".to_string()))
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Lg),
+                                )
+                                .child(
+                                    Button::new("clips-hero-more", "")
+                                        .icon(IconSource::Named("settings".to_string()))
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::Lg),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    fn render_clips_group_row(
+        &self,
+        game: String,
+        clips: Vec<Clip>,
+        view_handle: WeakEntity<Self>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        const VISIBLE: usize = 4;
+        let count = clips.len();
+        let game_for_nav = game.clone();
+        let game_for_tile = game.clone();
+        let overflow = count.saturating_sub(VISIBLE);
+        let visible_clips: Vec<Clip> = clips.into_iter().take(VISIBLE).collect();
+
+        let fav_map: Vec<bool> = visible_clips
+            .iter()
+            .map(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
+            .collect();
+        let sel_map: Vec<bool> = visible_clips
+            .iter()
+            .map(|c| self.selected_clips.contains(&c.path.to_string_lossy().to_string()))
+            .collect();
+
+        let theme = use_theme();
+
+        VStack::new()
+            .px_8()
+            .gap_3()
+            .child(
+                HStack::new()
+                    .justify_between()
+                    .items_end()
+                    .child(
+                        HStack::new()
+                            .gap_3()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(game.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(theme.tokens.muted)
+                                    .text_xs()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .child(format!("{} clips", count)),
+                            ),
+                    )
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("clips-view-all-{}", game)),
+                            "View all",
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.clips_filter = ClipsFilter::Game(game_for_nav.clone());
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(
+                div().w_full().child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_3()
+                        .children(visible_clips.into_iter().enumerate().map(|(i, c)| {
+                            Self::render_clip_card_advanced(c, &view_handle, sel_map[i], fav_map[i])
+                                .into_any_element()
+                        }))
+                        .when(overflow > 0, |s| {
+                            s.child(self.render_clips_view_all_tile(game_for_tile, overflow, cx))
+                        }),
+                ),
+            )
+    }
+
+    fn render_clips_view_all_tile(
+        &self,
+        game: String,
+        overflow: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = use_theme();
+        let game_owned = game.clone();
+        div()
+            .id(SharedString::from(format!("clips-view-all-tile-{}", game)))
+            .w(px(280.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .bg(theme.tokens.card)
+            .rounded_xl()
+            .border_1()
+            .border_color(theme.tokens.border)
+            .cursor_pointer()
+            .hover(|s| s.border_color(theme.tokens.primary).bg(theme.tokens.muted))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.clips_filter = ClipsFilter::Game(game_owned.clone());
+                    cx.notify();
+                }),
+            )
+            .child(
+                VStack::new()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(IconSource::Named("chevron-right".to_string()))
+                            .size(px(28.0))
+                            .color(theme.tokens.primary),
+                    )
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("+{} more", overflow)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child("View all"),
+                    ),
+            )
+    }
+
+    /// Open a clip in the mini player overlay. Shared by the hero and card play buttons.
+    pub fn open_clip_preview(&mut self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) {
+        let old = self.preview_video_source.as_ref().map(|v| v.render_image());
+        self.clip_to_preview = Some(clip.clone());
+        self.last_preview_mouse_move = std::time::Instant::now();
+        self.show_preview_controls = true;
+        let url = clip.path.to_string_lossy().to_string();
+        let d3d_device_ptr = self.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
+        if let Ok(video) = crate::video_player::Video::new_with_options(
+            &url,
+            crate::video_player::VideoOptions {
+                source_name: Some("preview".to_string()),
+                ..Default::default()
+            },
+            d3d_device_ptr,
+        ) {
+            self.preview_video_source = Some(video);
+            self.init_preview_audio_tracks();
+        }
+        if let Some(ri) = old {
+            window.drop_image(ri).ok();
+        }
+        cx.notify();
+    }
 }
 
 impl RekaptrWorkspace {
@@ -286,61 +766,6 @@ impl RekaptrWorkspace {
         }
     }
 
-    fn render_game_card_vertical(title: String, clip_count: usize, app_state: &std::sync::Arc<crate::state::AppState>, view_handle: WeakEntity<Self>) -> impl IntoElement {
-        let theme = use_theme();
-        let title_for_click = title.clone();
-
-        // Read from portrait cache (fetch was triggered earlier)
-        let cached_path = app_state.portrait_cache.get(&title).map(|v| v.value().clone()).flatten();
-        let final_image_path: Option<std::path::PathBuf> = cached_path.map(std::path::PathBuf::from);
-
-        div()
-            .group("game-card")
-            .relative()
-            .w(px(200.0))
-            .h(px(300.0))
-            .bg(theme.tokens.card)
-            .border_1()
-            .border_color(theme.tokens.border)
-            .rounded_xl()
-            .overflow_hidden()
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                let title = title_for_click.clone();
-                let _ = view_handle.update(cx, |this, cx| {
-                    this.selected_game_filter = Some(title);
-                    this.rebuild_library_items(cx);
-                    cx.notify();
-                });
-            })
-            .child(
-                div()
-                    .size_full()
-                    .bg(theme.tokens.muted)
-                    .when_some(final_image_path, |this, img_path| {
-                        let img_path_str = format!("file://{}", img_path.to_string_lossy().replace("\\", "/"));
-                        this.child(
-                            img(img_path_str)
-                                .size_full()
-                                .object_fit(gpui::ObjectFit::Cover)
-                        )
-                    })
-                    .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .bg(gpui::rgba(0x000000_88))
-                            .flex()
-                            .flex_col()
-                            .justify_end()
-                            .p_6()
-                            .gap_1()
-                            .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(gpui::white()).child(title.clone()))
-                            .child(div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child(format!("{} Clips", clip_count)))
-                    )
-            )
-    }
-
     fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
@@ -386,12 +811,15 @@ impl RekaptrWorkspace {
                     .relative()
                     .w_full()
                     .h(px(158.0))
+                    .rounded_t_xl()
+                    .overflow_hidden()
                     .bg(rgb(0x000000))
                     .when_some(clip.thumbnail_path.as_ref(), |this, path| {
                         this.child(
                             img(path.to_string_lossy().to_string())
                                 .size_full()
                                 .object_fit(ObjectFit::Cover)
+                                .rounded_t_xl(),
                         )
                     })
                     .when(is_favorited, |this| {
@@ -424,9 +852,10 @@ impl RekaptrWorkspace {
                             .on_mouse_down(MouseButton::Left, {
                                         let clip = clip.clone();
                                         let view_handle = view_handle_click.clone();
-                                        move |_, _, cx| {
+                                        move |_, window, cx| {
                                             cx.stop_propagation();
-                                            let _ = view_handle.update(cx, |this, cx| {
+                                            let old_ri = view_handle.update(cx, |this, cx| {
+                                                let old = this.preview_video_source.as_ref().map(|v| v.render_image());
                                                 this.clip_to_preview = Some(clip.clone());
                                                 this.last_preview_mouse_move = std::time::Instant::now();
                                                 this.show_preview_controls = true;
@@ -441,7 +870,11 @@ impl RekaptrWorkspace {
                                                     this.init_preview_audio_tracks();
                                                 }
                                                 cx.notify();
+                                                old
                                             });
+                                            if let Ok(Some(ri)) = old_ri {
+                                                window.drop_image(ri).ok();
+                                            }
                                         }
                                     })
                     )
@@ -528,9 +961,11 @@ impl RekaptrWorkspace {
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.clip_to_preview = None;
-                this.preview_video_source = None;
+                if let Some(old) = this.preview_video_source.take() {
+                    window.drop_image(old.render_image()).ok();
+                }
                 this.is_scrubbing_preview = false;
                 this.preview_audio_enabled.clear();
                 cx.notify();
@@ -588,9 +1023,11 @@ impl RekaptrWorkspace {
                             .child(
                                 div()
                                     .cursor_pointer()
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                         this.clip_to_preview = None;
-                                        this.preview_video_source = None;
+                                        if let Some(old) = this.preview_video_source.take() {
+                                            window.drop_image(old.render_image()).ok();
+                                        }
                                         this.preview_audio_enabled.clear();
                                         cx.notify();
                                     }))
@@ -717,49 +1154,11 @@ impl RekaptrWorkspace {
                                     .child(div().flex_1())
                                     // Right section — fixed width to balance the left
                                     .child({
-                                        let is_muted = self.preview_volume < 1.0;
-                                        let speaker_icon = if is_muted { "speaker-off" } else { "speaker" };
                                         HStack::new()
-                                            .w(px(260.0))
+                                            .w(px(200.0))
                                             .justify_end()
-                                            .gap_3()
                                             .items_center()
-                                            .child(
-                                                div()
-                                                    .id("preview-vol-icon")
-                                                    .cursor_pointer()
-                                                    .flex()
-                                                    .items_center()
-                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if this.preview_volume < 1.0 {
-                                                            this.preview_volume = 100.0;
-                                                        } else {
-                                                            this.preview_volume = 0.0;
-                                                        }
-                                                        if let Some(v) = &this.preview_video_source {
-                                                            v.set_volume(this.preview_volume);
-                                                        }
-                                                        let slider_val = (this.preview_volume / 1.5) as f32;
-                                                        this.preview_vol_slider_state.update(cx, |s, cx| s.set_value(slider_val, cx));
-                                                        cx.notify();
-                                                    }))
-                                                    .child(Icon::new(speaker_icon).size(px(18.0)).color(gpui::hsla(0.0, 0.0, 1.0, 0.8)))
-                                            )
-                                            .child({
-                                                let view_for_slider = cx.entity().downgrade();
-                                                Slider::new(self.preview_vol_slider_state.clone())
-                                                    .w(px(80.0))
-                                                    .size(adabraka_ui::components::slider::SliderSize::Sm)
-                                                    .on_change(move |value: f32, _window, cx| {
-                                                        let _ = view_for_slider.update(cx, |this, cx| {
-                                                            this.preview_volume = (value * 1.5) as f64; // 0-100 slider -> 0-150 volume
-                                                            if let Some(v) = &this.preview_video_source {
-                                                                v.set_volume(this.preview_volume);
-                                                            }
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            })
+                                            .child(self.preview_vol_slider.clone())
                                             // Audio track toggles
                                             .when(self.preview_video_source.as_ref().map_or(false, |v| v.audio_tracks().len() > 1), |this| {
                                                 let audio_tracks = self.preview_video_source.as_ref()
@@ -922,7 +1321,10 @@ impl RekaptrWorkspace {
                                     .icon(IconSource::Named("play".to_string()))
                                     .on_click(cx.listener({
                                         let clip = clip.clone();
-                                        move |this, _, _, cx| {
+                                        move |this, _, window, cx| {
+                                            if let Some(old) = this.preview_video_source.take() {
+                                                window.drop_image(old.render_image()).ok();
+                                            }
                                             this.clip_to_preview = Some(clip.clone());
                                             this.last_preview_mouse_move = std::time::Instant::now();
                                             this.show_preview_controls = true;

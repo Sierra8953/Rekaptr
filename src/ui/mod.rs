@@ -13,7 +13,9 @@ mod clips;
 mod dashboard;
 mod export;
 mod recording;
+pub mod select;
 mod settings;
+pub mod volume_slider;
 mod setup_wizard;
 mod sidebar;
 mod timeline;
@@ -42,10 +44,9 @@ pub struct RekaptrWorkspace {
     pub preview_scrubbing_progress: f32,
     pub preview_audio_enabled: Vec<bool>,
     pub preview_volume: f64,
-pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderState>,
+    pub preview_vol_slider: Entity<volume_slider::VolumeSlider>,
     pub clip_popover: Option<(Point<Pixels>, crate::state::Clip)>,
     pub clip_table: Entity<DataTable<crate::state::Clip>>,
-    pub clips_list_state: ListState,
     pub clip_start: f64,
     pub clip_end: f64,
     pub timeline_bounds: Bounds<Pixels>,
@@ -84,11 +85,8 @@ pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderStat
     pub form_audio_tracks: Vec<AudioRouting>,
     pub form_auto_record: bool,
     pub form_target_process: Option<String>,
-    pub audio_track_volume_popover: Option<usize>,
-    pub last_audio_track_volume_popover: Option<usize>,
-    pub volume_slider_last_value: f32,
     pub playback_volumes: Vec<f64>,
-    pub popover_fixed_top: f32,
+    pub track_vol_sliders: Vec<Entity<volume_slider::VolumeSlider>>,
     pub last_notified_position: f64,
     pub timeline_zoom: f32,
     pub timeline_scroll: f32,
@@ -100,16 +98,15 @@ pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderStat
     pub is_calculating_storage: bool,
     pub is_loading_clips: bool,
     pub cached_clips: Vec<crate::state::Clip>,
-    pub library_items: Vec<crate::ui::clips::LibraryRow>,
     pub form_max_buffer_size_gb: i32,
     pub clips_search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub clips_search_expanded: bool,
     pub favorite_clips: std::collections::HashSet<String>,
     pub selected_clips: std::collections::HashSet<String>,
     pub selected_clip_for_details: Option<crate::state::Clip>,
-    pub selected_game_filter: Option<String>,
+    pub clips_filter: crate::ui::clips::ClipsFilter,
     pub hovered_clip_idx: Option<usize>,
     pub hovered_clip_preview_progress: f32,
-    pub volume_slider_state: Entity<adabraka_ui::components::slider::SliderState>,
     pub recording_start_time: Option<std::time::Instant>,
     pub recording_session_id: Option<u64>,
     // Setup wizard state
@@ -161,13 +158,13 @@ pub preview_vol_slider_state: Entity<adabraka_ui::components::slider::SliderStat
     pub settings_form_export_format: String,
     // Dropdown states (persisted across renders)
     pub custom_res_input: Entity<adabraka_ui::components::input_state::InputState>,
-    pub dd_encoder: Entity<DropdownState>,
-    pub dd_resolution: Entity<DropdownState>,
-    pub dd_fps: Entity<DropdownState>,
-    pub dd_rate_control: Entity<DropdownState>,
-    pub dd_preset: Entity<DropdownState>,
     pub dd_mic: Entity<DropdownState>,
     pub dd_export_format: Entity<DropdownState>,
+    // AppSelect entities for settings
+    pub select_encoder: Entity<select::AppSelect>,
+    pub select_resolution: Entity<select::AppSelect>,
+    pub select_fps: Entity<select::AppSelect>,
+    pub select_preset: Entity<select::AppSelect>,
     _quit_subscription: Option<Subscription>,
 }
 
@@ -290,15 +287,25 @@ impl RekaptrWorkspace {
             is_scrubbing_preview: false,
             preview_audio_enabled: Vec::new(),
             preview_volume: 100.0,
-preview_vol_slider_state: cx.new(|cx| {
-                let mut state = adabraka_ui::components::slider::SliderState::new(cx);
-                state.set_value(66.7, cx); // 100/150 * 100 = 66.7%
-                state
-            }),
+            preview_vol_slider: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    volume_slider::VolumeSlider::new(cx)
+                        .with_value(100.0 / 150.0)
+                        .on_change(move |value, _window, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.preview_volume = (value * 150.0) as f64;
+                                if let Some(v) = &this.preview_video_source {
+                                    v.set_volume(this.preview_volume);
+                                }
+                                cx.notify();
+                            });
+                        })
+                })
+            },
             preview_scrubbing_progress: 0.0,
             clip_popover: None,
             clip_table,
-            clips_list_state: ListState::new(0, ListAlignment::Top, px(400.0)),
             clip_start: -1.0,
             clip_end: -1.0,
             timeline_bounds: Bounds::default(),
@@ -336,11 +343,8 @@ preview_vol_slider_state: cx.new(|cx| {
             form_audio_tracks: config.global_audio_tracks.clone(),
             form_auto_record: false,
             form_target_process: None,
-            audio_track_volume_popover: None,
-            last_audio_track_volume_popover: None,
-            volume_slider_last_value: 100.0,
-            playback_volumes: vec![100.0; 10], // Support up to 10 tracks
-            popover_fixed_top: 0.0,
+            playback_volumes: vec![100.0; 10],
+            track_vol_sliders: Vec::new(),
             last_notified_position: 0.0,
             timeline_zoom: 1.0,
             timeline_scroll: 0.0,
@@ -352,16 +356,15 @@ preview_vol_slider_state: cx.new(|cx| {
             is_calculating_storage: false,
             is_loading_clips: false,
             cached_clips: Vec::new(),
-            library_items: Vec::new(),
             form_max_buffer_size_gb: config.max_buffer_size_gb,
             clips_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            clips_search_expanded: false,
             favorite_clips: crate::config::AppConfig::load_favorites(),
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
-            selected_game_filter: None,
+            clips_filter: crate::ui::clips::ClipsFilter::All,
             hovered_clip_idx: None,
             hovered_clip_preview_progress: 0.0,
-            volume_slider_state: cx.new(|cx| adabraka_ui::components::slider::SliderState::new(cx)),
             recording_start_time: None,
             recording_session_id: None,
             // Setup wizard
@@ -413,13 +416,124 @@ preview_vol_slider_state: cx.new(|cx| {
             settings_form_export_format: config.default_export_format.clone(),
             // Dropdown states
             custom_res_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            dd_encoder: cx.new(|cx| DropdownState::new(cx)),
-            dd_resolution: cx.new(|cx| DropdownState::new(cx)),
-            dd_fps: cx.new(|cx| DropdownState::new(cx)),
-            dd_rate_control: cx.new(|cx| DropdownState::new(cx)),
-            dd_preset: cx.new(|cx| DropdownState::new(cx)),
             dd_mic: cx.new(|cx| DropdownState::new(cx)),
             dd_export_format: cx.new(|cx| DropdownState::new(cx)),
+            select_encoder: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("h264_nvenc", "H.264 (NVENC)"),
+                            ("hevc_nvenc", "HEVC (NVENC)"),
+                            ("av1_nvenc", "AV1 (NVENC)"),
+                            ("x264", "H.264 (x264)"),
+                        ])
+                        .selected_index(match config.global_video.encoder.as_str() {
+                            "h264_nvenc" => 0,
+                            "hevc_nvenc" => 1,
+                            "av1_nvenc" => 2,
+                            "x264" => 3,
+                            _ => 0,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings_form_encoder = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.encoder = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
+            select_resolution: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let res = &config.global_video.resolution;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("Original", "Original"),
+                            ("3840x2160", "3840x2160"),
+                            ("2560x1440", "2560x1440"),
+                            ("1920x1080", "1920x1080"),
+                            ("1280x720", "1280x720"),
+                        ])
+                        .selected_index(match res.as_str() {
+                            "3840x2160" => 1,
+                            "2560x1440" => 2,
+                            "1920x1080" => 3,
+                            "1280x720" => 4,
+                            _ => 0,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings_form_resolution = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.resolution = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
+            select_fps: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let fps = config.global_video.fps;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("30", "30 FPS"),
+                            ("60", "60 FPS"),
+                            ("120", "120 FPS"),
+                            ("144", "144 FPS"),
+                            ("165", "165 FPS"),
+                            ("240", "240 FPS"),
+                        ])
+                        .selected_index(match fps {
+                            30 => 0, 60 => 1, 120 => 2, 144 => 3, 165 => 4, 240 => 5, _ => 1,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                if let Ok(fps) = val.parse::<i32>() {
+                                    this.settings_form_fps = fps;
+                                    let mut c = crate::config::AppConfig::load();
+                                    c.global_video.fps = fps;
+                                    c.save();
+                                    cx.notify();
+                                }
+                            });
+                        })
+                })
+            },
+            select_preset: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let preset = &config.global_video.preset;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("p1", "P1 (Fastest)"),
+                            ("p2", "P2"),
+                            ("p3", "P3"),
+                            ("p4", "P4 (Balanced)"),
+                            ("p5", "P5"),
+                            ("p6", "P6"),
+                            ("p7", "P7 (Best Quality)"),
+                        ])
+                        .selected_index(match preset.as_str() {
+                            "p1" => 0, "p2" => 1, "p3" => 2, "p4" => 3,
+                            "p5" => 4, "p6" => 5, "p7" => 6, _ => 3,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings_form_preset = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.preset = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
             _quit_subscription: None,
         };
 
@@ -705,14 +819,13 @@ preview_vol_slider_state: cx.new(|cx| {
             self.favorite_clips.insert(clip_path.to_string());
         }
         crate::config::AppConfig::set_favorite(clip_path, !is_fav);
-        self.rebuild_library_items(cx);
         cx.notify();
     }
 
     pub fn refresh_clips(&mut self, cx: &mut Context<Self>) {
         if self.is_loading_clips { return; }
         self.is_loading_clips = true;
-        
+
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
@@ -723,78 +836,28 @@ preview_vol_slider_state: cx.new(|cx| {
                 let _ = this.update(&mut cx, |this, cx| {
                     this.cached_clips = clips.clone();
                     this.is_loading_clips = false;
-                    this.rebuild_library_items(cx);
 
-                    // Also update the table if it's currently being used
+                    // Prefetch per-game artwork for any new games.
+                    let game_titles: Vec<String> = {
+                        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                        for c in &this.cached_clips {
+                            seen.insert(c.title.clone());
+                        }
+                        seen.into_iter().collect()
+                    };
+                    this.fetch_portrait_artwork(&game_titles, cx);
+
+                    // Keep the table in sync if it's ever shown.
                     this.clip_table.update(cx, |table, cx| {
                         table.set_data(clips, cx);
                     });
-                    
+
                     cx.notify();
                 });
             }
         }).detach();
-        
+
         cx.notify();
-    }
-
-    pub fn rebuild_library_items(&mut self, cx: &mut Context<Self>) {
-        let clips = &self.cached_clips;
-        let mut rows = Vec::new();
-
-        // Collect favorited clips
-        let fav_clips: Vec<_> = clips.iter()
-            .filter(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
-            .cloned()
-            .collect();
-
-        if let Some(game_title) = &self.selected_game_filter {
-            // Filtered view: show only clips for this game
-            let game_clips: Vec<_> = clips.iter().filter(|c| &c.title == game_title).cloned().collect();
-            for chunk in game_clips.chunks(4) {
-                rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
-            }
-        } else {
-            // Favorites section
-            if !fav_clips.is_empty() {
-                rows.push(crate::ui::clips::LibraryRow::SectionHeader("FAVORITES".to_string()));
-                for chunk in fav_clips.chunks(4) {
-                    rows.push(crate::ui::clips::LibraryRow::ClipChunk(chunk.to_vec()));
-                }
-            }
-
-            // Dashboard view: recent + game groups
-            if !clips.is_empty() {
-                rows.push(crate::ui::clips::LibraryRow::SectionHeader("MOST RECENT".to_string()));
-                let recent: Vec<_> = clips.iter().take(4).cloned().collect();
-                rows.push(crate::ui::clips::LibraryRow::ClipChunk(recent));
-            }
-
-            rows.push(crate::ui::clips::LibraryRow::SectionHeader("GAMES".to_string()));
-
-            let mut game_groups: std::collections::BTreeMap<String, Vec<crate::state::Clip>> = std::collections::BTreeMap::new();
-            for clip in clips.iter() {
-                game_groups.entry(clip.title.clone()).or_default().push(clip.clone());
-            }
-
-            let game_titles: Vec<String> = game_groups.keys().cloned().collect();
-
-            // Trigger portrait artwork fetches for all game titles
-            self.fetch_portrait_artwork(&game_titles, cx);
-
-            for chunk in game_titles.chunks(4) {
-                let titles_with_data: Vec<(String, usize)> = chunk.iter()
-                    .map(|title| {
-                        let count = game_groups.get(title).map_or(0, |v| v.len());
-                        (title.clone(), count)
-                    })
-                    .collect();
-                rows.push(crate::ui::clips::LibraryRow::GameChunk(titles_with_data));
-            }
-        }
-
-        self.library_items = rows;
-        self.clips_list_state.reset(self.library_items.len());
     }
 
     pub fn get_current_audio_tracks(&self) -> Vec<AudioRouting> {
@@ -838,7 +901,7 @@ preview_vol_slider_state: cx.new(|cx| {
         cx.notify();
     }
 
-    pub fn load_video(&mut self, source_name: &str, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn load_video(&mut self, source_name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let path = std::path::Path::new(source_name);
         let is_direct_file = path.exists() && path.extension().map_or(false, |ext| ext == "mkv" || ext == "mp4");
 
@@ -846,7 +909,9 @@ preview_vol_slider_state: cx.new(|cx| {
         // Reusing an existing mpv instance with loadfile("replace") can leave
         // stale decoder state (especially with HLS + AV1), causing libdav1d
         // OBU parsing errors and falling back to software decoding.
-        self.video_source = None;
+        if let Some(old) = self.video_source.take() {
+            window.drop_image(old.render_image()).ok();
+        }
 
         if self.is_loading_video { return; }
         self.is_loading_video = true;
@@ -888,6 +953,8 @@ preview_vol_slider_state: cx.new(|cx| {
                                 if !is_same_source {
                                     this.timeline_markers.clear();
                                 }
+                                this.clip_start = -1.0;
+                                this.clip_end = -1.0;
                                 this.update_mpv_audio_mix();
                             }
                             Err(_) => this.video_source = None,
@@ -988,27 +1055,36 @@ preview_vol_slider_state: cx.new(|cx| {
         self.timeline_markers.retain(|m| m.time_secs >= min_time_secs);
     }
 
-    pub fn open_volume_popover(&mut self, track_idx: usize, cx: &mut Context<Self>) {
-        if self.audio_track_volume_popover == Some(track_idx) {
-            self.audio_track_volume_popover = None;
-            // Flush final volume to mpv in case throttling skipped the last update
-            self.update_mpv_audio_mix();
-            cx.notify();
+    pub fn ensure_track_vol_sliders(&mut self, track_count: usize, cx: &mut Context<Self>) {
+        if self.track_vol_sliders.len() == track_count {
             return;
         }
-
-        self.audio_track_volume_popover = Some(track_idx);
-        self.last_audio_track_volume_popover = Some(track_idx);
-        
-        let current_playback_volume = self.playback_volumes.get(track_idx).copied().unwrap_or(100.0);
-        self.volume_slider_last_value = current_playback_volume as f32;
-
-        self.volume_slider_state.update(cx, |state, cx| {
-            state.set_step(0.1, cx);
-            state.set_value((current_playback_volume / 1.5) as f32, cx);
-        });
-        
-        cx.notify();
+        let view = cx.entity().downgrade();
+        self.track_vol_sliders.clear();
+        for idx in 0..track_count {
+            let vh = view.clone();
+            let initial_vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0);
+            let slider = cx.new(|cx| {
+                volume_slider::VolumeSlider::new(cx)
+                    .with_value((initial_vol / 150.0) as f32)
+                    .on_change(move |value, _window, cx| {
+                        let _ = vh.update(cx, |this, cx| {
+                            let volume = (value * 150.0) as f64;
+                            if this.playback_volumes.len() <= idx {
+                                this.playback_volumes.resize(idx + 1, 100.0);
+                            }
+                            this.playback_volumes[idx] = volume;
+                            let now = std::time::Instant::now();
+                            if now.duration_since(this.last_volume_update_at).as_millis() > 50 {
+                                this.last_volume_update_at = now;
+                                this.update_mpv_audio_mix();
+                            }
+                            cx.notify();
+                        });
+                    })
+            });
+            self.track_vol_sliders.push(slider);
+        }
     }
 
     pub fn delete_session(&mut self, session_id: i32, window: &mut Window, cx: &mut Context<Self>) {
@@ -1036,7 +1112,7 @@ preview_vol_slider_state: cx.new(|cx| {
         cx.notify();
     }
 
-    pub fn render_workspace(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         
         let mut root = div()

@@ -27,8 +27,6 @@ impl RekaptrWorkspace {
             .clone()
             .unwrap_or_else(|| "monitor".to_string());
 
-        crate::utils::generate_master_playlist(&source_name);
-
         let safe_title = crate::utils::clean_title(&source_name);
         let storage_root = crate::utils::get_storage_root();
         let playlist_path = storage_root.join(&safe_title).join("master.m3u8");

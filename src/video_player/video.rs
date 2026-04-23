@@ -368,6 +368,7 @@ impl Drop for Internal {
 
 impl Video {
     pub(crate) fn read(&'_ self) -> parking_lot::RwLockReadGuard<'_, Internal> { self.0.read() }
+    pub fn render_image(&self) -> Arc<RenderImage> { self.read().render_image.clone() }
     pub fn size(&self) -> (i32, i32) { let inner = self.read(); (inner.width as i32, inner.height as i32) }
     pub fn display_size(&self) -> (u32, u32) {
         let inner = self.read();

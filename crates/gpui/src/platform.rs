@@ -885,6 +885,8 @@ pub(crate) trait PlatformAtlas: Send + Sync {
     }
 
     fn remove(&self, key: &AtlasKey);
+
+    fn end_frame(&self) {}
 }
 
 

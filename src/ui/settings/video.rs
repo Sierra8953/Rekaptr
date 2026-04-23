@@ -7,17 +7,6 @@ impl RekaptrWorkspace {
     pub(crate) fn render_settings_video(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let vh = view_handle.clone();
 
-        let encoders: Vec<(&str, &str)> = vec![
-            ("h264_nvenc", "H.264"),
-            ("hevc_nvenc", "HEVC"),
-            ("av1_nvenc", "AV1"),
-            ("x264", "x264"),
-        ];
-
-        let resolutions = vec!["Original", "3840x2160", "2560x1440", "1920x1080", "1280x720"];
-        let fps_options: Vec<i32> = vec![30, 60, 120, 144, 165, 240];
-        let presets = vec!["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
-
         VStack::new()
             .gap_4()
             .max_w(px(800.0))
@@ -28,63 +17,13 @@ impl RekaptrWorkspace {
                         .gap_1()
                         .child(section_header("Primary Encoder"))
                         .child(settings_row(theme, "Encoder", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(encoders.into_iter().map(|(id, label)| {
-                                    let vh = vh.clone();
-                                    let id_str = id.to_string();
-                                    let is_active = self.settings_form_encoder == id;
-                                    Button::new(SharedString::from(format!("enc-{}", id)), label)
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_encoder = id_str.clone();
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.encoder = id_str.clone();
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
+                            div().w(px(180.0)).child(self.select_encoder.clone())
                         ))
                         .child(settings_row(theme, "Resolution", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(resolutions.into_iter().map(|res| {
-                                    let vh = vh.clone();
-                                    let res_str = res.to_string();
-                                    let is_active = self.settings_form_resolution == res;
-                                    Button::new(SharedString::from(format!("res-{}", res)), res)
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_resolution = res_str.clone();
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.resolution = res_str.clone();
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
+                            div().w(px(180.0)).child(self.select_resolution.clone())
                         ))
                         .child(settings_row(theme, "Framerate", Option::<String>::None,
-                            div().flex().flex_wrap().gap_2()
-                                .children(fps_options.into_iter().map(|fps| {
-                                    let vh = vh.clone();
-                                    let is_active = self.settings_form_fps == fps;
-                                    Button::new(SharedString::from(format!("fps-{}", fps)), format!("{}", fps))
-                                        .size(ButtonSize::Sm)
-                                        .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                        .on_click(move |_, _, cx| {
-                                            let _ = vh.update(cx, |this, cx| {
-                                                this.settings_form_fps = fps;
-                                                let mut config = crate::config::AppConfig::load();
-                                                config.global_video.fps = fps;
-                                                config.save();
-                                                cx.notify();
-                                            });
-                                        })
-                                }))
+                            div().w(px(180.0)).child(self.select_fps.clone())
                         ))
                 )
             )
@@ -151,24 +90,7 @@ impl RekaptrWorkspace {
                         .when(self.settings_show_advanced_video, |this| {
                             this
                                 .child(settings_row(theme, "Preset", Option::<String>::None,
-                                    div().flex().flex_wrap().gap_2()
-                                        .children(presets.into_iter().map(|p| {
-                                            let vh = vh.clone();
-                                            let ps = p.to_string();
-                                            let is_active = self.settings_form_preset == p;
-                                            Button::new(SharedString::from(format!("preset-{}", p)), p)
-                                                .size(ButtonSize::Sm)
-                                                .variant(if is_active { ButtonVariant::Default } else { ButtonVariant::Outline })
-                                                .on_click(move |_, _, cx| {
-                                                    let _ = vh.update(cx, |this, cx| {
-                                                        this.settings_form_preset = ps.clone();
-                                                        let mut config = crate::config::AppConfig::load();
-                                                        config.global_video.preset = ps.clone();
-                                                        config.save();
-                                                        cx.notify();
-                                                    });
-                                                })
-                                        }))
+                                    div().w(px(180.0)).child(self.select_preset.clone())
                                 ))
                                 .child(settings_row(theme, "GOP Size", Some(format!("{}", self.settings_form_gop)),
                                     stepper("gop", self.settings_form_gop, 0, 600, 10, vh.clone(), |this, val, cx| {

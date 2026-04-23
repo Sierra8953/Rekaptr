@@ -614,13 +614,19 @@ impl DirectXRenderer {
         if sprites.is_empty() {
             return Ok(());
         }
+        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else {
+            log::warn!(
+                "Skipping monochrome sprite batch: atlas texture {:?} missing (freed while scene held reference)",
+                texture_id
+            );
+            return Ok(());
+        };
         self.pipelines.mono_sprites.update_buffer(
             &self.devices.device,
             &self.devices.device_context,
             sprites,
             &mut self.last_pipeline,
         )?;
-        let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.mono_sprites.draw_with_texture(
             &self.devices.device_context,
             &texture_view,
@@ -640,13 +646,19 @@ impl DirectXRenderer {
         if sprites.is_empty() {
             return Ok(());
         }
+        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else {
+            log::warn!(
+                "Skipping polychrome sprite batch: atlas texture {:?} missing (freed while scene held reference)",
+                texture_id
+            );
+            return Ok(());
+        };
         self.pipelines.poly_sprites.update_buffer(
             &self.devices.device,
             &self.devices.device_context,
             sprites,
             &mut self.last_pipeline,
         )?;
-        let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.poly_sprites.draw_with_texture(
             &self.devices.device_context,
             &texture_view,

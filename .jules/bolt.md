@@ -1,0 +1,3 @@
+## 2024-06-25 - Windows API Callback Optimization
+**Learning:** In Windows UI programming (e.g., `EnumWindows`), querying OS-level process information (like `GetWindowThreadProcessId` or `sysinfo::System::process`) is computationally expensive and slow when called repeatedly for every single window.
+**Action:** Always filter out nameless/invisible windows early using lightweight checks like `GetWindowTextW` length (which returns `0` for empty/failed) *before* performing PID lookups or process introspection. Also, consolidate `sysinfo::System::process` queries to avoid redundant calls and string allocations for the same window handle.

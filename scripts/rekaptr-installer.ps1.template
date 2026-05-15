@@ -1,0 +1,43 @@
+# Rekaptr installer bootstrap.
+# Downloads rekaptr-setup-<version>.exe from the matching GitHub Release and
+# runs it silently. Designed to be invoked by axoupdater (in-app updates) or
+# directly (`irm <url> | iex`) for first-time installs.
+#
+# Environment variables honored (set by axoupdater):
+#   CARGO_DIST_FORCE_INSTALL_DIR   target install directory
+#   REKAPTR_INSTALL_DIR            same, app-specific
+#   REKAPTR_NO_MODIFY_PATH         "1" to skip PATH modification (unused; Inno
+#                                  setup does not modify PATH for this app)
+
+$ErrorActionPreference = "Stop"
+
+$Version = "{{VERSION}}"
+$Owner = "Sierra8953"
+$Repo = "Rekaptr"
+$SetupName = "rekaptr-setup-$Version.exe"
+$Url = "https://github.com/$Owner/$Repo/releases/download/v$Version/$SetupName"
+
+$InstallDir = $env:CARGO_DIST_FORCE_INSTALL_DIR
+if (-not $InstallDir) { $InstallDir = $env:REKAPTR_INSTALL_DIR }
+
+$TempPath = Join-Path $env:TEMP $SetupName
+Write-Host "Downloading $Url"
+Invoke-WebRequest -Uri $Url -OutFile $TempPath -UseBasicParsing
+
+$Args = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL")
+if ($InstallDir) {
+    $Args += "/DIR=$InstallDir"
+}
+
+Write-Host "Running $SetupName $($Args -join ' ')"
+$proc = Start-Process -FilePath $TempPath -ArgumentList $Args -Wait -PassThru
+$exit = $proc.ExitCode
+
+Remove-Item $TempPath -Force -ErrorAction SilentlyContinue
+
+if ($exit -ne 0) {
+    Write-Error "Installer exited with code $exit"
+    exit $exit
+}
+
+Write-Host "Rekaptr $Version installed."

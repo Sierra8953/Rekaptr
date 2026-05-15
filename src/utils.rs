@@ -336,6 +336,7 @@ fn get_exact_duration(file_path: &std::path::Path) -> f64 {
             "-of", "default=noprint_wrappers=1",
             &file_path.to_string_lossy()
         ])
+        .creation_flags(0x08000000)
         .output();
 
     let result = if let Ok(out) = output {
@@ -446,6 +447,7 @@ fn ffprobe_segment_end_time(path: &Path) -> Option<f64> {
                "-show_entries", "packet=pts_time,duration_time",
                "-of", "csv=p=0"])
         .arg(path)
+        .creation_flags(0x08000000)
         .output()
         .ok()?;
 
@@ -482,6 +484,7 @@ fn ffprobe_segment_duration(path: &Path) -> Option<f64> {
                "-show_entries", "packet=pts_time,duration_time",
                "-of", "csv=p=0"])
         .arg(path)
+        .creation_flags(0x08000000)
         .output()
         .ok()?;
 
@@ -701,6 +704,158 @@ pub fn generate_master_playlist(game_title: &str) -> Option<PathBuf> {
     let _ = std::fs::write(&master_playlist_path, m3u8);
 
     Some(master_playlist_path)
+}
+
+/// Extract the segment basename (`seg_<idx>_<sid>_<dur>ms.m4s`) from
+/// whatever string mpv reported as the currently-open file. Handles both
+/// filesystem paths and `http(s)://...?token=...` URLs from the local
+/// HLS server.
+pub fn extract_segment_basename(stream_filename: &str) -> Option<String> {
+    let no_query = stream_filename.split('?').next().unwrap_or(stream_filename);
+    let basename = no_query.rsplit(|c| c == '/' || c == '\\').next()?;
+    if basename.starts_with("seg_") && basename.ends_with(".m4s") {
+        Some(basename.to_string())
+    } else {
+        None
+    }
+}
+
+/// Returns the absolute first-PTS (seconds) of a segment, i.e. the value
+/// that mpv's `time-pos` reports at the very first frame of that segment
+/// (because mpv preserves the segment's tfdt-based timestamps when
+/// playing fragmented MP4). Used to convert mpv's playback time into an
+/// offset within the segment without consulting any playlist.
+pub fn segment_internal_start_time(path: &Path) -> Option<f64> {
+    let ffprobe = get_ffprobe_path();
+    let output = std::process::Command::new(&ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=start_time",
+               "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(path)
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().parse::<f64>().ok()
+}
+
+/// Parse a master playlist into `(filename, duration_secs)` entries in order,
+/// reading `#EXTINF:<dur>,` followed by the segment filename. Lines starting
+/// with `#` other than EXTINF are skipped, which is fine for our generated
+/// EVENT playlists.
+fn parse_master_playlist_entries(path: &Path) -> Option<Vec<(String, f64)>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut out = Vec::new();
+    let mut pending_duration: Option<f64> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            let dur_str = rest.split(',').next().unwrap_or("");
+            pending_duration = dur_str.parse::<f64>().ok();
+        } else if line.starts_with('#') {
+            continue;
+        } else if let Some(dur) = pending_duration.take() {
+            out.push((line.to_string(), dur));
+        }
+    }
+    Some(out)
+}
+
+/// Build a `ClipMark` from mpv's playback state. mpv reports `time-pos` in
+/// the cumulative-EXTINF frame of whatever master playlist it loaded, so we
+/// read the *same* playlist file, walk it summing each entry's `EXTINF`
+/// duration, and find the entry whose [start, end) range contains
+/// `mpv_time_pos`. The segment's `(session_id, segment_index)` parsed from
+/// that entry's filename, plus `offset_in_segment = mpv_time_pos - entry_start`,
+/// is the mark.
+///
+/// Anchoring against the exact playlist file mpv is reading guarantees the
+/// mark identifies the same segment mpv was decoding, even if disk-scan
+/// ordering diverges from playlist ordering.
+pub fn mark_from_mpv_state(
+    game_title: &str,
+    _stream_filename: &str,
+    mpv_time_pos: f64,
+) -> Option<crate::state::ClipMark> {
+    let game_dir = game_dir_for(game_title);
+    let playlist_path = game_dir.join("master.m3u8");
+    let entries = parse_master_playlist_entries(&playlist_path)?;
+    if entries.is_empty() { return None; }
+
+    let mut cumulative = 0.0_f64;
+    for (filename, dur) in &entries {
+        let next = cumulative + dur;
+        if mpv_time_pos < next || (mpv_time_pos - next).abs() < 1e-6 {
+            let idx = parse_segment_index(filename)?;
+            let sid = parse_segment_session_id(filename);
+            let offset = (mpv_time_pos - cumulative).clamp(0.0, *dur);
+            return Some(crate::state::ClipMark {
+                session_id: sid,
+                segment_index: idx,
+                offset_in_segment: offset,
+            });
+        }
+        cumulative = next;
+    }
+    // Past the end: snap to the last entry's tail.
+    let (last_name, last_dur) = entries.last()?;
+    let idx = parse_segment_index(last_name)?;
+    let sid = parse_segment_session_id(last_name);
+    Some(crate::state::ClipMark {
+        session_id: sid,
+        segment_index: idx,
+        offset_in_segment: *last_dur,
+    })
+}
+
+/// Build an ffmpeg concat-demuxer list covering the range between two
+/// `ClipMark`s. The disk scan is the source of truth; `master.m3u8` is
+/// never read.
+///
+/// Returns `(concat_file_path, in_offset, out_offset)` where the offsets
+/// are measured from the start of the first included segment in the
+/// assembled stream — pass them as `-ss` / `-to` *after* `-i`.
+pub fn build_clip_concat_list_from_marks(
+    game_title: &str,
+    in_mark: &crate::state::ClipMark,
+    out_mark: &crate::state::ClipMark,
+) -> Option<(PathBuf, f64, f64)> {
+    let game_dir = game_dir_for(game_title);
+    if !game_dir.exists() { return None; }
+    let segments = scan_segments(&game_dir);
+    if segments.is_empty() { return None; }
+
+    let entries: Vec<(&u64, &SegmentEntry)> = segments.iter().collect();
+    let in_i = entries.iter().position(|(idx, e)| {
+        **idx == in_mark.segment_index && e.3 == in_mark.session_id
+    })?;
+    let out_i = entries.iter().position(|(idx, e)| {
+        **idx == out_mark.segment_index && e.3 == out_mark.session_id
+    })?;
+    if out_i < in_i { return None; }
+
+    let in_offset = in_mark.offset_in_segment.max(0.0);
+    let mut prefix = 0.0_f64;
+    for (_, e) in &entries[in_i..out_i] {
+        prefix += e.2;
+    }
+    let out_offset = (prefix + out_mark.offset_in_segment).max(in_offset + 0.001);
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let path = std::env::temp_dir().join(format!("rekaptr_clip_{}.txt", ts));
+
+    let mut content = String::from("ffconcat version 1.0\n");
+    for (_, e) in &entries[in_i..=out_i] {
+        let abs = e.1.to_string_lossy().replace('\\', "/");
+        let escaped = abs.replace('\'', "'\\''");
+        content.push_str(&format!("file '{}'\n", escaped));
+        content.push_str(&format!("duration {:.3}\n", e.2));
+    }
+    std::fs::write(&path, content).ok()?;
+    Some((path, in_offset, out_offset))
 }
 
 #[allow(dead_code)]

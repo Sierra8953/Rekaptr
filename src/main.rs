@@ -1,3 +1,5 @@
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 mod audio;
 mod config;
 mod db;
@@ -8,6 +10,7 @@ mod mic_dsp;
 mod migration;
 mod state;
 mod ui;
+mod updater;
 mod utils;
 mod video_player;
 pub mod virtual_audio_router;
@@ -70,6 +73,39 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+/// Initialize logging. In release builds the binary has `windows_subsystem =
+/// "windows"` set, so there is no console attached and stderr writes go
+/// nowhere. We route output to `%LOCALAPPDATA%\Rekaptr\rekaptr.log` (rolling
+/// the previous run to `rekaptr.log.prev` on each launch). Debug builds keep
+/// the default stderr destination so `cargo run` still prints.
+fn init_logging() {
+    let env = env_logger::Env::default().default_filter_or("info");
+    let mut builder = env_logger::Builder::from_env(env);
+
+    #[cfg(not(debug_assertions))]
+    {
+        let log_dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Rekaptr");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("rekaptr.log");
+        let prev_path = log_dir.join("rekaptr.log.prev");
+        let _ = std::fs::remove_file(&prev_path);
+        let _ = std::fs::rename(&log_path, &prev_path);
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+        {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+    }
+
+    let _ = builder.try_init();
+}
+
 struct Assets {
     base: PathBuf,
 }
@@ -101,13 +137,43 @@ impl gpui::AssetSource for Assets {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+    // --- Portable Path Configuration ---
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.pop(); // Root directory (next to rekaptr.exe)
+
+        // Isolate GStreamer to only use bundled plugins. Windows resolves
+        // top-level DLL imports from the EXE's own directory, so the support
+        // DLLs alongside rekaptr.exe are picked up automatically — no PATH
+        // manipulation is needed (and wouldn't help anyway, since imports
+        // resolve before main() runs).
+        let plugin_path = exe_path.join("lib").join("gstreamer-1.0");
+        if plugin_path.exists() {
+            let path_str = plugin_path.display().to_string();
+            std::env::set_var("GST_PLUGIN_PATH", &path_str);
+            // Block the system install to avoid the "already registered" error.
+            // std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &path_str);
+
+            // Persist the plugin registry per-user (writable, survives launches).
+            let registry_dir = std::env::var_os("LOCALAPPDATA")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| exe_path.clone())
+                .join("Rekaptr");
+            let _ = std::fs::create_dir_all(&registry_dir);
+            std::env::set_var(
+                "GST_REGISTRY",
+                registry_dir.join("gst-registry.bin").display().to_string(),
+            );
+        }
+    }
+
+    init_logging();
     log::info!("[Main] Starting Rekaptr...");
     crate::migration::run();
     gstreamer::init()?;
     crate::engine::boost_gpu_priority();
     let (major, minor, micro, nano) = gstreamer::version();
     log::info!("[Main] GStreamer version: {}.{}.{}.{}", major, minor, micro, nano);
+
     // Validate configured encoder is available, auto-fallback if not
     {
         let mut config = crate::config::AppConfig::load();
@@ -116,8 +182,11 @@ async fn main() -> Result<()> {
 
     let app = gpui::Application::new();
 
+    // 3. Fix Asset Loading to be relative to the EXE
+    let mut assets_base = std::env::current_exe()?;
+    assets_base.pop(); 
     let assets = Assets {
-        base: std::env::current_dir()?.join("assets"),
+        base: assets_base.join("assets"),
     };
 
     app.with_assets(assets).run(move |cx: &mut gpui::App| {
@@ -164,8 +233,26 @@ async fn main() -> Result<()> {
         let stop_item = MenuItem::new("Stop Recording", false, None); // Disabled by default
         let quit_item = MenuItem::new("Quit", true, None);
 
-        let tray_icon_path = std::path::Path::new("crates/gpui/examples/image/app-icon.png");
-        let icon = tray_icon::Icon::from_path(tray_icon_path, Some((32, 32))).ok();
+        let icon = {
+            const ICON_BYTES: &[u8] = include_bytes!("../crates/gpui/examples/image/app-icon.png");
+            match image::load_from_memory(ICON_BYTES) {
+                Ok(img) => {
+                    let rgba = img.into_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    match tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
+                        Ok(i) => Some(i),
+                        Err(e) => {
+                            log::error!("[TrayIcon] from_rgba failed: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("[TrayIcon] decode failed: {}", e);
+                    None
+                }
+            }
+        };
 
         let _ = tray_menu.append_items(&[
             &show_item,
@@ -321,6 +408,14 @@ async fn main() -> Result<()> {
         };
 
         cx.open_window(options, |window, cx| {
+            window.on_window_should_close(cx, |window, _cx| {
+                if crate::config::AppConfig::load().minimize_to_tray {
+                    window.hide_window();
+                    false
+                } else {
+                    true
+                }
+            });
             if let Some(device) = window.direct3d11_device() {
                 use windows::Win32::Foundation::HANDLE;
                 crate::engine::boost_device_gpu_priority(device as *mut std::ffi::c_void);

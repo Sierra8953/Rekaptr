@@ -5,7 +5,7 @@ use gpui::*;
 
 impl RekaptrWorkspace {
     pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clip_start >= 0.0 && self.clip_end >= 0.0 {
+        if self.clip_start_mark.is_some() && self.clip_end_mark.is_some() {
             self.show_export_modal = true;
             cx.notify();
         } else {
@@ -20,8 +20,22 @@ impl RekaptrWorkspace {
     }
 
     pub fn perform_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let start = self.clip_start;
-        let end = self.clip_end;
+        let in_mark = match self.clip_start_mark.clone() {
+            Some(m) => m,
+            None => {
+                self.show_toast("IN point not set", None::<&str>,
+                    adabraka_ui::overlays::toast::ToastVariant::Warning, window, cx);
+                return;
+            }
+        };
+        let out_mark = match self.clip_end_mark.clone() {
+            Some(m) => m,
+            None => {
+                self.show_toast("OUT point not set", None::<&str>,
+                    adabraka_ui::overlays::toast::ToastVariant::Warning, window, cx);
+                return;
+            }
+        };
         let source_name = self
             .selected_source
             .clone()
@@ -29,18 +43,27 @@ impl RekaptrWorkspace {
 
         let safe_title = crate::utils::clean_title(&source_name);
         let storage_root = crate::utils::get_storage_root();
-        let playlist_path = storage_root.join(&safe_title).join("master.m3u8");
 
-        if !playlist_path.exists() {
-            self.show_toast(
-                "Source Error",
-                Some("Recording segments not found."),
-                adabraka_ui::overlays::toast::ToastVariant::Error,
-                window,
-                cx,
-            );
-            return;
-        }
+        let (concat_path, in_offset, out_offset) =
+            match crate::utils::build_clip_concat_list_from_marks(&source_name, &in_mark, &out_mark) {
+                Some(t) => t,
+                None => {
+                    self.show_toast(
+                        "Source Error",
+                        Some("One or both marked segments are no longer on disk."),
+                        adabraka_ui::overlays::toast::ToastVariant::Error,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+            };
+        log::info!(
+            "[Export] in=(sid={:?}, idx={}, off={:.3}) out=(sid={:?}, idx={}, off={:.3}) concat_list={} in_offset={:.3} out_offset={:.3}",
+            in_mark.session_id, in_mark.segment_index, in_mark.offset_in_segment,
+            out_mark.session_id, out_mark.segment_index, out_mark.offset_in_segment,
+            concat_path.display(), in_offset, out_offset
+        );
 
         let clips_dir = storage_root.join("Clips").join(&safe_title);
         let _ = std::fs::create_dir_all(&clips_dir);
@@ -105,19 +128,22 @@ impl RekaptrWorkspace {
         }).detach();
 
         let ffmpeg_task = cx.background_spawn(async move {
+            use std::os::windows::process::CommandExt;
             use std::process::Command;
 
             let build_cmd = |hwaccel: bool| {
                 let mut cmd = Command::new(ffmpeg_path.clone());
+                cmd.creation_flags(0x08000000);
                 cmd.arg("-y");
                 if hwaccel {
                     cmd.arg("-hwaccel").arg("cuda")
                        .arg("-hwaccel_output_format").arg("cuda");
                 }
-                cmd.arg("-ss").arg(format!("{:.3}", start))
-                   .arg("-to").arg(format!("{:.3}", end))
-                   .arg("-allowed_extensions").arg("ALL")
-                   .arg("-i").arg(playlist_path.clone())
+                cmd.arg("-f").arg("concat")
+                   .arg("-safe").arg("0")
+                   .arg("-i").arg(concat_path.clone())
+                   .arg("-ss").arg(format!("{:.3}", in_offset))
+                   .arg("-to").arg(format!("{:.3}", out_offset))
                    .arg("-map").arg("0:v:0");
 
                 let mut physical_stream_idx = 0;
@@ -162,12 +188,13 @@ impl RekaptrWorkspace {
             };
 
             // Extract a thumbnail from the middle of the clip
-            let thumb_time = (end - start) / 2.0;
+            let thumb_time = (out_offset - in_offset) / 2.0;
             let mut thumb_path = output_path.clone();
             thumb_path.set_extension("jpg");
 
             if clip_output.as_ref().map_or(false, |o| o.status.success()) {
                 let mut thumb_cmd = Command::new(&ffmpeg_path);
+                thumb_cmd.creation_flags(0x08000000);
                 thumb_cmd.arg("-y")
                          .arg("-ss").arg(format!("{:.3}", thumb_time))
                          .arg("-i").arg(&output_path)
@@ -182,6 +209,8 @@ impl RekaptrWorkspace {
                     }
                 }
             }
+
+            let _ = std::fs::remove_file(&concat_path);
 
             (clip_output, output_path, clips_dir)
         });

@@ -49,6 +49,8 @@ pub struct RekaptrWorkspace {
     pub clip_table: Entity<DataTable<crate::state::Clip>>,
     pub clip_start: f64,
     pub clip_end: f64,
+    pub clip_start_mark: Option<crate::state::ClipMark>,
+    pub clip_end_mark: Option<crate::state::ClipMark>,
     pub timeline_bounds: Bounds<Pixels>,
     pub is_scrubbing: bool,
     pub drag_target: Option<TimelineDragTarget>,
@@ -85,6 +87,9 @@ pub struct RekaptrWorkspace {
     pub form_audio_tracks: Vec<AudioRouting>,
     pub form_auto_record: bool,
     pub form_target_process: Option<String>,
+    pub add_source_search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub add_source_title_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub add_source_show_overrides: bool,
     pub playback_volumes: Vec<f64>,
     pub track_vol_sliders: Vec<Entity<volume_slider::VolumeSlider>>,
     pub last_notified_position: f64,
@@ -165,6 +170,8 @@ pub struct RekaptrWorkspace {
     pub select_resolution: Entity<select::AppSelect>,
     pub select_fps: Entity<select::AppSelect>,
     pub select_preset: Entity<select::AppSelect>,
+    pub update_state: crate::updater::UpdateState,
+    pub update_has_receipt: bool,
     _quit_subscription: Option<Subscription>,
 }
 
@@ -191,42 +198,71 @@ pub enum ClipsViewMode {
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    Startup,
     Video,
     Audio,
     Hotkeys,
     Storage,
+    Export,
     About,
 }
+
+pub struct SettingsNavGroup {
+    pub title: &'static str,
+    pub items: &'static [SettingsTab],
+}
+
+pub const SETTINGS_NAV: &[SettingsNavGroup] = &[
+    SettingsNavGroup { title: "GENERAL", items: &[SettingsTab::General, SettingsTab::Startup] },
+    SettingsNavGroup { title: "CAPTURE", items: &[SettingsTab::Video, SettingsTab::Audio, SettingsTab::Hotkeys] },
+    SettingsNavGroup { title: "STORAGE", items: &[SettingsTab::Storage, SettingsTab::Export] },
+    SettingsNavGroup { title: "SYSTEM", items: &[SettingsTab::About] },
+];
 
 impl SettingsTab {
     pub const ALL: &[SettingsTab] = &[
         SettingsTab::General,
+        SettingsTab::Startup,
         SettingsTab::Video,
         SettingsTab::Audio,
         SettingsTab::Hotkeys,
         SettingsTab::Storage,
+        SettingsTab::Export,
         SettingsTab::About,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingsTab::General => "General",
+            SettingsTab::General => "Behavior",
+            SettingsTab::Startup => "Startup",
             SettingsTab::Video => "Video",
             SettingsTab::Audio => "Audio",
             SettingsTab::Hotkeys => "Hotkeys",
             SettingsTab::Storage => "Storage",
+            SettingsTab::Export => "Export",
             SettingsTab::About => "About",
         }
     }
 
     pub fn icon(self) -> &'static str {
         match self {
-            SettingsTab::General => "settings",
+            SettingsTab::General => "sliders-horizontal",
+            SettingsTab::Startup => "power",
             SettingsTab::Video => "video",
             SettingsTab::Audio => "mic",
             SettingsTab::Hotkeys => "keyboard",
-            SettingsTab::Storage => "folder",
+            SettingsTab::Storage => "hard-drive",
+            SettingsTab::Export => "scissors",
             SettingsTab::About => "info",
+        }
+    }
+
+    pub fn group(self) -> &'static str {
+        match self {
+            SettingsTab::General | SettingsTab::Startup => "General",
+            SettingsTab::Video | SettingsTab::Audio | SettingsTab::Hotkeys => "Capture",
+            SettingsTab::Storage | SettingsTab::Export => "Storage",
+            SettingsTab::About => "System",
         }
     }
 }
@@ -308,6 +344,8 @@ impl RekaptrWorkspace {
             clip_table,
             clip_start: -1.0,
             clip_end: -1.0,
+            clip_start_mark: None,
+            clip_end_mark: None,
             timeline_bounds: Bounds::default(),
             is_scrubbing: false,
             drag_target: None,
@@ -343,6 +381,9 @@ impl RekaptrWorkspace {
             form_audio_tracks: config.global_audio_tracks.clone(),
             form_auto_record: false,
             form_target_process: None,
+            add_source_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            add_source_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            add_source_show_overrides: false,
             playback_volumes: vec![100.0; 10],
             track_vol_sliders: Vec::new(),
             last_notified_position: 0.0,
@@ -534,6 +575,8 @@ impl RekaptrWorkspace {
                         })
                 })
             },
+            update_state: crate::updater::UpdateState::Idle,
+            update_has_receipt: crate::updater::has_install_receipt(),
             _quit_subscription: None,
         };
 
@@ -955,6 +998,8 @@ impl RekaptrWorkspace {
                                 }
                                 this.clip_start = -1.0;
                                 this.clip_end = -1.0;
+                                this.clip_start_mark = None;
+                                this.clip_end_mark = None;
                                 this.update_mpv_audio_mix();
                             }
                             Err(_) => this.video_source = None,
@@ -981,9 +1026,29 @@ impl RekaptrWorkspace {
             if self.clip_start >= 0.0 {
                 self.clip_start = -1.0;
                 self.clip_end = -1.0;
+                self.clip_start_mark = None;
+                self.clip_end_mark = None;
             } else {
-                self.clip_start = v.position().as_secs_f64();
+                let pos = v.position().as_secs_f64();
+                let stream = v.current_stream_filename();
+                let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                self.clip_start = pos;
                 self.clip_end = -1.0;
+                self.clip_start_mark = stream
+                    .as_deref()
+                    .and_then(|s| crate::utils::mark_from_mpv_state(&source, s, pos));
+                self.clip_end_mark = None;
+                match (&self.clip_start_mark, stream.as_deref()) {
+                    (Some(m), Some(s)) => log::info!(
+                        "[Clip] in-point: stream={} time_pos={:.3} -> sid={:?} idx={} off={:.3}",
+                        s, pos, m.session_id, m.segment_index, m.offset_in_segment
+                    ),
+                    (None, s) => log::warn!(
+                        "[Clip] could not derive in-point mark (stream={:?}, time_pos={:.3})",
+                        s, pos
+                    ),
+                    _ => {}
+                }
             }
             cx.notify();
         }
@@ -994,8 +1059,27 @@ impl RekaptrWorkspace {
             if self.clip_end >= 0.0 {
                 self.clip_start = -1.0;
                 self.clip_end = -1.0;
+                self.clip_start_mark = None;
+                self.clip_end_mark = None;
             } else {
-                self.clip_end = v.position().as_secs_f64();
+                let pos = v.position().as_secs_f64();
+                let stream = v.current_stream_filename();
+                let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+                self.clip_end = pos;
+                self.clip_end_mark = stream
+                    .as_deref()
+                    .and_then(|s| crate::utils::mark_from_mpv_state(&source, s, pos));
+                match (&self.clip_end_mark, stream.as_deref()) {
+                    (Some(m), Some(s)) => log::info!(
+                        "[Clip] out-point: stream={} time_pos={:.3} -> sid={:?} idx={} off={:.3}",
+                        s, pos, m.session_id, m.segment_index, m.offset_in_segment
+                    ),
+                    (None, s) => log::warn!(
+                        "[Clip] could not derive out-point mark (stream={:?}, time_pos={:.3})",
+                        s, pos
+                    ),
+                    _ => {}
+                }
             }
             cx.notify();
         }

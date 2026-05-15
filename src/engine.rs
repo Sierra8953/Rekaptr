@@ -227,6 +227,61 @@ pub fn resolve_pid(app_name: &str) -> u32 {
     }
 }
 
+pub fn diagnose_pipeline_failure(pipeline_str: &str, err: &gst::glib::Error) {
+    let kind = err.kind::<gst::ParseError>()
+        .map(|k| format!("{:?}", k))
+        .unwrap_or_else(|| "unknown".into());
+    log::error!("error.domain={} error.kind={} error.message={}",
+        err.domain().as_str(), kind, err.message());
+    log::error!("pipeline={}", pipeline_str);
+
+    let (major, minor, micro, nano) = gst::version();
+    log::error!("gstreamer.version={}.{}.{}.{}", major, minor, micro, nano);
+    for var in ["GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH", "GST_REGISTRY"] {
+        log::error!("env.{}={}", var, std::env::var(var).unwrap_or_default());
+    }
+
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut prev_was_separator = true;
+    for tok in pipeline_str.split_whitespace() {
+        if tok == "!" || tok == "(" || tok == ")" {
+            prev_was_separator = true;
+            continue;
+        }
+        if !prev_was_separator { continue; }
+        prev_was_separator = false;
+        if tok.contains('=') || tok.contains('/') || tok.contains('"') { continue; }
+        let name = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string();
+        if name.is_empty() || !name.chars().next().unwrap().is_ascii_lowercase() { continue; }
+        seen.insert(name);
+    }
+
+    for name in &seen {
+        match gst::ElementFactory::find(name) {
+            Some(_) => log::error!("factory.{}=found", name),
+            None    => log::error!("factory.{}=missing", name),
+        }
+    }
+
+    if let Some(idx) = pipeline_str.find("muxer=\"") {
+        let rest = &pipeline_str[idx + "muxer=\"".len()..];
+        if let Some(end) = rest.find('"') {
+            let factory = rest[..end].split_whitespace().next().unwrap_or("");
+            match gst::ElementFactory::find(factory) {
+                Some(f) => {
+                    for tmpl in f.static_pad_templates() {
+                        if tmpl.direction() == gst::PadDirection::Sink {
+                            log::error!("muxer.{}.sink_template[{}]={}",
+                                factory, tmpl.name_template(), tmpl.caps());
+                        }
+                    }
+                }
+                None => log::error!("muxer.{}=missing", factory),
+            }
+        }
+    }
+}
+
 pub fn validate_encoder(v: &VideoSettings) -> Result<()> {
     let encoder_element = match v.encoder.as_str() {
         "nvav1enc" => "nvd3d11av1enc",

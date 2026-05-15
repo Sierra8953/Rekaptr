@@ -218,6 +218,7 @@ impl RekaptrWorkspace {
             Err(e) => {
                 *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
                 log::error!("[Recording] Failed to launch pipeline: {:?}", e);
+                crate::engine::diagnose_pipeline_failure(&pipeline_str, &e);
                 self.show_toast(
                     "Pipeline Error",
                     Some("GStreamer failed to start"),

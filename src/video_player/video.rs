@@ -391,6 +391,16 @@ impl Video {
     pub fn paused(&self) -> bool { self.read().mpv.get_property::<bool>("pause").unwrap_or(true) }
     pub fn position(&self) -> Duration { Duration::from_secs_f64(self.read().mpv.get_property::<f64>("time-pos").unwrap_or(0.0)) }
     pub fn duration(&self) -> Duration { Duration::from_secs_f64(self.read().mpv.get_property::<f64>("duration").unwrap_or(0.0)) }
+
+    /// String mpv reports for the file the stream layer currently has open.
+    /// For HLS this advances as mpv crosses segment boundaries. May be a
+    /// filesystem path or an `http://...` URL — the caller should extract
+    /// the basename if a segment filename is what they need.
+    pub fn current_stream_filename(&self) -> Option<String> {
+        let inner = self.read();
+        inner.mpv.get_property::<String>("stream-open-filename").ok()
+            .or_else(|| inner.mpv.get_property::<String>("path").ok())
+    }
     pub fn take_frame_ready(&self) -> bool { self.render_to_texture(); self.read().upload_frame.swap(false, Ordering::SeqCst) }
     pub fn set_display_size(&self, w: Option<u32>, h: Option<u32>) { let mut inner = self.0.write(); inner.display_width_override = w; inner.display_height_override = h; }
 

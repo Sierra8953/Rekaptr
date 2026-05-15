@@ -119,6 +119,14 @@ name = "data_table"
 path = "examples/data_table.rs"
 
 [[example]]
+name = "editor_mockup"
+path = "examples/editor_mockup.rs"
+
+[[example]]
+name = "source_cards_mockup"
+path = "examples/source_cards_mockup.rs"
+
+[[example]]
 name = "drag_drop"
 path = "examples/drag_drop.rs"
 

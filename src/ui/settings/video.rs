@@ -1,21 +1,16 @@
 use gpui::*;
 use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
-use super::{section_header, settings_row, settings_toggle, stepper};
+use super::{settings_card, settings_row, settings_toggle, stepper};
 
 impl RekaptrWorkspace {
     pub(crate) fn render_settings_video(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let vh = view_handle.clone();
 
         VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
-            .child(
-                Card::new().content(
+            .gap_6()
+            .child(settings_card(theme, "Primary Encoder", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Primary Encoder"))
                         .child(settings_row(theme, "Encoder", Option::<String>::None,
                             div().w(px(180.0)).child(self.select_encoder.clone())
                         ))
@@ -25,14 +20,9 @@ impl RekaptrWorkspace {
                         .child(settings_row(theme, "Framerate", Option::<String>::None,
                             div().w(px(180.0)).child(self.select_fps.clone())
                         ))
-                )
-            )
-            .child(
-                Card::new().content(
+                ))
+            .child(settings_card(theme, "Rate Control", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Rate Control"))
                         .child(settings_row(theme, "Bitrate (kbps)", Some(format!("{} kbps", self.settings_form_bitrate)),
                             stepper("bit", self.settings_form_bitrate, 1000, 100000, 1000, vh.clone(), |this, val, cx| {
                                 this.settings_form_bitrate = val;
@@ -60,18 +50,14 @@ impl RekaptrWorkspace {
                                 cx.notify();
                             })
                         ))
-                )
-            )
-            .child(
-                Card::new().content(
+                ))
+            .child(settings_card(theme, "Advanced", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
                         .child(
                             HStack::new()
                                 .justify_between()
                                 .items_center()
-                                .child(section_header("Advanced"))
+                                .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("NVENC tuning — change only if you know what you're doing."))
                                 .child(
                                     Button::new("toggle-adv-video", if self.settings_show_advanced_video { "Hide" } else { "Show" })
                                         .variant(ButtonVariant::Ghost)
@@ -158,7 +144,6 @@ impl RekaptrWorkspace {
                                     })
                                 ))
                         })
-                )
-            )
+                ))
     }
 }

@@ -2,7 +2,7 @@ use gpui::*;
 use adabraka_ui::prelude::*;
 use gstreamer::prelude::*;
 use crate::ui::RekaptrWorkspace;
-use super::{section_header, settings_row, settings_toggle, stepper_f32};
+use super::{settings_card, settings_row, settings_toggle, stepper_f32};
 
 impl RekaptrWorkspace {
     pub(crate) fn render_settings_audio(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -16,15 +16,10 @@ impl RekaptrWorkspace {
         let is_monitoring = self.mic_monitor_pipeline.is_some();
 
         VStack::new()
-            .gap_4()
-            .max_w(px(800.0))
+            .gap_6()
             // Microphone Source card
-            .child(
-                Card::new().content(
+            .child(settings_card(theme, "Microphone Source", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Microphone Source"))
                         .child(settings_row(theme, "Input Device", Option::<String>::None,
                             {
                                 // Resolve the stored device ID to a friendly name for display
@@ -119,15 +114,10 @@ impl RekaptrWorkspace {
                                     }
                                 })
                         ))
-                )
-            )
+                ))
             // Processing & FX card
-            .child(
-                Card::new().content(
+            .child(settings_card(theme, "Processing & FX", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Processing & FX"))
                         .child(settings_row(theme, "Noise Suppression (RNNoise)", Some("Requires mic restart"),
                             settings_toggle("toggle-ns", self.settings_form_mic_noise_suppression, vh.clone(), |this, cx| {
                                 this.settings_form_mic_noise_suppression = !this.settings_form_mic_noise_suppression;
@@ -162,15 +152,10 @@ impl RekaptrWorkspace {
                                 })
                             ))
                         })
-                )
-            )
+                ))
             // Compressor card
-            .child(
-                Card::new().content(
+            .child(settings_card(theme, "Compressor", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Compressor"))
                         .child(settings_row(theme, "Enable Compressor", Option::<String>::None,
                             settings_toggle("toggle-comp", self.settings_form_mic_compressor_enabled, vh.clone(), |this, cx| {
                                 this.settings_form_mic_compressor_enabled = !this.settings_form_mic_compressor_enabled;
@@ -204,15 +189,10 @@ impl RekaptrWorkspace {
                                     })
                                 ))
                         })
-                )
-            )
+                ))
             // Limiter card
-            .child(
-                Card::new().content(
+            .child(settings_card(theme, "Limiter", None,
                     VStack::new()
-                        .p_6()
-                        .gap_1()
-                        .child(section_header("Limiter"))
                         .child(settings_row(theme, "Enable Limiter", Option::<String>::None,
                             settings_toggle("toggle-lim", self.settings_form_mic_limiter_enabled, vh.clone(), |this, cx| {
                                 this.settings_form_mic_limiter_enabled = !this.settings_form_mic_limiter_enabled;
@@ -235,7 +215,6 @@ impl RekaptrWorkspace {
                                 })
                             ))
                         })
-                )
-            )
+                ))
     }
 }

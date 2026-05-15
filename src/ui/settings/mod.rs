@@ -1,14 +1,16 @@
 mod general;
+mod startup;
 mod video;
 mod audio;
 mod hotkeys;
 mod storage;
+mod export;
 mod about;
 
 use gpui::*;
 use adabraka_ui::prelude::*;
 use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};
-use crate::ui::{RekaptrWorkspace, SettingsTab};
+use crate::ui::{RekaptrWorkspace, SettingsTab, SETTINGS_NAV};
 use crate::config::VideoSettings;
 use gstreamer::prelude::*;
 use gstreamer;
@@ -170,79 +172,42 @@ impl RekaptrWorkspace {
         }
 
         root.child(
-                VStack::new()
-                    .flex_1()
-                    .h_0()
-                    .child(
-                        div()
-                            .px_8()
-                            .pt_8()
-                            .pb_4()
-                            .child(div().text_2xl().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child("Settings"))
-                    )
-                    .child(
-                        VStack::new()
-                            .flex_1()
-                            .h_0()
-                            .px_8()
-                            .child(
-                                HStack::new()
-                                    .gap_4()
-                                    .border_b_1()
-                                    .border_color(theme.tokens.border)
-                                    .children(SettingsTab::ALL.iter().map(|&tab| {
-                                        let is_active = current_tab == tab;
-                                        let view_handle = view_handle.clone();
-                                        div()
-                                            .id(SharedString::from(format!("tab-{}", tab.label())))
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .px_4()
-                                            .py_2()
-                                            .cursor(CursorStyle::PointingHand)
-                                            .border_b_2()
-                                            .border_color(if is_active { theme.tokens.primary } else { gpui::transparent_black() })
-                                            .text_color(if is_active { theme.tokens.primary } else { theme.tokens.muted_foreground })
-                                            .hover(|s| s.text_color(theme.tokens.primary))
-                                            .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
-                                                let _ = view_handle.update(cx, |this, cx| {
-                                                    this.settings_tab = tab;
-                                                    this.hotkey_listening = None;
-                                                    if tab != SettingsTab::Audio {
-                                                        if let Some(pipeline) = this.mic_monitor_pipeline.take() {
-                                                            let _ = pipeline.set_state(gstreamer::State::Null);
-                                                            if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
-                                                                provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);
-                                                            }
-                                                        }
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            })
-                                            .child(Icon::new(tab.icon()).size(px(16.0)))
-                                            .child(tab.label())
-                                    }))
-                            )
-                            .child(
-                                div()
-                                    .id("settings-scroll-area")
-                                    .flex_1()
-                                    .h_0()
-                                    .pt_4()
-                                    .pb_8()
-                                    .overflow_y_scroll()
-                                    .child(match current_tab {
-                                        SettingsTab::General => self.render_settings_general(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Video => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Audio => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Hotkeys => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::Storage => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
-                                        SettingsTab::About => self.render_settings_about(&theme).into_any_element(),
-                                    })
-                            )
-                    )
-            )
+            HStack::new()
+                .flex_1()
+                .h_0()
+                .child(render_settings_nav_rail(current_tab, &view_handle, &theme))
+                .child(
+                    VStack::new()
+                        .flex_1()
+                        .h_full()
+                        .child(render_settings_top_bar(current_tab, &theme))
+                        .child(
+                            div()
+                                .id("settings-scroll-area")
+                                .flex_1()
+                                .h_0()
+                                .overflow_y_scroll()
+                                .child(
+                                    div()
+                                        .max_w(px(880.0))
+                                        .mx_auto()
+                                        .px_10()
+                                        .pt_6()
+                                        .pb_16()
+                                        .child(match current_tab {
+                                            SettingsTab::General => self.render_settings_general(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Startup => self.render_settings_startup(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Video => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Audio => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Hotkeys => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Storage => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Export => self.render_settings_export(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::About => self.render_settings_about(&theme, &view_handle, cx).into_any_element(),
+                                        }),
+                                ),
+                        ),
+                ),
+        )
     }
 
     pub fn sync_settings_form_from_config(&mut self, config: &crate::config::AppConfig) {
@@ -793,7 +758,183 @@ impl RekaptrWorkspace {
     }
 }
 
-// ── Helpers ───────���──────────────────────────────────────────────────
+// ── Nav rail + top bar ──────────────────────────────────────────────
+
+fn render_settings_nav_rail(
+    current: SettingsTab,
+    view_handle: &WeakEntity<RekaptrWorkspace>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let mut rail = VStack::new()
+        .w(px(240.0))
+        .h_full()
+        .bg(theme.tokens.card)
+        .border_r_1()
+        .border_color(theme.tokens.border)
+        .pt_6()
+        .pb_4()
+        .px_3()
+        .gap_1()
+        .child(
+            div()
+                .px_3()
+                .pb_4()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.tokens.foreground)
+                        .child("Settings"),
+                ),
+        );
+
+    for group in SETTINGS_NAV {
+        rail = rail
+            .child(
+                div()
+                    .px_3()
+                    .pt_5()
+                    .pb_2()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.tokens.muted_foreground)
+                    .child(group.title),
+            )
+            .children(group.items.iter().map(|&tab| {
+                nav_rail_item(tab, current, view_handle.clone(), theme)
+            }));
+    }
+    rail
+}
+
+fn nav_rail_item(
+    tab: SettingsTab,
+    current: SettingsTab,
+    view_handle: WeakEntity<RekaptrWorkspace>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let active = tab == current;
+    div()
+        .id(SharedString::from(format!("nav-{}", tab.label())))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .h(px(36.0))
+        .px_3()
+        .rounded_md()
+        .cursor_pointer()
+        .bg(if active { theme.tokens.accent } else { gpui::transparent_black() })
+        .hover(|s| s.bg(theme.tokens.muted))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            let _ = view_handle.update(cx, |this, cx| {
+                this.settings_tab = tab;
+                this.hotkey_listening = None;
+                if tab != SettingsTab::Audio {
+                    if let Some(pipeline) = this.mic_monitor_pipeline.take() {
+                        let _ = pipeline.set_state(gstreamer::State::Null);
+                        if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
+                            provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .child(
+            Icon::new(IconSource::Named(tab.icon().into()))
+                .size(px(16.0))
+                .color(if active { theme.tokens.primary.into() } else { theme.tokens.muted_foreground.into() }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_sm()
+                .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                .child(tab.label()),
+        )
+}
+
+fn render_settings_top_bar(current: SettingsTab, theme: &Theme) -> impl IntoElement {
+    HStack::new()
+        .px_10()
+        .py_5()
+        .border_b_1()
+        .border_color(theme.tokens.border)
+        .justify_between()
+        .items_center()
+        .child(
+            VStack::new()
+                .gap_1()
+                .child(
+                    HStack::new()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.tokens.muted_foreground)
+                                .child(current.group()),
+                        )
+                        .child(
+                            Icon::new(IconSource::Named("chevron-right".into()))
+                                .size(px(12.0))
+                                .color(theme.tokens.muted_foreground.into()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.tokens.muted_foreground)
+                                .child(current.label()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.tokens.foreground)
+                        .child(current.label()),
+                ),
+        )
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/// A titled card with optional description. Replaces the older `Card::new().content(section_header(...))` pattern.
+pub(super) fn settings_card(
+    theme: &Theme,
+    title: &str,
+    description: Option<&str>,
+    body: impl IntoElement,
+) -> impl IntoElement {
+    let desc_owned: Option<SharedString> = description.map(|d| SharedString::from(d.to_string()));
+    let mut header = VStack::new()
+        .px_6()
+        .pt_5()
+        .pb_3()
+        .gap_1()
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.tokens.foreground)
+                .child(title.to_string()),
+        );
+    if let Some(d) = desc_owned {
+        header = header.child(
+            div().text_xs().text_color(theme.tokens.muted_foreground).child(d),
+        );
+    }
+    VStack::new()
+        .w_full()
+        .rounded_xl()
+        .border_1()
+        .border_color(theme.tokens.border)
+        .bg(theme.tokens.card)
+        .child(header)
+        .child(div().px_6().pb_5().child(body))
+}
 
 pub(super) fn section_header(title: &str) -> impl IntoElement {
     div()

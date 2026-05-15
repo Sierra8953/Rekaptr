@@ -78,7 +78,16 @@ impl MarkerKind {
     }
 }
 
+/// Stable reference to a moment in a recording. Survives buffer eviction
+/// and playlist regeneration as long as the underlying segment file is
+/// still on disk.
 #[derive(Clone, Debug)]
+pub struct ClipMark {
+    pub session_id: Option<u64>,
+    pub segment_index: u64,
+    pub offset_in_segment: f64,
+}
+
 pub struct TimelineMarker {
     /// Absolute time in the video (seconds from start of playlist)
     pub time_secs: f64,

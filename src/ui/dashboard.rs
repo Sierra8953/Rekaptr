@@ -559,25 +559,27 @@ impl RekaptrWorkspace {
     pub fn render_game_gallery(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = &self.app_state.manual_sessions;
         let theme = use_theme();
-        
+        let global_recording = self.app_state.recording.phase.lock().is_recording();
+
         let mut gallery = div()
             .id("source-gallery")
             .flex()
             .flex_wrap()
-            .gap_4();
+            .gap_5();
 
+        // ── Add Source ──────────────────────────────────────────────────
         gallery = gallery.child(
             div()
                 .id("add-source-wrap")
                 .child(
                     div()
-                        .w(px(240.0))
-                        .h(px(135.0))
+                        .w(px(304.0))
+                        .h(px(188.0))
                         .bg(theme.tokens.card)
                         .border_2()
                         .border_color(theme.tokens.border)
                         .border_dashed()
-                        .rounded_xl()
+                        .rounded_2xl()
                         .flex()
                         .items_center()
                         .justify_center()
@@ -588,7 +590,7 @@ impl RekaptrWorkspace {
                                 .child(
                                     div()
                                         .id("add-plus-icon")
-                                        .child(Icon::new("plus").size(px(32.0)).color(theme.tokens.muted_foreground))
+                                        .child(Icon::new("plus").size(px(36.0)).color(theme.tokens.muted_foreground))
                                 )
                                 .child(div().text_color(theme.tokens.muted_foreground).font_weight(FontWeight::MEDIUM).mt_2().child("Add Source"))
                         )
@@ -601,84 +603,122 @@ impl RekaptrWorkspace {
                 }))
         );
 
+        // ── Monitor ─────────────────────────────────────────────────────
         let monitor_selected = self.selected_source.as_deref() == Some("monitor");
+        let monitor_recording = monitor_selected && global_recording;
+        let monitor_tint = avatar_tint("Monitor");
         gallery = gallery.child(
             div()
                 .id("monitor-source-wrap")
                 .relative()
-                .w(px(240.0))
-                .h(px(135.0))
-                .border_color(if monitor_selected { theme.tokens.primary } else { theme.tokens.border })
-                .border(if monitor_selected { px(2.0) } else { px(1.0) })
-                .rounded_xl()
-                .overflow_hidden()
-                .hover(|s| s.shadow_lg())
+                .w(px(304.0))
+                .h(px(188.0))
                 .child(
                     div()
+                        .relative()
                         .size_full()
+                        .rounded_2xl()
                         .bg(theme.tokens.card)
-                        .child(
-                            VStack::new()
-                                .h_full()
-                                .justify_between()
-                                .p_4()
-                                .child(
-                                    HStack::new()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child("Monitor"))
-                                )
-                                .child(
-                                    div().text_sm().text_color(theme.tokens.muted_foreground).child("Record entire desktop")
-                                )
-                        )
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_2()
-                        .right_2()
+                        .border_2()
+                        .border_color(if monitor_selected { theme.tokens.primary } else { theme.tokens.border })
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        // ── art body ──
                         .child(
                             div()
-                                .id("monitor-settings-btn-hitbox")
-                                .cursor_pointer()
-                                .p_1()
-                                .text_color(theme.tokens.muted_foreground)
-                                .hover(|s| s.text_color(theme.tokens.primary))
+                                .relative()
+                                .flex_1()
+                                .overflow_hidden()
+                                .rounded_t_2xl()
+                                .bg(rgba((monitor_tint << 8) | 0x14))
+                                .child(div().absolute().top_0().left_0().right_0().h(px(70.0)).bg(rgba(0x000000_55)))
+                                .child(div().absolute().bottom_0().left_0().right_0().h(px(80.0)).bg(rgba(0x000000_88)))
                                 .child(
-                                    svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
-                                )
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.advanced_settings_source = Some("monitor".to_string());
-                                    
-                                    // Refresh window list for audio routing asynchronously
-                                    this.refresh_available_windows(cx);
+                                    div()
+                                        .relative()
+                                        .size_full()
+                                        .px_4()
+                                        .py_4()
+                                        .flex()
+                                        .flex_col()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_start()
+                                                .justify_between()
+                                                .gap_3()
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_3()
+                                                        .min_w(px(0.0))
+                                                        .child(letter_avatar("Monitor", monitor_tint, monitor_recording))
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_col()
+                                                                .gap(px(2.0))
+                                                                .min_w(px(0.0))
+                                                                .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child("Monitor"))
+                                                                .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Record entire desktop"))
+                                                        )
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("monitor-settings-btn-hitbox")
+                                                        .size(px(28.0))
+                                                        .rounded_full()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .bg(rgba(0x000000_55))
+                                                        .border_1()
+                                                        .border_color(rgba(0xffffff_1a))
+                                                        .cursor_pointer()
+                                                        .child(Icon::new("settings").size(px(14.0)).color(theme.tokens.foreground))
+                                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.advanced_settings_source = Some("monitor".to_string());
 
-                                    // Load current monitor settings into form state
-                                    let config = crate::config::AppConfig::load();
-                                    this.form_encoder = config.global_video.encoder.clone();
-                                    this.form_rate_control = config.global_video.rate_control_index;
-                                    this.form_bitrate = config.global_video.bitrate_kbps;
-                                    this.form_cq = config.global_video.cq_level;
-                                    this.form_retention = config.global_video.retention_minutes;
-                                    this.form_resolution = config.global_video.resolution.clone();
-                                    this.form_fps = config.global_video.fps;
-                                    this.form_gop = config.global_video.gop_size;
-                                    this.form_bframes = config.global_video.bframes;
-                                    this.form_preset = config.global_video.preset.clone();
-                                    this.form_zero_latency = config.global_video.zero_latency;
-                                    this.form_lookahead = config.global_video.lookahead;
-                                    this.form_lookahead_frames = config.global_video.lookahead_frames;
-                                    this.form_spatial_aq = config.global_video.spatial_aq;
-                                    this.form_temporal_aq = config.global_video.temporal_aq;
-                                    this.form_audio_tracks = config.global_audio_tracks.clone();
-                                    this.form_active_tab = 0;
-                                    this.form_editing_track_index = None;
-                                    
-                                    cx.notify();
-                                }))
+                                                            // Refresh window list for audio routing asynchronously
+                                                            this.refresh_available_windows(cx);
+
+                                                            // Load current monitor settings into form state
+                                                            let config = crate::config::AppConfig::load();
+                                                            this.form_encoder = config.global_video.encoder.clone();
+                                                            this.form_rate_control = config.global_video.rate_control_index;
+                                                            this.form_bitrate = config.global_video.bitrate_kbps;
+                                                            this.form_cq = config.global_video.cq_level;
+                                                            this.form_retention = config.global_video.retention_minutes;
+                                                            this.form_resolution = config.global_video.resolution.clone();
+                                                            this.form_fps = config.global_video.fps;
+                                                            this.form_gop = config.global_video.gop_size;
+                                                            this.form_bframes = config.global_video.bframes;
+                                                            this.form_preset = config.global_video.preset.clone();
+                                                            this.form_zero_latency = config.global_video.zero_latency;
+                                                            this.form_lookahead = config.global_video.lookahead;
+                                                            this.form_lookahead_frames = config.global_video.lookahead_frames;
+                                                            this.form_spatial_aq = config.global_video.spatial_aq;
+                                                            this.form_temporal_aq = config.global_video.temporal_aq;
+                                                            this.form_audio_tracks = config.global_audio_tracks.clone();
+                                                            this.form_active_tab = 0;
+                                                            this.form_editing_track_index = None;
+
+                                                            cx.notify();
+                                                        }))
+                                                )
+                                        )
+                                        .child(
+                                            div().flex().items_center().child(status_chip(monitor_recording))
+                                        )
+                                )
                         )
+                        // ── stat strip (placeholder values until per-source metrics land) ──
+                        .child(stat_strip("—", "—", "—"))
                 )
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, window, cx| {
@@ -689,13 +729,17 @@ impl RekaptrWorkspace {
                 }))
         );
 
+        // ── Sessions ────────────────────────────────────────────────────
         for session in sessions.iter() {
             let title = session.value().title.to_string();
             let is_selected = self.selected_source.as_deref() == Some(title.as_str());
-            
+            let is_recording_this = is_selected && global_recording;
+            let auto_record = session.value().auto_record;
+            let session_subtitle = if auto_record { "Auto-record on launch" } else { "Manual capture" };
+
             // Check cache
             let cached_path = self.app_state.artwork_cache.get(&title).map(|v| v.value().clone()).flatten();
-            
+
             if !self.app_state.artwork_cache.contains_key(&title) {
                 // Mark as in-progress immediately
                 self.app_state.artwork_cache.insert(title.clone(), None);
@@ -721,7 +765,11 @@ impl RekaptrWorkspace {
                         let Some(source) = resolved else { return; };
 
                         if !source.starts_with("http") {
-                            app_state.artwork_cache.insert(title, Some(source));
+                            // Local file already on disk — produce a blurred sibling for the card bg
+                            let raw = std::path::PathBuf::from(&source);
+                            let final_path = ensure_blurred(&raw).unwrap_or(raw);
+                            let path_str = final_path.to_string_lossy().replace('\\', "/");
+                            app_state.artwork_cache.insert(title, Some(path_str));
                             let _ = handle.update(&mut cx, |_, cx| cx.notify());
                             return;
                         }
@@ -737,7 +785,8 @@ impl RekaptrWorkspace {
                             let _ = std::fs::create_dir_all(&cache_dir);
                             let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
                             if std::fs::write(&local_path, &bytes).is_ok() {
-                                let path_str = local_path.to_string_lossy().replace('\\', "/");
+                                let final_path = ensure_blurred(&local_path).unwrap_or(local_path);
+                                let path_str = final_path.to_string_lossy().replace('\\', "/");
                                 app_state.artwork_cache.insert(title, Some(path_str));
                                 let _ = handle.update(&mut cx, |_, cx| cx.notify());
                             }
@@ -747,21 +796,18 @@ impl RekaptrWorkspace {
             }
 
             let final_image_path = cached_path.map(std::path::PathBuf::from);
-            let image_exists = final_image_path.is_some();
             let session_key = *session.key() as usize;
+            let tint = avatar_tint(&title);
+            let title_for_avatar = title.clone();
+            let title_for_label = title.clone();
 
             gallery = gallery.child(
                 div()
                     .id(("session-wrap", session_key))
                     .relative()
-                    .w(px(240.0))
-                    .h(px(135.0))
-                    .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
-                    .border(if is_selected { px(2.0) } else { px(1.0) })
-                    .rounded_xl()
-                    .overflow_hidden()
+                    .w(px(304.0))
+                    .h(px(188.0))
                     .cursor_pointer()
-                    .hover(|s| s.shadow_lg())
                     .on_mouse_down(MouseButton::Left, cx.listener({
                         let title = title.clone();
                         move |this: &mut Self, _, window, cx| {
@@ -772,108 +818,263 @@ impl RekaptrWorkspace {
                     }))
                     .child(
                         div()
+                            .relative()
                             .size_full()
+                            .rounded_2xl()
                             .bg(theme.tokens.card)
-                            // Artwork Background
-                            .child({
+                            .border_2()
+                            .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            // ── art body ──
+                            .child(
                                 div()
-                                    .absolute()
-                                    .inset_0()
-                                    .size_full()
+                                    .relative()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .rounded_t_2xl()
+                                    .bg(rgba((tint << 8) | 0x14))
                                     .when_some(final_image_path, |this, path| {
                                         this.child(
                                             img(path)
+                                                .absolute()
+                                                .inset_0()
                                                 .size_full()
-                                                .object_fit(ObjectFit::Cover)
+                                                .object_fit(ObjectFit::Cover),
                                         )
                                     })
-                            })
-                            // Dark Overlay for readability - ONLY if image exists
-                            .when(image_exists, |this| {
-                                this.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .bg(gpui::rgba(0x000000_99))
-                                )
-                            })
-                            .child(
-                                VStack::new()
-                                    .relative()
-                                    .h_full()
-                                    .justify_between()
-                                    .p_4()
+                                    .child(div().absolute().top_0().left_0().right_0().h(px(70.0)).bg(rgba(0x000000_55)))
+                                    .child(div().absolute().bottom_0().left_0().right_0().h(px(80.0)).bg(rgba(0x000000_88)))
                                     .child(
-                                        HStack::new()
+                                        div()
+                                            .relative()
+                                            .size_full()
+                                            .px_4()
+                                            .py_4()
+                                            .flex()
+                                            .flex_col()
                                             .justify_between()
-                                            .items_center()
-                                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(gpui::white()).child(title.clone()))
-                                    )
-                                    .child(
-                                        div().text_sm().text_color(gpui::rgba(0xffffff_aa)).child("Click to preview recording")
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_start()
+                                                    .justify_between()
+                                                    .gap_3()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_3()
+                                                            .min_w(px(0.0))
+                                                            .child(letter_avatar(&title_for_avatar, tint, is_recording_this))
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .gap(px(2.0))
+                                                                    .min_w(px(0.0))
+                                                                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(gpui::white()).child(title_for_label))
+                                                                    .child(div().text_xs().text_color(gpui::rgba(0xffffff_b0)).child(session_subtitle))
+                                                            )
+                                                    )
+                                                    .child({
+                                                        let title_settings = title.clone();
+                                                        div()
+                                                            .id(("session-settings-btn-hitbox", session_key))
+                                                            .size(px(28.0))
+                                                            .rounded_full()
+                                                            .flex_shrink_0()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .bg(rgba(0x000000_55))
+                                                            .border_1()
+                                                            .border_color(rgba(0xffffff_1a))
+                                                            .cursor_pointer()
+                                                            .child(Icon::new("settings").size(px(14.0)).color(gpui::white()))
+                                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                                cx.stop_propagation();
+                                                                this.advanced_settings_source = Some(title_settings.clone());
+
+                                                                // Refresh window list for audio routing asynchronously
+                                                                this.refresh_available_windows(cx);
+
+                                                                // Load session settings into form state
+                                                                let config = crate::config::AppConfig::load();
+                                                                if let Some(settings) = config.game_registry.get(&title_settings) {
+                                                                    if let Some(video) = &settings.video_overrides {
+                                                                        this.form_encoder = video.encoder.clone();
+                                                                        this.form_rate_control = video.rate_control_index;
+                                                                        this.form_bitrate = video.bitrate_kbps;
+                                                                        this.form_cq = video.cq_level;
+                                                                        this.form_resolution = video.resolution.clone();
+                                                                        this.form_fps = video.fps;
+                                                                        this.form_retention = video.retention_minutes;
+                                                                        this.form_gop = video.gop_size;
+                                                                        this.form_bframes = video.bframes;
+                                                                        this.form_preset = video.preset.clone();
+                                                                        this.form_zero_latency = video.zero_latency;
+                                                                        this.form_lookahead = video.lookahead;
+                                                                        this.form_lookahead_frames = video.lookahead_frames;
+                                                                        this.form_spatial_aq = video.spatial_aq;
+                                                                        this.form_temporal_aq = video.temporal_aq;
+                                                                    }
+                                                                    if let Some(audio) = &settings.audio_routing {
+                                                                        this.form_audio_tracks = audio.clone();
+                                                                    } else {
+                                                                        this.form_audio_tracks = config.global_audio_tracks.clone();
+                                                                    }
+                                                                    this.form_auto_record = settings.auto_record;
+                                                                }
+                                                                this.form_active_tab = 0;
+                                                                this.form_editing_track_index = None;
+
+                                                                cx.notify();
+                                                            }))
+                                                    })
+                                            )
+                                            .child(
+                                                div().flex().items_center().child(status_chip(is_recording_this))
+                                            )
                                     )
                             )
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_2()
-                            .right_2()
-                            .child({
-                                let title_settings = title.clone();
-                                div()
-                                    .id(("session-settings-btn-hitbox", session_key))
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .text_color(theme.tokens.muted_foreground)
-                                    .hover(|s| s.text_color(theme.tokens.primary))
-                                    .child(
-                                        svg().path("icons/settings.svg").size(px(16.0)).flex_shrink_0()
-                                    )
-                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.advanced_settings_source = Some(title_settings.clone());
-                                        
-                                        // Refresh window list for audio routing asynchronously
-                                        this.refresh_available_windows(cx);
-
-                                        // Load session settings into form state
-                                        let config = crate::config::AppConfig::load();
-                                        if let Some(settings) = config.game_registry.get(&title_settings) {
-                                            if let Some(video) = &settings.video_overrides {
-                                                this.form_encoder = video.encoder.clone();
-                                                this.form_rate_control = video.rate_control_index;
-                                                this.form_bitrate = video.bitrate_kbps;
-                                                this.form_cq = video.cq_level;
-                                                this.form_resolution = video.resolution.clone();
-                                                this.form_fps = video.fps;
-                                                this.form_retention = video.retention_minutes;
-                                                this.form_gop = video.gop_size;
-                                                this.form_bframes = video.bframes;
-                                                this.form_preset = video.preset.clone();
-                                                this.form_zero_latency = video.zero_latency;
-                                                this.form_lookahead = video.lookahead;
-                                                this.form_lookahead_frames = video.lookahead_frames;
-                                                this.form_spatial_aq = video.spatial_aq;
-                                                this.form_temporal_aq = video.temporal_aq;
-                                            }
-                                            if let Some(audio) = &settings.audio_routing {
-                                                this.form_audio_tracks = audio.clone();
-                                            } else {
-                                                this.form_audio_tracks = config.global_audio_tracks.clone();
-                                            }
-                                            this.form_auto_record = settings.auto_record;
-                                        }
-                                        this.form_active_tab = 0;
-                                        this.form_editing_track_index = None;
-                                        
-                                        cx.notify();
-                                    }))
-                            })
+                            // ── stat strip (placeholder values until per-source metrics land) ──
+                            .child(stat_strip("—", "—", "—"))
                     )
             );
         }
 
         gallery
     }
+}
+
+// ── source-card visual helpers ──────────────────────────────────────────
+
+fn avatar_tint(title: &str) -> u32 {
+    const PALETTE: &[u32] = &[
+        0x6366f1, 0xec4899, 0xf59e0b, 0x10b981, 0x06b6d4, 0x8b5cf6,
+    ];
+    let idx = title.as_bytes().first().copied().unwrap_or(0) as usize % PALETTE.len();
+    PALETTE[idx]
+}
+
+fn letter_avatar(title: &str, tint: u32, recording: bool) -> Div {
+    let letter = title
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().next().unwrap_or(c).to_string())
+        .unwrap_or_else(|| "?".into());
+    div()
+        .relative()
+        .size(px(38.0))
+        .rounded_xl()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgba((tint << 8) | 0x55))
+        .border_1()
+        .border_color(rgba(0xffffff_1a))
+        .text_sm()
+        .font_weight(FontWeight::BOLD)
+        .text_color(gpui::white())
+        .child(letter)
+        .when(recording, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .inset(px(-3.0))
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(rgba(0xef4444_99)),
+            )
+        })
+}
+
+fn status_chip(recording: bool) -> Div {
+    let (label, dot, fg, bg, br) = if recording {
+        ("Recording", 0xef4444u32, 0xfecaca, 0xef4444_33u32, 0xef4444_66u32)
+    } else {
+        ("Idle", 0x10b981u32, 0xa7f3d0, 0x10b981_22u32, 0x10b981_55u32)
+    };
+    div()
+        .h(px(22.0))
+        .px_2()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .bg(rgba(bg))
+        .border_1()
+        .border_color(rgba(br))
+        .child(div().size(px(6.0)).rounded_full().bg(rgb(dot)))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(fg))
+                .child(label),
+        )
+}
+
+fn stat_strip(captured: &str, clips: &str, last: &str) -> Div {
+    let theme = use_theme();
+    div()
+        .h(px(52.0))
+        .rounded_b_2xl()
+        .border_t_1()
+        .border_color(theme.tokens.border)
+        .bg(theme.tokens.muted)
+        .overflow_hidden()
+        .flex()
+        .child(stat_cell("captured", captured))
+        .child(stat_divider())
+        .child(stat_cell("clips", clips))
+        .child(stat_divider())
+        .child(stat_cell("last", last))
+}
+
+fn stat_cell(label: &str, value: &str) -> Div {
+    let theme = use_theme();
+    div()
+        .flex_1()
+        .px_3()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap(px(2.0))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.tokens.foreground)
+                .child(value.to_string()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.tokens.muted_foreground)
+                .child(label.to_string()),
+        )
+}
+
+fn stat_divider() -> Div {
+    let theme = use_theme();
+    div().my_3().w(px(1.0)).bg(theme.tokens.border)
+}
+
+/// Generate a Gaussian-blurred sibling JPEG for an artwork file. Returns the
+/// blurred path if it exists or was successfully generated; `None` on any
+/// I/O / decode failure (caller falls back to the original).
+fn ensure_blurred(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+    let stem = raw.file_stem()?.to_string_lossy().into_owned();
+    let ext = raw.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+    let blurred = raw.with_file_name(format!("{stem}_blur.{ext}"));
+    if blurred.exists() {
+        return Some(blurred);
+    }
+    let img = image::open(raw).ok()?;
+    img.blur(4.0).save(&blurred).ok()?;
+    Some(blurred)
 }

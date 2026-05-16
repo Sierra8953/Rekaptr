@@ -34,12 +34,20 @@ use crate::state::TrayCommand;
 /// Prevents other local processes from accessing recording segments.
 static HLS_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// Port the local HLS server is bound to. 0 means "not yet started or bind failed".
+/// Picked at startup from a fallback range so a conflict on 8080 doesn't break playback.
+static HLS_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
 pub fn get_hls_token() -> &'static str {
     HLS_TOKEN.get_or_init(|| {
         use rand::RngExt;
         let bytes: [u8; 32] = rand::rng().random();
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     })
+}
+
+pub fn get_hls_port() -> u16 {
+    HLS_PORT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Decode percent-encoded URL path components (e.g. %20 -> space, %2F -> /).
@@ -233,25 +241,60 @@ async fn main() -> Result<()> {
         let stop_item = MenuItem::new("Stop Recording", false, None); // Disabled by default
         let quit_item = MenuItem::new("Quit", true, None);
 
-        let icon = {
+        // Build two icon variants: idle (base) and recording (red-dot overlay).
+        // Each variant must own its own pixel buffer because tray_icon::Icon::from_rgba consumes it.
+        fn make_recording_overlay(base_rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+            let mut buf = base_rgba.to_vec();
+            // Red dot anchored to bottom-right, sized ~38% of the smaller dimension.
+            let r = ((w.min(h) as f32) * 0.19).max(2.0);
+            let cx = w as f32 - r - 1.0;
+            let cy = h as f32 - r - 1.0;
+            let r2 = r * r;
+            let edge = (r * 0.85).powi(2); // inner solid radius for anti-aliased edge
+            for y in 0..h {
+                for x in 0..w {
+                    let dx = x as f32 + 0.5 - cx;
+                    let dy = y as f32 + 0.5 - cy;
+                    let d2 = dx * dx + dy * dy;
+                    if d2 > r2 { continue; }
+                    let alpha = if d2 < edge {
+                        1.0
+                    } else {
+                        1.0 - ((d2.sqrt() - edge.sqrt()) / (r - edge.sqrt())).clamp(0.0, 1.0)
+                    };
+                    let i = ((y * w + x) * 4) as usize;
+                    // Solid red over existing pixel.
+                    buf[i]     = ((1.0 - alpha) * buf[i] as f32     + alpha * 230.0) as u8;
+                    buf[i + 1] = ((1.0 - alpha) * buf[i + 1] as f32 + alpha *  30.0) as u8;
+                    buf[i + 2] = ((1.0 - alpha) * buf[i + 2] as f32 + alpha *  30.0) as u8;
+                    buf[i + 3] = 255;
+                }
+            }
+            buf
+        }
+
+        // Keep the raw RGBA buffers so we can mint a fresh tray_icon::Icon each
+        // time we switch state (the crate's Icon API consumes the buffer).
+        let icon_buffers: Option<(Vec<u8>, Vec<u8>, u32, u32)> = {
             const ICON_BYTES: &[u8] = include_bytes!("../crates/gpui/examples/image/app-icon.png");
             match image::load_from_memory(ICON_BYTES) {
                 Ok(img) => {
                     let rgba = img.into_rgba8();
                     let (w, h) = rgba.dimensions();
-                    match tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
-                        Ok(i) => Some(i),
-                        Err(e) => {
-                            log::error!("[TrayIcon] from_rgba failed: {}", e);
-                            None
-                        }
-                    }
+                    let base = rgba.into_raw();
+                    let rec = make_recording_overlay(&base, w, h);
+                    Some((base, rec, w, h))
                 }
                 Err(e) => {
                     log::error!("[TrayIcon] decode failed: {}", e);
                     None
                 }
             }
+        };
+        let make_icon = |rgba: &[u8], w: u32, h: u32| -> Option<tray_icon::Icon> {
+            tray_icon::Icon::from_rgba(rgba.to_vec(), w, h)
+                .map_err(|e| log::error!("[TrayIcon] from_rgba failed: {}", e))
+                .ok()
         };
 
         let _ = tray_menu.append_items(&[
@@ -264,10 +307,12 @@ async fn main() -> Result<()> {
 
         let mut tray_builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
-            .with_tooltip("Rekaptr Recording");
+            .with_tooltip("Rekaptr");
 
-        if let Some(icon) = icon {
-            tray_builder = tray_builder.with_icon(icon);
+        if let Some((base, _, w, h)) = icon_buffers.as_ref() {
+            if let Some(icon) = make_icon(base, *w, *h) {
+                tray_builder = tray_builder.with_icon(icon);
+            }
         }
 
         let tray_icon = match tray_builder.build() {
@@ -282,9 +327,13 @@ async fn main() -> Result<()> {
 
         // --- Tray Event Loop ---
         let workspace_handle_tray = workspace_handle.clone();
-        cx.spawn(|cx: &mut gpui::AsyncApp| {
+        cx.spawn(move |cx: &mut gpui::AsyncApp| {
             let cx = cx.clone();
             async move {
+                // Hold ownership of the TrayIcon here so it lives for the entire
+                // app lifetime. Dropping it calls Shell_NotifyIcon(NIM_DELETE)
+                // and removes the icon from the system tray.
+                let tray_icon = tray_icon;
                 let menu_channel = MenuEvent::receiver();
                 let _tray_channel = TrayIconEvent::receiver();
                 loop {
@@ -293,6 +342,15 @@ async fn main() -> Result<()> {
                         match cmd {
                             TrayCommand::SetStopEnabled(enabled) => {
                                 stop_item.set_enabled(enabled);
+                            }
+                            TrayCommand::SetRecording(recording) => {
+                                if let Some((base, rec, w, h)) = icon_buffers.as_ref() {
+                                    let buf = if recording { rec } else { base };
+                                    let _ = tray_icon.set_icon(make_icon(buf, *w, *h));
+                                }
+                                let _ = tray_icon.set_tooltip(Some(
+                                    if recording { "Rekaptr — Recording" } else { "Rekaptr" }
+                                ));
                             }
                         }
                     }
@@ -338,7 +396,6 @@ async fn main() -> Result<()> {
                 }
             }
         }).detach();
-        let _keep_alive = tray_icon; // prevent drop while event loop runs
 
         // --- Disk Space Monitoring ---
         let storage_root = crate::utils::get_storage_root();
@@ -655,14 +712,28 @@ fn start_local_server(root: PathBuf) {
             };
 
         rt.block_on(async move {
-            let listener = match tokio::net::TcpListener::bind("127.0.0.1:8080").await {
-                Ok(l) => l,
-                Err(e) => {
-                    log::error!("[Server] Failed to bind local HLS server to 8080: {:?}", e);
-                    return;
+            // Try the conventional port first, then 8081..=8089, then fall back to an
+            // OS-assigned ephemeral port so playback still works if all are taken.
+            let mut bound: Option<tokio::net::TcpListener> = None;
+            for port in 8080u16..=8089 {
+                if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                    bound = Some(l);
+                    break;
                 }
+            }
+            let listener = match bound {
+                Some(l) => l,
+                None => match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        log::error!("[Server] Failed to bind local HLS server (8080-8089 and ephemeral): {:?}", e);
+                        return;
+                    }
+                },
             };
-            log::info!("[Server] Local HLS server listening on http://127.0.0.1:8080");
+            let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+            HLS_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+            log::info!("[Server] Local HLS server listening on http://127.0.0.1:{}", port);
             
             loop {
                 let (mut socket, _) = match listener.accept().await {
@@ -763,8 +834,8 @@ fn start_local_server(root: PathBuf) {
                             
                             let status = if is_partial { "206 Partial Content" } else { "200 OK" };
                             let mut response = format!(
-                                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: http://127.0.0.1:8080\r\nCache-Control: no-cache\r\n",
-                                status, content_type, content_len
+                                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: http://127.0.0.1:{}\r\nCache-Control: no-cache\r\n",
+                                status, content_type, content_len, port
                             );
                             if is_partial {
                                 response.push_str(&format!("Content-Range: bytes {}-{}/{}\r\n", start, end, file_len));

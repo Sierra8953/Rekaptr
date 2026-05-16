@@ -26,7 +26,10 @@ Invoke-WebRequest -Uri $Url -OutFile $TempPath -UseBasicParsing
 
 $Args = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL")
 if ($InstallDir) {
-    $Args += "/DIR=$InstallDir"
+    # Quote the path so Inno parses the full value when it contains spaces
+    # (e.g. "C:\Program Files\Rekaptr"). Start-Process -ArgumentList does not
+    # auto-quote array elements, so the quotes must be in the string itself.
+    $Args += "/DIR=`"$InstallDir`""
 }
 
 Write-Host "Running $SetupName $($Args -join ' ')"

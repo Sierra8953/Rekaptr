@@ -973,7 +973,7 @@ impl RekaptrWorkspace {
                         crate::utils::generate_session_playlist(&name_clone, recording_id)
                     }).await {
                         let safe_title = if source_name_str == "monitor" { "monitor".to_string() } else { crate::utils::clean_title(&source_name_str) };
-                        let url = format!("http://127.0.0.1:8080/{}/master.m3u8?token={}", safe_title, crate::get_hls_token());
+                        let url = format!("http://127.0.0.1:{}/{}/master.m3u8?token={}", crate::get_hls_port(), safe_title, crate::get_hls_token());
                         (Some(url), b)
                     } else {
                         (None, Vec::new())

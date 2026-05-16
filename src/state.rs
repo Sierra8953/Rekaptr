@@ -162,6 +162,13 @@ pub struct RecordingState {
     pub current_recording_duration: Mutex<f64>,
     pub current_session_blocks: Mutex<Vec<SessionBlock>>,
     pub rec_stats: RecordingStats,
+    /// Mic-provider subscriber keys inserted for the active recording session.
+    /// Cleared on stop so the mic thread doesn't keep pushing to dead AppSrcs.
+    pub mic_subscriber_keys: Mutex<Vec<u64>>,
+    /// True while the background teardown thread is still finalizing files for the
+    /// previous session. Blocks a new recording from starting until splitmuxsink has
+    /// flushed and fixup_eos_segments has run.
+    pub teardown_in_progress: std::sync::atomic::AtomicBool,
 }
 
 impl RecordingState {
@@ -179,6 +186,8 @@ impl RecordingState {
                 segments_written: AtomicU64::new(0),
                 last_segment_bytes: AtomicU64::new(0),
             },
+            mic_subscriber_keys: Mutex::new(Vec::new()),
+            teardown_in_progress: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -213,6 +222,7 @@ const CACHE_MAX_ENTRIES: usize = 100;
 
 pub enum TrayCommand {
     SetStopEnabled(bool),
+    SetRecording(bool),
 }
 
 pub struct AppState {

@@ -21,7 +21,16 @@ use std::sync::Once;
 use gpui::RenderImage;
 
 static REGISTER_DUMMY_CLASS: Once = Once::new();
-static mut OPENGL32_DLL: HMODULE = HMODULE(std::ptr::null_mut());
+
+struct OpenGl32Module(HMODULE);
+unsafe impl Send for OpenGl32Module {}
+unsafe impl Sync for OpenGl32Module {}
+
+static OPENGL32_DLL: std::sync::OnceLock<OpenGl32Module> = std::sync::OnceLock::new();
+
+fn opengl32_handle() -> HMODULE {
+    OPENGL32_DLL.get().map(|m| m.0).unwrap_or(HMODULE(std::ptr::null_mut()))
+}
 
 // OpenGL Constants
 const GL_TEXTURE_2D: u32 = 0x0DE1;
@@ -119,12 +128,18 @@ impl Video {
         d3d11_device_ptr: Option<*mut std::ffi::c_void>
     ) -> Result<Self, Error> {
         unsafe {
-            if OPENGL32_DLL.0.is_null() {
-                OPENGL32_DLL = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("opengl32.dll")).map_err(|e| Error::OpenGL(format!("LoadLibrary opengl32.dll failed: {:?}", e)))?;
+            if OPENGL32_DLL.get().is_none() {
+                let handle = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("opengl32.dll")).map_err(|e| Error::OpenGL(format!("LoadLibrary opengl32.dll failed: {:?}", e)))?;
+                let _ = OPENGL32_DLL.set(OpenGl32Module(handle));
             }
 
             // The D3D11 device in AppState is AddRef'd and outlives all Video instances.
-            let d3d_device: ID3D11Device = std::mem::transmute_copy(&d3d11_device_ptr.ok_or(Error::Lock)?);
+            // transmute_copy does NOT bump the ref count, so wrap in ManuallyDrop to
+            // suppress the wrapper's Drop->Release — otherwise every Video creation would
+            // silently decrement AppState's only ref, leading to a use-after-free under
+            // the GPUI renderer.
+            let d3d_device: std::mem::ManuallyDrop<ID3D11Device> =
+                std::mem::ManuallyDrop::new(std::mem::transmute_copy(&d3d11_device_ptr.ok_or(Error::Lock)?));
             
             unsafe extern "system" fn dummy_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -170,7 +185,7 @@ impl Video {
                 if let Some(p) = addr {
                     return Ok(p as *const c_void);
                 }
-                let p = windows::Win32::System::LibraryLoader::GetProcAddress(OPENGL32_DLL, PCSTR(cname.as_ptr() as *const u8));
+                let p = windows::Win32::System::LibraryLoader::GetProcAddress(opengl32_handle(), PCSTR(cname.as_ptr() as *const u8));
                 match p {
                     Some(p) => Ok(p as *const c_void),
                     None => Err(Error::Interop(format!("Extension function not found: {}", name))),
@@ -259,7 +274,7 @@ impl Video {
                 let cname = std::ffi::CStr::from_ptr(name);
                 let addr = wglGetProcAddress(PCSTR(cname.as_ptr() as *const u8));
                 if let Some(p) = addr { return p as *mut c_void; }
-                windows::Win32::System::LibraryLoader::GetProcAddress(OPENGL32_DLL, PCSTR(cname.as_ptr() as *const u8)).map_or(std::ptr::null_mut(), |p| p as *mut c_void)
+                windows::Win32::System::LibraryLoader::GetProcAddress(opengl32_handle(), PCSTR(cname.as_ptr() as *const u8)).map_or(std::ptr::null_mut(), |p| p as *mut c_void)
             }
 
             let api_type = CString::new("opengl").expect("static string");

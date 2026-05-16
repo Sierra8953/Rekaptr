@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// In-memory cache so `AppConfig::load()` doesn't hit SQLite on every render frame.
+/// Render-thread callers (`get_current_audio_tracks`, settings panels) were opening
+/// a new connection ~60x/sec before this — painful on HDDs or with AV scanning.
+static CONFIG_CACHE: std::sync::OnceLock<parking_lot::RwLock<Option<AppConfig>>> =
+    std::sync::OnceLock::new();
+
+fn config_cache() -> &'static parking_lot::RwLock<Option<AppConfig>> {
+    CONFIG_CACHE.get_or_init(|| parking_lot::RwLock::new(None))
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AudioRouting {
     pub name: String,
@@ -85,8 +95,6 @@ pub struct AppConfig {
     pub hotkeys: HotkeyConfig,
     #[serde(default)]
     pub minimize_to_tray: bool,
-    #[serde(default)]
-    pub check_for_updates: bool,
     #[serde(default)]
     pub auto_delete_clips_days: Option<i32>,
     #[serde(default = "default_export_format")]
@@ -257,7 +265,6 @@ impl Default for AppConfig {
             startup_with_windows: false,
             hotkeys: default_hotkeys(),
             minimize_to_tray: false,
-            check_for_updates: false,
             auto_delete_clips_days: None,
             default_export_format: default_export_format(),
         }
@@ -312,13 +319,43 @@ impl AppConfig {
     }
 
     pub fn get_db_path() -> PathBuf {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let dir = PathBuf::from(local_app_data).join("Rekaptr");
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.join("rekaptr.db");
+        }
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("rekaptr.db")))
             .unwrap_or_else(|| PathBuf::from("rekaptr.db"))
     }
 
+    /// One-time migration: if a DB exists next to the EXE (legacy location used
+    /// before %LOCALAPPDATA%\Rekaptr) and no DB exists at the new location, copy
+    /// it over. The legacy file is left in place as a backup.
+    fn migrate_legacy_exe_dir_db() {
+        let Some(exe_dir_db) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("rekaptr.db")))
+        else {
+            return;
+        };
+        let new_path = Self::get_db_path();
+        if exe_dir_db == new_path || !exe_dir_db.exists() || new_path.exists() {
+            return;
+        }
+        log::info!(
+            "[Config] Migrating DB from legacy location {} -> {}",
+            exe_dir_db.display(),
+            new_path.display()
+        );
+        if let Err(e) = std::fs::copy(&exe_dir_db, &new_path) {
+            log::warn!("[Config] Legacy DB copy failed: {}", e);
+        }
+    }
+
     pub fn init_db() -> rusqlite::Result<()> {
+        Self::migrate_legacy_exe_dir_db();
         let conn = rusqlite::Connection::open(Self::get_db_path())?;
         
         // Use execute for PRAGMAs that we don't need the return value from
@@ -338,6 +375,15 @@ impl AppConfig {
     }
 
     pub fn load() -> Self {
+        if let Some(cached) = config_cache().read().as_ref() {
+            return cached.clone();
+        }
+        let loaded = Self::load_from_disk();
+        *config_cache().write() = Some(loaded.clone());
+        loaded
+    }
+
+    fn load_from_disk() -> Self {
         if let Err(e) = Self::init_db() {
             log::warn!(
                 "[Config] Database init failed: {}. Falling back to defaults.",
@@ -369,18 +415,23 @@ impl AppConfig {
             log::info!("[Config] Migrating config.json to SQLite...");
             let content = std::fs::read_to_string(&json_path).unwrap_or_default();
             if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
-                config.save();
+                config.write_to_disk();
                 let _ = std::fs::remove_file(json_path);
                 return config;
             }
         }
 
         let default_config = Self::default();
-        default_config.save();
+        default_config.write_to_disk();
         default_config
     }
 
     pub fn save(&self) {
+        self.write_to_disk();
+        *config_cache().write() = Some(self.clone());
+    }
+
+    fn write_to_disk(&self) {
         if let Ok(conn) = rusqlite::Connection::open(Self::get_db_path()) {
             let json = match serde_json::to_string(self) {
                 Ok(j) => j,

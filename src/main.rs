@@ -276,7 +276,7 @@ async fn main() -> Result<()> {
         // Keep the raw RGBA buffers so we can mint a fresh tray_icon::Icon each
         // time we switch state (the crate's Icon API consumes the buffer).
         let icon_buffers: Option<(Vec<u8>, Vec<u8>, u32, u32)> = {
-            const ICON_BYTES: &[u8] = include_bytes!("../crates/gpui/examples/image/app-icon.png");
+            const ICON_BYTES: &[u8] = include_bytes!("../crates/gpui/examples/image/app-icon.ico");
             match image::load_from_memory(ICON_BYTES) {
                 Ok(img) => {
                     let rgba = img.into_rgba8();

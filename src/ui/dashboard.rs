@@ -632,8 +632,6 @@ impl RekaptrWorkspace {
                                 .overflow_hidden()
                                 .rounded_t_2xl()
                                 .bg(rgba((monitor_tint << 8) | 0x14))
-                                .child(div().absolute().top_0().left_0().right_0().h(px(70.0)).bg(rgba(0x000000_55)))
-                                .child(div().absolute().bottom_0().left_0().right_0().h(px(80.0)).bg(rgba(0x000000_88)))
                                 .child(
                                     div()
                                         .relative()
@@ -655,7 +653,6 @@ impl RekaptrWorkspace {
                                                         .items_center()
                                                         .gap_3()
                                                         .min_w(px(0.0))
-                                                        .child(letter_avatar("Monitor", monitor_tint, monitor_recording))
                                                         .child(
                                                             div()
                                                                 .flex()
@@ -798,7 +795,6 @@ impl RekaptrWorkspace {
             let final_image_path = cached_path.map(std::path::PathBuf::from);
             let session_key = *session.key() as usize;
             let tint = avatar_tint(&title);
-            let title_for_avatar = title.clone();
             let title_for_label = title.clone();
 
             gallery = gallery.child(
@@ -844,8 +840,6 @@ impl RekaptrWorkspace {
                                                 .object_fit(ObjectFit::Cover),
                                         )
                                     })
-                                    .child(div().absolute().top_0().left_0().right_0().h(px(70.0)).bg(rgba(0x000000_55)))
-                                    .child(div().absolute().bottom_0().left_0().right_0().h(px(80.0)).bg(rgba(0x000000_88)))
                                     .child(
                                         div()
                                             .relative()
@@ -867,7 +861,6 @@ impl RekaptrWorkspace {
                                                             .items_center()
                                                             .gap_3()
                                                             .min_w(px(0.0))
-                                                            .child(letter_avatar(&title_for_avatar, tint, is_recording_this))
                                                             .child(
                                                                 div()
                                                                     .flex()
@@ -957,39 +950,6 @@ fn avatar_tint(title: &str) -> u32 {
     ];
     let idx = title.as_bytes().first().copied().unwrap_or(0) as usize % PALETTE.len();
     PALETTE[idx]
-}
-
-fn letter_avatar(title: &str, tint: u32, recording: bool) -> Div {
-    let letter = title
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().next().unwrap_or(c).to_string())
-        .unwrap_or_else(|| "?".into());
-    div()
-        .relative()
-        .size(px(38.0))
-        .rounded_xl()
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba((tint << 8) | 0x55))
-        .border_1()
-        .border_color(rgba(0xffffff_1a))
-        .text_sm()
-        .font_weight(FontWeight::BOLD)
-        .text_color(gpui::white())
-        .child(letter)
-        .when(recording, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .inset(px(-3.0))
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(rgba(0xef4444_99)),
-            )
-        })
 }
 
 fn status_chip(recording: bool) -> Div {

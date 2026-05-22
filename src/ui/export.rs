@@ -1,22 +1,70 @@
 use crate::config::AppConfig;
+use crate::state::ExportStage;
 use crate::ui::RekaptrWorkspace;
+use adabraka_ui::components::input::Input;
 use adabraka_ui::prelude::*;
 use gpui::*;
 
+const SUCCESS: u32 = 0x22C55EFF;
+const SUCCESS_DIM: u32 = 0x22C55E40;
+
 impl RekaptrWorkspace {
     pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clip_start_mark.is_some() && self.clip_end_mark.is_some() {
-            self.show_export_modal = true;
-            cx.notify();
+        let (in_mark, out_mark) = match (self.clip_start_mark.clone(), self.clip_end_mark.clone()) {
+            (Some(i), Some(o)) => (i, o),
+            _ => {
+                self.show_toast(
+                    "Set IN and OUT points first",
+                    Some("Use the timeline to mark the start and end of your clip."),
+                    adabraka_ui::overlays::toast::ToastVariant::Warning,
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+
+        let source_name = self
+            .selected_source
+            .clone()
+            .unwrap_or_else(|| "monitor".to_string());
+
+        self.export_clip_duration =
+            crate::utils::clip_duration_from_marks(&source_name, &in_mark, &out_mark).unwrap_or(0.0);
+
+        // Snapshot the audio tracks for this source so the dialog can toggle them
+        // independently. The order must match what perform_export maps to ffmpeg.
+        let config = AppConfig::load();
+        self.export_audio_tracks = if source_name == "monitor" {
+            config.global_audio_tracks.clone()
         } else {
-            self.show_toast(
-                "Set IN and OUT points first",
-                Some("Use the timeline to mark the start and end of your clip."),
-                adabraka_ui::overlays::toast::ToastVariant::Warning,
-                window,
-                cx,
-            );
-        }
+            config
+                .game_registry
+                .get(&source_name)
+                .and_then(|g| g.audio_routing.as_ref())
+                .cloned()
+                .unwrap_or_else(|| config.global_audio_tracks.clone())
+        };
+
+        let safe_title = crate::utils::clean_title(&source_name);
+        self.export_destination = crate::utils::get_storage_root()
+            .join("Clips")
+            .join(&safe_title);
+
+        self.export_title_input
+            .update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
+
+        self.export_stage = ExportStage::Configure;
+        self.export_result_path = None;
+        self.show_export_modal = true;
+        cx.notify();
+    }
+
+    fn close_export_modal(&mut self, cx: &mut Context<Self>) {
+        self.show_export_modal = false;
+        self.export_stage = ExportStage::Configure;
+        self.export_result_path = None;
+        cx.notify();
     }
 
     pub fn perform_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -42,7 +90,6 @@ impl RekaptrWorkspace {
             .unwrap_or_else(|| "monitor".to_string());
 
         let safe_title = crate::utils::clean_title(&source_name);
-        let storage_root = crate::utils::get_storage_root();
 
         let (concat_path, in_offset, out_offset) =
             match crate::utils::build_clip_concat_list_from_marks(&source_name, &in_mark, &out_mark) {
@@ -65,14 +112,22 @@ impl RekaptrWorkspace {
             concat_path.display(), in_offset, out_offset
         );
 
-        let clips_dir = storage_root.join("Clips").join(&safe_title);
+        let clips_dir = self.export_destination.clone();
         let _ = std::fs::create_dir_all(&clips_dir);
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let output_path = clips_dir.join(format!("clip_{}_{}.mp4", safe_title, timestamp));
+
+        let title_text = self.export_title_input.read(cx).content().trim().to_string();
+        let file_stem = if title_text.is_empty() {
+            format!("clip_{}_{}", safe_title, timestamp)
+        } else {
+            crate::utils::clean_title(&title_text)
+        };
+        let container = self.export_container.clone();
+        let output_path = clips_dir.join(format!("{}.{}", file_stem, container));
 
         let ffmpeg_path = crate::utils::get_ffmpeg_path();
 
@@ -94,20 +149,10 @@ impl RekaptrWorkspace {
         let bitrate = self.export_bitrate;
         let preset = self.export_preset.clone();
         let export_reencode = self.export_reencode;
+        let audio_tracks = self.export_audio_tracks.clone();
 
+        self.export_stage = ExportStage::Exporting;
         cx.notify();
-
-        let config = AppConfig::load();
-        let audio_tracks = if source_name == "monitor" {
-            config.global_audio_tracks.clone()
-        } else {
-            config
-                .game_registry
-                .get(&source_name)
-                .and_then(|g| g.audio_routing.as_ref())
-                .cloned()
-                .unwrap_or(config.global_audio_tracks.clone())
-        };
 
         let app_state_for_progress = self.app_state.clone();
         let view_handle = cx.entity().downgrade();
@@ -168,9 +213,11 @@ impl RekaptrWorkspace {
 
                 cmd.arg("-c:a").arg("aac")
                     .arg("-b:a").arg("320k")
-                    .arg("-ar").arg("48000")
-                    .arg("-movflags").arg("+faststart")
-                    .arg(&output_path);
+                    .arg("-ar").arg("48000");
+                if container == "mp4" || container == "mov" {
+                    cmd.arg("-movflags").arg("+faststart");
+                }
+                cmd.arg(&output_path);
                 cmd
             };
 
@@ -212,21 +259,16 @@ impl RekaptrWorkspace {
 
             let _ = std::fs::remove_file(&concat_path);
 
-            (clip_output, output_path, clips_dir)
+            (clip_output, output_path)
         });
 
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let (result, output_path, clips_dir) = ffmpeg_task.await;
+                let (result, output_path) = ffmpeg_task.await;
 
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.show_export_modal = false;
-                    this.export_reencode = false;
-                    this.export_encoder = "h264_nvenc".to_string();
-                    this.export_bitrate = 50000;
-                    this.export_preset = "p4".to_string();
-                    this.export_crf = 23;
+                    self_reset_encoder(this);
                     *this.app_state.export.phase.lock() = crate::state::ExportPhase::Idle;
 
                     if let Some(any_window) = cx.windows().first() {
@@ -236,6 +278,10 @@ impl RekaptrWorkspace {
                                     if output.status.success() {
                                         this.clip_start = -1.0;
                                         this.clip_end = -1.0;
+                                        this.clip_start_mark = None;
+                                        this.clip_end_mark = None;
+                                        this.export_result_path = Some(output_path.clone());
+                                        this.export_stage = ExportStage::Done;
                                         this.show_toast(
                                             SharedString::from("Clip Saved"),
                                             Some(SharedString::from(format!("Exported to {:?}", output_path))),
@@ -243,9 +289,6 @@ impl RekaptrWorkspace {
                                             window,
                                             cx,
                                         );
-                                        let _ = std::process::Command::new("explorer")
-                                            .arg(&clips_dir)
-                                            .spawn();
                                     } else {
                                         let err = String::from_utf8_lossy(&output.stderr);
                                         log::error!("[Export] FFmpeg failed: {}", err);
@@ -253,6 +296,7 @@ impl RekaptrWorkspace {
                                             .find(|l| !l.trim().is_empty())
                                             .unwrap_or("FFmpeg returned an error.")
                                             .to_string();
+                                        this.export_stage = ExportStage::Configure;
                                         this.show_toast(
                                             SharedString::from("Export Failed"),
                                             Some(SharedString::from(err_summary)),
@@ -264,6 +308,7 @@ impl RekaptrWorkspace {
                                 }
                                 Err(e) => {
                                     log::error!("[Export] Failed to run FFmpeg: {}", e);
+                                    this.export_stage = ExportStage::Configure;
                                     this.show_toast(
                                         SharedString::from("FFmpeg Error"),
                                         Some(SharedString::from("Could not locate or run ffmpeg.exe")),
@@ -281,6 +326,7 @@ impl RekaptrWorkspace {
         }).detach();
     }
 
+    // ── Modal ───────────────────────────────────────────────────────────
     pub fn render_export_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 
@@ -291,199 +337,720 @@ impl RekaptrWorkspace {
             .flex()
             .items_center()
             .justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
-                Card::new()
-                    .w(px(400.0))
-                    .content(
+                div()
+                    .w(px(720.0))
+                    .max_h(px(820.0))
+                    .bg(theme.tokens.card)
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(theme.tokens.border)
+                    .shadow_xl()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(self.render_export_header(&theme, cx))
+                    .child(match self.export_stage {
+                        ExportStage::Configure => self.render_export_configure(cx).into_any_element(),
+                        ExportStage::Exporting => self.render_export_progress(cx).into_any_element(),
+                        ExportStage::Done => self.render_export_done(cx).into_any_element(),
+                    }),
+            )
+    }
+
+    fn render_export_header(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let (label, icon) = match self.export_stage {
+            ExportStage::Configure => ("Export clip", "scissors"),
+            ExportStage::Exporting => ("Exporting…", "download"),
+            ExportStage::Done => ("Clip exported", "check"),
+        };
+        HStack::new()
+            .px_6()
+            .py_4()
+            .border_b_1()
+            .border_color(theme.tokens.border)
+            .items_center()
+            .justify_between()
+            .child(
+                HStack::new()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .size(px(28.0))
+                            .rounded_md()
+                            .bg(theme.tokens.primary.opacity(0.15))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Icon::new(IconSource::Named(icon.into()))
+                                    .size(px(16.0))
+                                    .color(theme.tokens.primary.into()),
+                            ),
+                    )
+                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(label)),
+            )
+            .child(
+                Button::new("export-close", "")
+                    .icon(IconSource::Named("x".into()))
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .on_click(cx.listener(|this, _, _, cx| { this.close_export_modal(cx); })),
+            )
+    }
+
+    // ── Stage: Configure ────────────────────────────────────────────────
+    fn render_export_configure(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        VStack::new()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .id("export-cfg-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
                         VStack::new()
                             .p_6()
                             .gap_6()
-                            .child(
-                                VStack::new()
-                                    .gap_1()
-                                    .child(div().text_xl().font_weight(FontWeight::BOLD).child("Export Settings"))
-                                    .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Choose how you want to save this clip."))
-                            )
-                            .child(
-                                VStack::new()
-                                    .gap_4()
-                                    .child(
-                                        HStack::new()
-                                            .gap_3()
-                                            .items_center()
-                                            .child({
-                                                let view = cx.entity().downgrade();
-                                                adabraka_ui::components::radio::Radio::new("instant-copy")
-                                                    .checked(!self.export_reencode)
-                                                    .on_click(move |_, cx| {
-                                                        let _ = view.update(cx, |this, cx| {
-                                                            this.export_reencode = false;
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            })
-                                            .child(
-                                                VStack::new()
-                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Instant Copy (Recommended)"))
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Lossless, saves in less than a second."))
-                                            )
-                                    )
-                                    .child(
-                                        HStack::new()
-                                            .gap_3()
-                                            .items_center()
-                                            .child({
-                                                let view = cx.entity().downgrade();
-                                                adabraka_ui::components::radio::Radio::new("re-encode")
-                                                    .checked(self.export_reencode)
-                                                    .on_click(move |_, cx| {
-                                                        let _ = view.update(cx, |this, cx| {
-                                                            this.export_reencode = true;
-                                                            cx.notify();
-                                                        });
-                                                    })
-                                            })
-                                            .child(
-                                                VStack::new()
-                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Re-encode (Complete MP4)"))
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Choose quality and format for best compatibility."))
-                                            )
-                                    )
-                            )
+                            .child(self.render_export_preview())
+                            .child(self.render_export_mode_cards(cx))
                             .when(self.export_reencode, |this| {
-                                this.child(self.render_reencode_options(cx))
+                                this.child(self.render_export_reencode_panel(cx))
                             })
-                            .child(
-                                HStack::new()
-                                    .justify_end()
-                                    .gap_3()
-                                    .child(
-                                        Button::new("cancel-export", "Cancel")
-                                            .variant(ButtonVariant::Ghost)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.show_export_modal = false;
-                                                cx.notify();
-                                            }))
-                                    )
-                                    .child(
-                                        Button::new("start-export", "Start Export")
-                                            .variant(ButtonVariant::Default)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.perform_export(window, cx);
-                                            }))
-                                    )
-                            )
-                            .child({
-                                let export_running = *self.app_state.export.phase.lock() == crate::state::ExportPhase::Exporting;
-                                let progress = *self.app_state.export.progress.lock();
-
-                                div()
-                                    .when(export_running, |this| {
-                                        this.absolute()
-                                            .inset_0()
-                                            .bg(theme.tokens.card)
-                                            .rounded_xl()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .p_6()
-                                            .gap_4()
-                                            .child(Spinner::new().size(SpinnerSize::Xl))
-                                            .child(div().text_lg().font_weight(FontWeight::BOLD).child("Exporting Clip..."))
-                                            .child(
-                                                VStack::new()
-                                                    .w_full()
-                                                    .gap_1()
-                                                    .child(
-                                                        adabraka_ui::components::progress::ProgressBar::new(progress)
-                                                            .h(px(8.0))
-                                                    )
-                                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).text_center().child(format!("{:.0}%", progress * 100.0)))
-                                            )
-                                    })
-                            })
-                    )
+                            .child(self.render_export_audio_panel(cx))
+                            .child(self.render_export_destination(cx)),
+                    ),
             )
+            .child(self.render_export_footer(cx))
     }
 
-    fn render_reencode_options(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_export_preview(&self) -> impl IntoElement {
         let theme = use_theme();
-
-        VStack::new()
+        let source = self.selected_source.clone().unwrap_or_else(|| "Monitor".to_string());
+        let est = self.estimated_size_mb();
+        HStack::new()
             .gap_4()
             .p_4()
-            .bg(theme.tokens.muted.opacity(0.5))
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.tokens.border)
+            .bg(theme.tokens.muted.opacity(0.4))
+            .child(
+                div()
+                    .w(px(200.0))
+                    .h(px(112.0))
+                    .rounded_md()
+                    .bg(theme.tokens.background)
+                    .border_1()
+                    .border_color(theme.tokens.border)
+                    .relative()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Icon::new(IconSource::Named("video".into()))
+                            .size(px(28.0))
+                            .color(theme.tokens.muted_foreground.into()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(px(6.0))
+                            .right(px(6.0))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .bg(gpui::rgba(0x000000CC))
+                            .text_xs()
+                            .text_color(gpui::rgba(0xFAFAFAFF))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(fmt_duration(self.export_clip_duration as f32)),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .flex_1()
+                    .gap_2()
+                    .child(section_label("CLIP TITLE", &theme))
+                    .child(Input::new(&self.export_title_input).placeholder("Clutch 1v4 on Mirage"))
+                    .child(
+                        HStack::new()
+                            .pt_2()
+                            .gap_6()
+                            .child(kv("Source", &source, &theme))
+                            .child(kv("Duration", &fmt_duration(self.export_clip_duration as f32), &theme))
+                            .child(kv("Estimated size", &format!("{:.1} MB", est), &theme)),
+                    ),
+            )
+    }
+
+    fn render_export_mode_cards(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        VStack::new()
+            .gap_2()
+            .child(section_label("MODE", &theme))
+            .child(
+                HStack::new()
+                    .gap_2()
+                    .child(
+                        Button::new("exp-mode-instant", "Instant copy")
+                            .variant(if !self.export_reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .size(ButtonSize::Sm)
+                            .on_click(cx.listener(|this, _, _, cx| { this.export_reencode = false; cx.notify(); })),
+                    )
+                    .child(
+                        Button::new("exp-mode-reencode", "Re-encode")
+                            .variant(if self.export_reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .size(ButtonSize::Sm)
+                            .on_click(cx.listener(|this, _, _, cx| { this.export_reencode = true; cx.notify(); })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.tokens.muted_foreground)
+                    .child(if self.export_reencode {
+                        "Re-encodes the clip. Choose codec, quality and container."
+                    } else {
+                        "Lossless stream copy. Saves in under a second."
+                    }),
+            )
+    }
+
+    fn render_export_reencode_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        VStack::new()
+            .gap_5()
+            .p_5()
+            .rounded_lg()
+            .bg(theme.tokens.muted.opacity(0.4))
+            .border_1()
+            .border_color(theme.tokens.border)
+            .child(
+                VStack::new()
+                    .gap_2()
+                    .child(section_label("ENCODER", &theme))
+                    .child(
+                        HStack::new()
+                            .gap_2()
+                            .child(self.enc_chip("HEVC", "hevc_nvenc", cx))
+                            .child(self.enc_chip("AV1", "av1_nvenc", cx))
+                            .child(self.enc_chip("H.264", "h264_nvenc", cx)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(encoder_detail(&self.export_encoder)),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .gap_2()
+                    .child(
+                        HStack::new()
+                            .justify_between()
+                            .items_end()
+                            .child(section_label("QUALITY", &theme))
+                            .child(
+                                HStack::new()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        Button::new("exp-bit-dec", "-")
+                                            .variant(ButtonVariant::Outline)
+                                            .size(ButtonSize::Sm)
+                                            .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate - 1000).max(1000); cx.notify(); })),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(72.0))
+                                            .text_center()
+                                            .text_xs()
+                                            .text_color(theme.tokens.muted_foreground)
+                                            .child(format!("{} kbps", self.export_bitrate)),
+                                    )
+                                    .child(
+                                        Button::new("exp-bit-inc", "+")
+                                            .variant(ButtonVariant::Outline)
+                                            .size(ButtonSize::Sm)
+                                            .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate + 1000).min(100000); cx.notify(); })),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        HStack::new()
+                            .gap_2()
+                            .child(self.qty_chip("Smaller", 8000, cx))
+                            .child(self.qty_chip("Balanced", 20000, cx))
+                            .child(self.qty_chip("Max quality", 50000, cx)),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .gap_2()
+                    .child(section_label("CONTAINER", &theme))
+                    .child(
+                        HStack::new()
+                            .gap_2()
+                            .child(self.container_chip("mp4", cx))
+                            .child(self.container_chip("mov", cx))
+                            .child(self.container_chip("mkv", cx)),
+                    ),
+            )
+    }
+
+    fn enc_chip(&self, label: &'static str, value: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let active = self.export_encoder == value;
+        div()
+            .id(SharedString::from(format!("exp-enc-{}", value)))
+            .px_4()
+            .py_2()
             .rounded_md()
+            .border_1()
+            .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
+            .bg(if active { theme.tokens.primary.opacity(0.15) } else { theme.tokens.card })
+            .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_sm()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.export_encoder = value.to_string();
+                cx.notify();
+            }))
+            .child(label)
+    }
+
+    fn qty_chip(&self, label: &'static str, bitrate: i32, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let active = self.export_bitrate == bitrate;
+        div()
+            .id(SharedString::from(format!("exp-q-{}", bitrate)))
+            .flex_1()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .border_1()
+            .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
+            .bg(if active { theme.tokens.primary.opacity(0.15) } else { theme.tokens.card })
+            .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+            .text_center()
+            .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+            .text_sm()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.export_bitrate = bitrate;
+                cx.notify();
+            }))
+            .child(label)
+    }
+
+    fn container_chip(&self, ext: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let active = self.export_container == ext;
+        div()
+            .id(SharedString::from(format!("exp-ct-{}", ext)))
+            .px_3()
+            .py_1()
+            .rounded_sm()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .bg(if active { theme.tokens.primary } else { theme.tokens.card })
+            .text_color(if active { theme.tokens.primary_foreground } else { theme.tokens.muted_foreground })
+            .border_1()
+            .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.export_container = ext.to_string();
+                cx.notify();
+            }))
+            .child(ext.to_uppercase())
+    }
+
+    fn render_export_audio_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        if self.export_audio_tracks.is_empty() {
+            return VStack::new()
+                .gap_2()
+                .child(section_label("AUDIO TRACKS", &theme))
+                .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("No audio tracks configured for this source."));
+        }
+        let mut row = HStack::new().gap_6().flex_wrap();
+        for (idx, track) in self.export_audio_tracks.iter().enumerate() {
+            row = row.child(self.audio_toggle(idx, track, cx));
+        }
+        VStack::new()
+            .gap_2()
+            .child(section_label("AUDIO TRACKS", &theme))
+            .child(row)
+    }
+
+    fn audio_toggle(&self, idx: usize, track: &crate::config::AudioRouting, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let enabled = track.enabled;
+        let icon = match track.source_type.as_str() {
+            "Mic" => "mic",
+            "App" => "speaker",
+            _ => "volume-2",
+        };
+        let name = track.name.clone();
+        let detail = track.device_name.clone();
+        div()
+            .id(SharedString::from(format!("exp-at-{}", idx)))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .py_1()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                if let Some(t) = this.export_audio_tracks.get_mut(idx) {
+                    t.enabled = !t.enabled;
+                    cx.notify();
+                }
+            }))
             .child(
-                VStack::new()
-                    .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("ENCODER"))
+                div()
+                    .w(px(28.0))
+                    .h(px(16.0))
+                    .rounded_full()
+                    .relative()
+                    .bg(if enabled { theme.tokens.primary } else { theme.tokens.border })
                     .child(
-                        HStack::new()
-                            .gap_2()
-                            .child(Self::encoder_button("exp-enc-h264", "H.264", "h264_nvenc", &self.export_encoder, cx))
-                            .child(Self::encoder_button("exp-enc-hevc", "HEVC", "hevc_nvenc", &self.export_encoder, cx))
-                            .child(Self::encoder_button("exp-enc-av1", "AV1", "av1_nvenc", &self.export_encoder, cx))
+                        div()
+                            .absolute()
+                            .top(px(2.0))
+                            .left(if enabled { px(14.0) } else { px(2.0) })
+                            .size(px(12.0))
+                            .rounded_full()
+                            .bg(gpui::rgba(0xFAFAFAFF)),
+                    ),
+            )
+            .child(
+                Icon::new(IconSource::Named(icon.into()))
+                    .size(px(14.0))
+                    .color(if enabled { theme.tokens.muted_foreground.into() } else { theme.tokens.border.into() }),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if enabled { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                    .child(name),
+            )
+            .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(detail))
+    }
+
+    fn render_export_destination(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let dest = self.export_destination.to_string_lossy().to_string();
+        VStack::new()
+            .gap_2()
+            .child(section_label("DESTINATION", &theme))
+            .child(
+                HStack::new()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme.tokens.muted.opacity(0.4))
+                    .border_1()
+                    .border_color(theme.tokens.border)
+                    .items_center()
+                    .child(
+                        Icon::new(IconSource::Named("folder".into()))
+                            .size(px(16.0))
+                            .color(theme.tokens.muted_foreground.into()),
                     )
+                    .child(div().flex_1().text_sm().text_color(theme.tokens.muted_foreground).child(dest))
+                    .child(
+                        Button::new("exp-pick-dest", "Change")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .on_click(cx.listener(|this, _, _, cx| { this.pick_export_destination(cx); })),
+                    ),
+            )
+    }
+
+    fn pick_export_destination(&self, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        cx.spawn(|_, cx: &mut AsyncApp| {
+            let mut cx = cx.clone();
+            async move {
+                if let Some(path) = rfd::AsyncFileDialog::new()
+                    .set_title("Choose export folder")
+                    .pick_folder()
+                    .await
+                {
+                    let p = path.path().to_path_buf();
+                    let _ = view.update(&mut cx, |this, cx| {
+                        this.export_destination = p;
+                        cx.notify();
+                    });
+                }
+            }
+        }).detach();
+    }
+
+    fn render_export_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        HStack::new()
+            .px_6()
+            .py_4()
+            .border_t_1()
+            .border_color(theme.tokens.border)
+            .items_center()
+            .justify_between()
+            .child(
+                HStack::new()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(IconSource::Named("hard-drive".into()))
+                            .size(px(14.0))
+                            .color(theme.tokens.muted_foreground.into()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(format!(
+                                "{} · {:.1} MB estimated",
+                                fmt_duration(self.export_clip_duration as f32),
+                                self.estimated_size_mb(),
+                            )),
+                    ),
+            )
+            .child(
+                HStack::new()
+                    .gap_3()
+                    .child(
+                        Button::new("exp-cancel", "Cancel")
+                            .variant(ButtonVariant::Ghost)
+                            .on_click(cx.listener(|this, _, _, cx| { this.close_export_modal(cx); })),
+                    )
+                    .child(
+                        Button::new("exp-start", "Export clip")
+                            .icon(IconSource::Named("download".into()))
+                            .on_click(cx.listener(|this, _, window, cx| { this.perform_export(window, cx); })),
+                    ),
+            )
+    }
+
+    // ── Stage: Exporting ────────────────────────────────────────────────
+    fn render_export_progress(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let progress = *self.app_state.export.progress.lock();
+        let pct = (progress * 100.0).round() as i32;
+        VStack::new()
+            .flex_1()
+            .p_8()
+            .gap_6()
+            .items_center()
+            .child(
+                div()
+                    .pt_4()
+                    .child(
+                        div()
+                            .size(px(72.0))
+                            .rounded_full()
+                            .bg(theme.tokens.primary.opacity(0.15))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Spinner::new().size(SpinnerSize::Xl)),
+                    ),
             )
             .child(
                 VStack::new()
-                    .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("QUALITY PRESET"))
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Rendering your clip"))
                     .child(
-                        HStack::new()
-                            .gap_2()
-                            .child(Self::preset_button("exp-pre-fast", "Fast", "p1", &self.export_preset, cx))
-                            .child(Self::preset_button("exp-pre-bal", "Balanced", "p4", &self.export_preset, cx))
-                            .child(Self::preset_button("exp-pre-hq", "High Quality", "p7", &self.export_preset, cx))
-                    )
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(if self.export_reencode {
+                                "Re-encoding with NVENC. This can take a moment…"
+                            } else {
+                                "Stream-copying segments. Just a moment…"
+                            }),
+                    ),
             )
             .child(
                 VStack::new()
+                    .w(px(480.0))
                     .gap_2()
-                    .child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.tokens.muted_foreground).child("BITRATE (kbps)"))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(10.0))
+                            .rounded_full()
+                            .bg(theme.tokens.muted)
+                            .border_1()
+                            .border_color(theme.tokens.border)
+                            .overflow_hidden()
+                            .child(div().h_full().w(relative(progress)).bg(theme.tokens.primary).rounded_full()),
+                    )
+                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(format!("{}%", pct))),
+            )
+            .child(
+                div()
+                    .pt_4()
+                    .text_xs()
+                    .text_color(theme.tokens.muted_foreground)
+                    .child("You can close this — the export keeps running in the background."),
+            )
+    }
+
+    // ── Stage: Done ──────────────────────────────────────────────────────
+    fn render_export_done(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+        let path = self.export_result_path.clone();
+        let filename = path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "clip".to_string());
+        let folder = path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        VStack::new()
+            .flex_1()
+            .p_8()
+            .gap_6()
+            .items_center()
+            .child(
+                div()
+                    .size(px(72.0))
+                    .rounded_full()
+                    .bg(gpui::rgba(SUCCESS_DIM))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Icon::new(IconSource::Named("check".into()))
+                            .size(px(32.0))
+                            .color(gpui::rgba(SUCCESS).into()),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Clip saved"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(format!("{} · {:.1} MB", fmt_duration(self.export_clip_duration as f32), self.estimated_size_mb())),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(520.0))
+                    .px_4()
+                    .py_3()
+                    .rounded_md()
+                    .bg(theme.tokens.muted.opacity(0.4))
+                    .border_1()
+                    .border_color(theme.tokens.border)
                     .child(
                         HStack::new()
-                            .gap_4()
+                            .gap_3()
                             .items_center()
                             .child(
-                                Button::new("exp-bit-dec", "-")
-                                    .variant(ButtonVariant::Outline)
-                                    .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate - 5000).max(1000); cx.notify(); }))
+                                Icon::new(IconSource::Named("video".into()))
+                                    .size(px(18.0))
+                                    .color(theme.tokens.muted_foreground.into()),
                             )
                             .child(
-                                div()
+                                VStack::new()
                                     .flex_1()
-                                    .p_2()
-                                    .bg(theme.tokens.background)
-                                    .rounded_md()
-                                    .child(div().text_center().font_weight(FontWeight::BOLD).child(format!("{}k", self.export_bitrate)))
-                            )
-                            .child(
-                                Button::new("exp-bit-inc", "+")
-                                    .variant(ButtonVariant::Outline)
-                                    .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate + 5000).min(100000); cx.notify(); }))
-                            )
+                                    .gap_0p5()
+                                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(filename))
+                                    .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(folder)),
+                            ),
+                    ),
+            )
+            .child(
+                HStack::new()
+                    .pt_2()
+                    .gap_3()
+                    .child(
+                        Button::new("exp-done-reveal", "Show in folder")
+                            .icon(IconSource::Named("folder".into()))
+                            .variant(ButtonVariant::Outline)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(p) = this.export_result_path.clone() {
+                                    let _ = std::process::Command::new("explorer")
+                                        .arg("/select,")
+                                        .arg(&p)
+                                        .spawn();
+                                }
+                                cx.notify();
+                            })),
                     )
+                    .child(
+                        Button::new("exp-done-close", "Done")
+                            .on_click(cx.listener(|this, _, _, cx| { this.close_export_modal(cx); })),
+                    ),
             )
     }
 
-    fn encoder_button(id: &str, label: &'static str, value: &str, current: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        let value_owned = value.to_string();
-        Button::new(SharedString::from(id.to_string()), label)
-            .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
-            .size(ButtonSize::Sm)
-            .on_click(cx.listener(move |this, _, _, cx| { this.export_encoder = value_owned.clone(); cx.notify(); }))
+    fn estimated_size_mb(&self) -> f32 {
+        let kbps = if self.export_reencode {
+            self.export_bitrate as f32
+        } else {
+            // Approximate source bitrate from the configured recording bitrate.
+            AppConfig::load().global_video.bitrate_kbps as f32
+        };
+        self.export_clip_duration as f32 * kbps / 8000.0
     }
+}
 
-    fn preset_button(id: &str, label: &'static str, value: &str, current: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        let value_owned = value.to_string();
-        Button::new(SharedString::from(id.to_string()), label)
-            .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
-            .size(ButtonSize::Sm)
-            .on_click(cx.listener(move |this, _, _, cx| { this.export_preset = value_owned.clone(); cx.notify(); }))
+// Reset re-encode config back to defaults after an export attempt completes.
+fn self_reset_encoder(this: &mut RekaptrWorkspace) {
+    this.export_reencode = false;
+    this.export_encoder = "h264_nvenc".to_string();
+    this.export_bitrate = 50000;
+    this.export_preset = "p4".to_string();
+    this.export_crf = 23;
+    this.export_container = "mp4".to_string();
+}
+
+fn section_label(text: &str, theme: &Theme) -> impl IntoElement {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.tokens.muted_foreground)
+        .child(text.to_string())
+}
+
+fn kv(label: &str, value: &str, theme: &Theme) -> impl IntoElement {
+    VStack::new()
+        .gap_0p5()
+        .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(label.to_string()))
+        .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.foreground).child(value.to_string()))
+}
+
+fn encoder_detail(encoder: &str) -> &'static str {
+    match encoder {
+        "hevc_nvenc" => "Best quality per bit. Plays on most devices.",
+        "av1_nvenc" => "Smallest files. Newer players only.",
+        _ => "Maximum compatibility. Larger files.",
     }
+}
+
+fn fmt_duration(secs: f32) -> String {
+    let s = secs.max(0.0) as u32;
+    format!("{}:{:02}", s / 60, s % 60)
 }

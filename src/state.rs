@@ -139,6 +139,14 @@ pub enum ExportPhase {
     Exporting,
 }
 
+/// Which screen the export dialog is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportStage {
+    Configure,
+    Exporting,
+    Done,
+}
+
 /// Live recording performance metrics, updated atomically from the pipeline monitor.
 pub struct RecordingStats {
     /// Encoded frames per second (measured over last segment)

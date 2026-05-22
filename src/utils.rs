@@ -858,6 +858,36 @@ pub fn build_clip_concat_list_from_marks(
     Some((path, in_offset, out_offset))
 }
 
+/// Clip length in seconds between two marks, without writing a concat file.
+/// Cheap enough to call when opening the export dialog.
+pub fn clip_duration_from_marks(
+    game_title: &str,
+    in_mark: &crate::state::ClipMark,
+    out_mark: &crate::state::ClipMark,
+) -> Option<f64> {
+    let game_dir = game_dir_for(game_title);
+    if !game_dir.exists() { return None; }
+    let segments = scan_segments(&game_dir);
+    if segments.is_empty() { return None; }
+
+    let entries: Vec<(&u64, &SegmentEntry)> = segments.iter().collect();
+    let in_i = entries.iter().position(|(idx, e)| {
+        **idx == in_mark.segment_index && e.3 == in_mark.session_id
+    })?;
+    let out_i = entries.iter().position(|(idx, e)| {
+        **idx == out_mark.segment_index && e.3 == out_mark.session_id
+    })?;
+    if out_i < in_i { return None; }
+
+    let in_offset = in_mark.offset_in_segment.max(0.0);
+    let mut prefix = 0.0_f64;
+    for (_, e) in &entries[in_i..out_i] {
+        prefix += e.2;
+    }
+    let out_offset = (prefix + out_mark.offset_in_segment).max(in_offset + 0.001);
+    Some(out_offset - in_offset)
+}
+
 #[allow(dead_code)]
 pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
     let game_dir = game_dir_for(game_title);

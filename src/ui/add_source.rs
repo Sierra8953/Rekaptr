@@ -25,6 +25,7 @@ impl RekaptrWorkspace {
             .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
                 this.close_add_source_modal(cx);
             }))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .id("add-source-container")
@@ -151,6 +152,7 @@ impl RekaptrWorkspace {
                 .w_full()
                 .h(px(220.0))
                 .overflow_y_scroll()
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(
                     VStack::new()
                         .p_1()
@@ -531,7 +533,12 @@ impl RekaptrWorkspace {
     }
 
     // ── Section 4: Audio tracks (always visible) ────────────────────
-    fn render_audio_section(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_audio_section(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        // If a track is being configured for app routing, show the picker instead.
+        if let Some(track_idx) = self.form_editing_track_index {
+            return self.render_audio_app_picker(theme, track_idx, cx);
+        }
+
         let active_count = self.form_audio_tracks.iter().filter(|t| t.enabled).count();
         let total = self.form_audio_tracks.len();
 
@@ -562,6 +569,112 @@ impl RekaptrWorkspace {
                     ),
             )
             .child(list)
+            .into_any_element()
+    }
+
+    fn render_audio_app_picker(&self, theme: &Theme, track_idx: usize, cx: &mut Context<Self>) -> AnyElement {
+        let track_name = self.form_audio_tracks[track_idx].name.clone();
+        let windows = self.app_state.available_windows.lock().clone();
+
+        VStack::new()
+            .gap_2()
+            .child(
+                HStack::new()
+                    .items_center()
+                    .child(section_label(theme, "AUDIO TRACKS"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("audio-back", "Back")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
+                                this.form_editing_track_index = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .gap_3()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(theme.tokens.background)
+                    .border_1()
+                    .border_color(theme.tokens.border)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.tokens.foreground)
+                            .child(format!("Select apps for {}", track_name)),
+                    )
+                    .child(
+                        div()
+                            .id("audio-app-list")
+                            .max_h(px(220.0))
+                            .overflow_y_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .child(if windows.is_empty() {
+                                div()
+                                    .py_4()
+                                    .text_sm()
+                                    .text_color(theme.tokens.muted_foreground)
+                                    .text_center()
+                                    .child("No windows found. Try refreshing.")
+                                    .into_any_element()
+                            } else {
+                                VStack::new()
+                                    .gap_1()
+                                    .children(windows.iter().map(|win| {
+                                        let proc_name = win.process_name.clone();
+                                        let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
+                                        let proc_for_click = proc_name.clone();
+                                        HStack::new()
+                                            .justify_between()
+                                            .items_center()
+                                            .px_2()
+                                            .py_1p5()
+                                            .rounded_md()
+                                            .bg(if is_selected { rgba(PRIMARY_DIM_A25).into() } else { theme.tokens.card })
+                                            .child(
+                                                VStack::new()
+                                                    .gap_0p5()
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.tokens.foreground)
+                                                            .child(win.title.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(theme.tokens.muted_foreground)
+                                                            .child(proc_name.clone()),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new(
+                                                    SharedString::from(format!("app-sel-{}-{}", track_idx, proc_name)),
+                                                    if is_selected { "Remove" } else { "Add" },
+                                                )
+                                                .variant(if is_selected { ButtonVariant::Destructive } else { ButtonVariant::Outline })
+                                                .size(ButtonSize::Sm)
+                                                .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
+                                                    if is_selected {
+                                                        this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click);
+                                                    } else {
+                                                        this.form_audio_tracks[track_idx].app_targets.push(proc_for_click.clone());
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                            )
+                                    }))
+                                    .into_any_element()
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_audio_track_row(

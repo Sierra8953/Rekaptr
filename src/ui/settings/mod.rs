@@ -290,10 +290,203 @@ impl RekaptrWorkspace {
     pub fn render_advanced_settings_dialog(&self, source: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let source_name = source.to_string();
+        let is_monitor = source_name == "monitor";
         let active_tab = self.form_active_tab;
-
         let windows = self.app_state.available_windows.lock().clone();
 
+        // ── Tab body ────────────────────────────────────────────────
+        let body: AnyElement = match active_tab {
+            // Video
+            0 => {
+                let mut quality = VStack::new().child(ss_segmented_row(
+                    &theme, cx, "rc", "Rate control",
+                    if self.form_rate_control == 0 { "0" } else { "1" },
+                    &[("CQP", "0"), ("VBR", "1")],
+                    |this, v| { this.form_rate_control = if v == "1" { 1 } else { 0 }; },
+                ));
+                if self.form_rate_control == 0 {
+                    quality = quality.child(ss_stepper_row(
+                        &theme, cx, "cq", "Quality (CQ)",
+                        Some("Lower is sharper. 18–24 is the sweet spot."),
+                        self.form_cq, 0, 51, 1, |this, v| this.form_cq = v));
+                } else {
+                    quality = quality.child(ss_stepper_row(
+                        &theme, cx, "br", "Bitrate (kbps)", None,
+                        self.form_bitrate, 1000, 100_000, 1000, |this, v| this.form_bitrate = v));
+                }
+
+                VStack::new()
+                    .gap_4()
+                    .child(ss_card(&theme, "Output", VStack::new()
+                        .child(ss_segmented_row(&theme, cx, "enc", "Encoder", &self.form_encoder,
+                            &[("HEVC", "nvh265enc"), ("AV1", "nvav1enc"), ("H.264", "nvh264enc")],
+                            |this, v| {
+                                this.form_encoder = v;
+                                if this.form_encoder != "nvav1enc" { this.form_cq = this.form_cq.min(51); }
+                            }))
+                        .child(ss_segmented_row(&theme, cx, "res", "Resolution", &self.form_resolution,
+                            &[("4K", "3840x2160"), ("1440p", "2560x1440"), ("1080p", "1920x1080"), ("720p", "1280x720")],
+                            |this, v| this.form_resolution = v))
+                        .child(ss_segmented_row(&theme, cx, "fps", "Frame rate", &self.form_fps.to_string(),
+                            &[("30", "30"), ("60", "60"), ("120", "120"), ("144", "144")],
+                            |this, v| { if let Ok(n) = v.parse::<i32>() { this.form_fps = n; } }))))
+                    .child(ss_card(&theme, "Quality", quality))
+                    .child(ss_card(&theme, "Replay buffer", VStack::new().child(ss_stepper_row(
+                        &theme, cx, "ret", "Retention", Some("minutes kept in memory"),
+                        self.form_retention, 1, 600, 1, |this, v| this.form_retention = v))))
+                    .into_any_element()
+            }
+
+            // Audio
+            1 => {
+                if let Some(track_idx) = self.form_editing_track_index {
+                    let track_name = self.form_audio_tracks[track_idx].name.clone();
+                    ss_card(&theme, "App routing", VStack::new()
+                        .gap_3()
+                        .child(
+                            HStack::new().justify_between().items_center()
+                                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child(format!("Select apps for {}", track_name)))
+                                .child(Button::new("back-to-tracks", "Back").variant(ButtonVariant::Ghost).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_editing_track_index = None; cx.notify(); })))
+                        )
+                        .child(
+                            div().id("app-routing-list").max_h(px(320.0)).overflow_y_scroll().child(
+                                VStack::new().gap_1().children(
+                                    windows.iter().map(|win| {
+                                        let proc_name = win.process_name.clone();
+                                        let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
+                                        let proc_for_click = proc_name.clone();
+                                        HStack::new().justify_between().items_center().px_2().py_1p5().rounded_md()
+                                            .bg(if is_selected { theme.tokens.accent } else { theme.tokens.card })
+                                            .child(VStack::new().gap_0p5()
+                                                .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.foreground).child(win.title.clone()))
+                                                .child(div().text_xs().text_color(theme.tokens.muted_foreground).child(proc_name.clone())))
+                                            .child(Button::new(SharedString::from(format!("sel-app-{}-{}", track_idx, proc_name)), if is_selected { "Remove" } else { "Add" })
+                                                .variant(if is_selected { ButtonVariant::Destructive } else { ButtonVariant::Outline })
+                                                .size(ButtonSize::Sm)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if is_selected { this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click); }
+                                                    else { this.form_audio_tracks[track_idx].app_targets.push(proc_for_click.clone()); }
+                                                    cx.notify();
+                                                })))
+                                    })
+                                )
+                            )
+                        )).into_any_element()
+                } else {
+                    let mut list = VStack::new().gap_2();
+                    for (i, track) in self.form_audio_tracks.iter().enumerate() {
+                        let enabled = track.enabled;
+                        let source_type = track.source_type.clone();
+
+                        let mut card_body = VStack::new()
+                            .gap_3()
+                            .child(
+                                HStack::new()
+                                    .gap_3()
+                                    .items_center()
+                                    .child(ss_switch(&theme, cx, SharedString::from(format!("trk-en-{}", i)), enabled, move |this| {
+                                        this.form_audio_tracks[i].enabled = !this.form_audio_tracks[i].enabled;
+                                    }))
+                                    .child(div().w(px(64.0)).text_sm().font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(if enabled { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+                                        .child(track.name.clone()))
+                                    .child(ss_source_pill(&theme, cx, i, "sys", "System", &source_type))
+                                    .child(ss_source_pill(&theme, cx, i, "mic", "Mic", &source_type))
+                                    .child(ss_source_pill(&theme, cx, i, "app", "App", &source_type))
+                                    .child(div().flex_1()),
+                            );
+
+                        // Device picker for System / Mic
+                        if enabled && (source_type == "System" || source_type == "Mic") {
+                            let devices = if source_type == "Mic" {
+                                self.app_state.audio_input_devices.lock().clone()
+                            } else {
+                                self.app_state.audio_output_devices.lock().clone()
+                            };
+                            let current_device = track.device_name.clone();
+                            let device_type_label = if source_type == "Mic" { "Input device" } else { "Output device" };
+                            let view_handle = cx.entity().downgrade();
+                            card_body = card_body.child(
+                                VStack::new().gap_2()
+                                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.muted_foreground).child(device_type_label.to_string()))
+                                    .child(
+                                        HStack::new().gap_1().flex_wrap().children(devices.into_iter().map(move |(id, name)| {
+                                            let is_selected = current_device == id || (current_device == "Default" && id == "Default");
+                                            let id_clone = id.clone();
+                                            let view_handle = view_handle.clone();
+                                            Button::new(SharedString::from(format!("dev-{}-{}", i, id)), name)
+                                                .variant(if is_selected { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
+                                                .size(ButtonSize::Sm)
+                                                .on_click(move |_, _, cx| {
+                                                    let id_clone = id_clone.clone();
+                                                    let _ = view_handle.update(cx, move |this, cx| {
+                                                        this.form_audio_tracks[i].device_name = id_clone;
+                                                        cx.notify();
+                                                    });
+                                                })
+                                        }))
+                                    )
+                            );
+                        }
+
+                        // App routing entry for App source
+                        if enabled && source_type == "App" {
+                            let app_count = track.app_targets.len();
+                            card_body = card_body.child(
+                                Button::new(SharedString::from(format!("cfg-apps-{}", i)),
+                                    if app_count == 0 { "Configure apps".to_string() } else { format!("{} apps routed", app_count) })
+                                    .icon(IconSource::Named("chevron-right".into()))
+                                    .variant(ButtonVariant::Outline)
+                                    .size(ButtonSize::Sm)
+                                    .on_click(cx.listener(move |this, _, _, cx| { this.form_editing_track_index = Some(i); cx.notify(); }))
+                            );
+                        }
+
+                        list = list.child(
+                            div().p_3().rounded_lg().bg(theme.tokens.card).border_1().border_color(theme.tokens.border).child(card_body)
+                        );
+                    }
+                    ss_card(&theme, "Audio tracks", list).into_any_element()
+                }
+            }
+
+            // Advanced
+            2 => {
+                let mut col = VStack::new().gap_4();
+                if !is_monitor {
+                    col = col.child(ss_card(&theme, "Automation", VStack::new().child(ss_toggle_row(
+                        &theme, cx, "auto-rec", "Auto-record when detected",
+                        Some("Automatically start recording when this game is detected."),
+                        self.form_auto_record, |this| this.form_auto_record = !this.form_auto_record))));
+                }
+                col = col
+                    .child(ss_card(&theme, "Encoder preset", VStack::new().child(ss_segmented_row(
+                        &theme, cx, "pre", "Preset", &self.form_preset,
+                        &[("P1", "p1"), ("P4", "p4"), ("P5", "p5"), ("P7", "p7")],
+                        |this, v| this.form_preset = v))))
+                    .child(ss_card(&theme, "Quality suite", VStack::new()
+                        .child(Tooltip::new("Disables B-frames and reduces latency. Essential for real-time monitoring.").placement(TooltipPlacement::Left)
+                            .child(ss_toggle_row(&theme, cx, "opt-zl", "Zero latency", None,
+                                self.form_zero_latency, |this| this.form_zero_latency = !this.form_zero_latency)))
+                        .child(Tooltip::new("Enables frame lookahead. Improves compression efficiency at the cost of some latency.").placement(TooltipPlacement::Left)
+                            .child(ss_toggle_row(&theme, cx, "opt-la", "Lookahead", None,
+                                self.form_lookahead, |this| this.form_lookahead = !this.form_lookahead)))
+                        .child(Tooltip::new("Spatial Adaptive Quantization. Improves quality in low-detail areas by redistributing bitrate.").placement(TooltipPlacement::Left)
+                            .child(ss_toggle_row(&theme, cx, "opt-saq", "Spatial AQ", None,
+                                self.form_spatial_aq, |this| this.form_spatial_aq = !this.form_spatial_aq)))
+                        .child(Tooltip::new("Temporal Adaptive Quantization. Improves quality in complex moving scenes.").placement(TooltipPlacement::Left)
+                            .child(ss_toggle_row(&theme, cx, "opt-taq", "Temporal AQ", None,
+                                self.form_temporal_aq, |this| this.form_temporal_aq = !this.form_temporal_aq)))))
+                    .child(ss_card(&theme, "Keyframes", VStack::new().child(ss_stepper_row(
+                        &theme, cx, "gop", "GOP size", Some("How often a full frame is stored. Standard: 60 (1s intervals)."),
+                        self.form_gop, 1, 1000, 10, |this, v| this.form_gop = v))));
+                col.into_any_element()
+            }
+
+            _ => div().into_any_element(),
+        };
+
+        // ── Modal shell ─────────────────────────────────────────────
         div()
             .id("advanced-settings-overlay")
             .absolute()
@@ -302,10 +495,15 @@ impl RekaptrWorkspace {
             .flex()
             .items_center()
             .justify_center()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.advanced_settings_source = None;
+                cx.notify();
+            }))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .id("advanced-settings-container")
-                    .w(px(650.0))
+                    .w(px(680.0))
                     .max_h(relative(0.9))
                     .bg(theme.tokens.card)
                     .border_1()
@@ -314,391 +512,116 @@ impl RekaptrWorkspace {
                     .shadow_xl()
                     .flex()
                     .flex_col()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
+                    .overflow_hidden()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // Header
                     .child(
-                        VStack::new()
-                            .p_6()
-                            .gap_4()
-                            .flex_1()
+                        HStack::new()
+                            .px_6()
+                            .py_5()
+                            .border_b_1()
+                            .border_color(theme.tokens.border)
+                            .items_center()
+                            .justify_between()
                             .child(
                                 HStack::new()
-                                    .justify_between()
+                                    .gap_3()
                                     .items_center()
                                     .child(
+                                        div()
+                                            .size(px(44.0))
+                                            .rounded_xl()
+                                            .bg(theme.tokens.muted)
+                                            .border_1()
+                                            .border_color(theme.tokens.border)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(Icon::new(IconSource::Named(if is_monitor { "video" } else { "gamepad-2" }.into()))
+                                                .size(px(22.0))
+                                                .color(theme.tokens.primary.into())),
+                                    )
+                                    .child(
                                         VStack::new()
-                                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Source Settings"))
-                                            .child(div().text_sm().text_color(theme.tokens.muted_foreground).child(source_name.clone()))
-                                    )
-                                    .child(
-                                        Button::new("close-settings", "")
-                                            .icon(IconSource::Named("x".to_string()))
-                                            .variant(ButtonVariant::Ghost)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.advanced_settings_source = None;
-                                                cx.notify();
-                                            }))
-                                    )
+                                            .gap_0p5()
+                                            .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.tokens.foreground).child(source_name.clone()))
+                                            .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Source settings")),
+                                    ),
                             )
                             .child(
-                                HStack::new()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("tab-video", "Video")
-                                            .variant(if active_tab == 0 { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
-                                            .on_click(cx.listener(|this, _, _, cx| { this.form_active_tab = 0; cx.notify(); }))
-                                    )
-                                    .child(
-                                        Button::new("tab-audio", "Audio")
-                                            .variant(if active_tab == 1 { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
-                                            .on_click(cx.listener(|this, _, _, cx| { this.form_active_tab = 1; this.form_editing_track_index = None; cx.notify(); }))
-                                    )
-                                    .child(
-                                        Button::new("tab-advanced", "Advanced")
-                                            .variant(if active_tab == 2 { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
-                                            .on_click(cx.listener(|this, _, _, cx| { this.form_active_tab = 2; cx.notify(); }))
-                                    )
-                            )
-                            .child(
-                                div()
-                                    .id("settings-tab-scroll")
-                                    .flex_1()
-                                    .overflow_y_scroll()
-                                    .child(match active_tab {
-                                        0 => VStack::new()
-                                            .gap_4()
-                                            .child(
-                                                HStack::new()
-                                                    .gap_4()
-                                                    .child(
-                                                        VStack::new()
-                                                            .flex_1()
-                                                            .gap_1()
-                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Encoder"))
-                                                            .child(
-                                                                div().flex().flex_wrap().gap_2()
-                                                                    .child(Button::new("enc-av1", "AV1").variant(if self.form_encoder == "nvav1enc" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_encoder = "nvav1enc".to_string(); cx.notify(); })))
-                                                                    .child(Button::new("enc-h265", "HEVC").variant(if self.form_encoder == "nvh265enc" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_encoder = "nvh265enc".to_string(); this.form_cq = this.form_cq.min(51); cx.notify(); })))
-                                                                    .child(Button::new("enc-h264", "H.264").variant(if self.form_encoder == "nvh264enc" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_encoder = "nvh264enc".to_string(); this.form_cq = this.form_cq.min(51); cx.notify(); })))
-                                                            )
-                                                    )
-                                                    .child(
-                                                        VStack::new()
-                                                            .flex_1()
-                                                            .gap_1()
-                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Rate Control"))
-                                                            .child(
-                                                                HStack::new()
-                                                                    .gap_2()
-                                                                    .child(Button::new("rc-cqp", "CQP").variant(if self.form_rate_control == 0 { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_rate_control = 0; cx.notify(); })))
-                                                                    .child(Button::new("rc-vbr", "VBR").variant(if self.form_rate_control == 1 { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_rate_control = 1; cx.notify(); })))
-                                                            )
-                                                    )
-                                            )
-                                            .child(
-                                                HStack::new()
-                                                    .gap_4()
-                                                    .child(
-                                                        VStack::new()
-                                                            .flex_1()
-                                                            .gap_1()
-                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Resolution"))
-                                                            .child(
-                                                                div().flex().flex_wrap().gap_2()
-                                                                    .child(Button::new("res-4k", "4K").variant(if self.form_resolution == "3840x2160" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_resolution = "3840x2160".to_string(); cx.notify(); })))
-                                                                    .child(Button::new("res-1440p", "1440p").variant(if self.form_resolution == "2560x1440" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_resolution = "2560x1440".to_string(); cx.notify(); })))
-                                                                    .child(Button::new("res-1080p", "1080p").variant(if self.form_resolution == "1920x1080" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_resolution = "1920x1080".to_string(); cx.notify(); })))
-                                                            )
-                                                    )
-                                                    .child(
-                                                        VStack::new()
-                                                            .flex_1()
-                                                            .gap_1()
-                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("FPS"))
-                                                            .child(
-                                                                div().flex().flex_wrap().gap_2()
-                                                                    .child(Button::new("fps-30", "30").variant(if self.form_fps == 30 { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_fps = 30; cx.notify(); })))
-                                                                    .child(Button::new("fps-60", "60").variant(if self.form_fps == 60 { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_fps = 60; cx.notify(); })))
-                                                                    .child(Button::new("fps-120", "120").variant(if self.form_fps == 120 { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_fps = 120; cx.notify(); })))
-                                                            )
-                                                    )
-                                            )
-                                            .child(
-                                                VStack::new()
-                                                    .gap_1()
-                                                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(if self.form_rate_control == 0 { "Quality (CQ)" } else { "Bitrate (kbps)" }))
-                                                    .child(
-                                                        HStack::new()
-                                                            .gap_4()
-                                                            .items_center()
-                                                            .child(Button::new("val-dec", "-").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { if this.form_rate_control == 0 { this.form_cq = (this.form_cq - 1).max(0); } else { this.form_bitrate = (this.form_bitrate - 1000).max(1000); } cx.notify(); })))
-                                                            .child(div().p_3().bg(theme.tokens.background).rounded_md().min_w(px(100.0)).child(div().text_center().text_lg().font_weight(FontWeight::BOLD).text_color(theme.tokens.primary).child(if self.form_rate_control == 0 { self.form_cq.to_string() } else { self.form_bitrate.to_string() })))
-                                                            .child(Button::new("val-inc", "+").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { if this.form_rate_control == 0 { this.form_cq = (this.form_cq + 1).min(51); } else { this.form_bitrate = (this.form_bitrate + 1000).min(100000); } cx.notify(); })))
-                                                    )
-                                            )
-                                            .child(
-                                                VStack::new()
-                                                    .gap_1()
-                                                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Retention (minutes)"))
-                                                    .child(
-                                                        HStack::new()
-                                                            .gap_4()
-                                                            .items_center()
-                                                            .child(Button::new("ret-dec", "-").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { this.form_retention = (this.form_retention - 1).max(1); cx.notify(); })))
-                                                            .child(div().p_3().bg(theme.tokens.background).rounded_md().min_w(px(100.0)).child(div().text_center().text_lg().font_weight(FontWeight::BOLD).text_color(theme.tokens.primary).child(self.form_retention.to_string())))
-                                                            .child(Button::new("ret-inc", "+").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { this.form_retention = (this.form_retention + 1).min(600); cx.notify(); })))
-                                                    )
-                                            )
-                                            .into_any_element(),
-                                        1 => {
-                                            if let Some(track_idx) = self.form_editing_track_index {
-                                                let track = &self.form_audio_tracks[track_idx];
-                                                VStack::new()
-                                                    .gap_4()
-                                                    .child(
-                                                        HStack::new().justify_between().items_center()
-                                                            .child(div().font_weight(FontWeight::BOLD).child(format!("Select Apps for {}", track.name)))
-                                                            .child(Button::new("back-to-tracks", "Back").variant(ButtonVariant::Ghost).on_click(cx.listener(|this, _, _, cx| { this.form_editing_track_index = None; cx.notify(); })))
-                                                    )
-                                                    .child(
-                                                        div().id("app-routing-list").flex_1().max_h(px(350.0)).overflow_y_scroll().child(
-                                                            VStack::new().gap_1().children(
-                                                                windows.iter().map(|win| {
-                                                                    let proc_name = win.process_name.clone();
-                                                                    let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
-                                                                    HStack::new().justify_between().p_2().rounded_md().bg(if is_selected { theme.tokens.accent } else { gpui::transparent_black() })
-                                                                        .child(VStack::new().child(div().text_sm().child(win.title.clone())).child(div().text_xs().text_color(theme.tokens.muted_foreground).child(proc_name.clone())))
-                                                                        .child(Button::new(SharedString::from(format!("sel-app-{}-{}", track_idx, proc_name)), if is_selected { "REMOVE" } else { "ADD" }).variant(if is_selected { ButtonVariant::Destructive } else { ButtonVariant::Outline }).size(ButtonSize::Sm).on_click(cx.listener(move |this, _, _, cx| {
-                                                                            if is_selected { this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &proc_name); } else { this.form_audio_tracks[track_idx].app_targets.push(proc_name.clone()); }
-                                                                            cx.notify();
-                                                                        })))
-                                                                })
-                                                            )
-                                                        )
-                                                    ).into_any_element()
-                                            } else {
-                                                VStack::new()
-                                                    .gap_2()
-                                                    .children(
-                                                        self.form_audio_tracks.iter().enumerate().map(|(i, track)| {
-                                                            HStack::new()
-                                                                .justify_between()
-                                                                .p_3()
-                                                                .bg(theme.tokens.background)
-                                                                .rounded_md()
-                                                                .border_1()
-                                                                .border_color(theme.tokens.border)
-                                                                .child(
-                                                                    HStack::new()
-                                                                        .gap_3()
-                                                                        .child(
-                                                                            Button::new(("track-toggle", i), if track.enabled { "ON" } else { "OFF" })
-                                                                                .variant(if track.enabled { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                                                .size(ButtonSize::Sm)
-                                                                                .on_click(cx.listener(move |this, _, _, cx| { this.form_audio_tracks[i].enabled = !this.form_audio_tracks[i].enabled; cx.notify(); }))
-                                                                        )
-                                                                        .child(VStack::new()
-                                                                            .child(div().child(track.name.clone()))
-                                                                            .child(
-                                                                                HStack::new().gap_1().mt_1()
-                                                                                    .child(Button::new(("type-sys", i), "System").variant(if track.source_type == "System" { ButtonVariant::Secondary } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(move |this, _, _, cx| { this.form_audio_tracks[i].source_type = "System".to_string(); cx.notify(); })))
-                                                                                    .child(Button::new(("type-mic", i), "Mic").variant(if track.source_type == "Mic" { ButtonVariant::Secondary } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(move |this, _, _, cx| { this.form_audio_tracks[i].source_type = "Mic".to_string(); cx.notify(); })))
-                                                                                    .child(Button::new(("type-app", i), "App").variant(if track.source_type == "App" { ButtonVariant::Secondary } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(move |this, _, _, cx| { this.form_audio_tracks[i].source_type = "App".to_string(); cx.notify(); })))
-                                                                            )
-                                                                            .when(track.enabled && (track.source_type == "System" || track.source_type == "Mic"), {
-                                                                                let devices = if track.source_type == "Mic" {
-                                                                                    self.app_state.audio_input_devices.lock().clone()
-                                                                                } else {
-                                                                                    self.app_state.audio_output_devices.lock().clone()
-                                                                                };
-                                                                                let current_device = track.device_name.clone();
-                                                                                let current_device_label = devices.iter()
-                                                                                    .find(|(id, _)| *id == current_device)
-                                                                                    .map(|(_, name)| name.clone())
-                                                                                    .unwrap_or_else(|| current_device.clone());
-                                                                                let view_handle = cx.entity().downgrade();
-                                                                                let device_type_label = if track.source_type == "Mic" { "Input Device" } else { "Output Device" };
-                                                                                move |row| {
-                                                                                    row.child(
-                                                                                        VStack::new().gap_1().mt_2()
-                                                                                            .child(
-                                                                                                HStack::new().gap_2().items_center()
-                                                                                                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(use_theme().tokens.muted_foreground).child(device_type_label.to_string()))
-                                                                                                    .child(div().text_xs().text_color(use_theme().tokens.foreground).child(current_device_label))
-                                                                                            )
-                                                                                            .child(
-                                                                                                HStack::new().gap_1().flex_wrap()
-                                                                                                    .children(devices.into_iter().map(move |(id, name)| {
-                                                                                                        let is_selected = current_device == id || (current_device == "Default" && id == "Default");
-                                                                                                        let id_clone = id.clone();
-                                                                                                        let view_handle = view_handle.clone();
-                                                                                                        Button::new(SharedString::from(format!("dev-{}-{}", i, id)), name)
-                                                                                                            .variant(if is_selected { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
-                                                                                                            .size(ButtonSize::Sm)
-                                                                                                            .on_click(move |_, _, cx| {
-                                                                                                                let id_clone = id_clone.clone();
-                                                                                                                let _ = view_handle.update(cx, move |this, cx| {
-                                                                                                                    this.form_audio_tracks[i].device_name = id_clone;
-                                                                                                                    cx.notify();
-                                                                                                                });
-                                                                                                            })
-                                                                                                    }))
-                                                                                            )
-                                                                                    )
-                                                                                }
-                                                                            })
-                                                                        )
-                                                                )
-                                                                .when(track.source_type == "App" && track.enabled, |this| this.child(
-                                                                    Button::new(("cfg-apps", i), "Configure Apps")
-                                                                        .variant(ButtonVariant::Outline)
-                                                                        .size(ButtonSize::Sm)
-                                                                        .on_click(cx.listener(move |this, _, _, cx| { this.form_editing_track_index = Some(i); cx.notify(); }))
-                                                                ))
-                                                        })
-                                                    )
-                                                    .into_any_element()
-                                            }
-                                        },
-                                        2 => {
-                                            VStack::new()
-                                                .gap_4()
-                                                .when(source_name != "monitor", |this| {
-                                                    this.child(
-                                                        VStack::new()
-                                                            .gap_2()
-                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Automation"))
-                                                            .child(
-                                                                HStack::new()
-                                                                    .justify_between()
-                                                                    .p_2()
-                                                                    .bg(theme.tokens.background)
-                                                                    .rounded_md()
-                                                                    .child(
-                                                                        VStack::new()
-                                                                            .child(div().child("Auto-Record"))
-                                                                            .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("Automatically start recording when this game is detected."))
-                                                                    )
-                                                                    .child(
-                                                                        Button::new("opt-auto-record", if self.form_auto_record { "ON" } else { "OFF" })
-                                                                            .variant(if self.form_auto_record { ButtonVariant::Default } else { ButtonVariant::Ghost })
-                                                                            .size(ButtonSize::Sm)
-                                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                                this.form_auto_record = !this.form_auto_record;
-                                                                                cx.notify();
-                                                                            }))
-                                                                    )
-                                                            )
-                                                    )
-                                                })
-                                                .child(
-                                                    VStack::new()
-                                                        .gap_1()
-                                                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Encoding Preset"))                                                        .child(
-                                                            div().flex().flex_wrap().gap_2()
-                                                                .child(Button::new("pre-p1", "P1").variant(if self.form_preset == "p1" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_preset = "p1".to_string(); cx.notify(); })))
-                                                                .child(Button::new("pre-p4", "P4").variant(if self.form_preset == "p4" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_preset = "p4".to_string(); cx.notify(); })))
-                                                                .child(Button::new("pre-p7", "P7").variant(if self.form_preset == "p7" { ButtonVariant::Default } else { ButtonVariant::Outline }).on_click(cx.listener(|this, _, _, cx| { this.form_preset = "p7".to_string(); cx.notify(); })))
-                                                        )
-                                                )
-                                                .child(
-                                                    VStack::new()
-                                                        .gap_2()
-                                                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Quality Suite"))
-                                                        .child(
-                                                            Tooltip::new("Disables B-frames and reduces latency. Essential for real-time monitoring.")
-                                                                .placement(TooltipPlacement::Left)
-                                                                .child(HStack::new().justify_between().p_2().bg(theme.tokens.background).rounded_md().child(div().child("Zero Latency")).child(Button::new("opt-zl", if self.form_zero_latency { "ON" } else { "OFF" }).variant(if self.form_zero_latency { ButtonVariant::Default } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_zero_latency = !this.form_zero_latency; cx.notify(); }))))
-                                                        )
-                                                        .child(
-                                                            Tooltip::new("Enables frame lookahead. Improves compression efficiency at the cost of some latency.")
-                                                                .placement(TooltipPlacement::Left)
-                                                                .child(HStack::new().justify_between().p_2().bg(theme.tokens.background).rounded_md().child(div().child("Lookahead")).child(Button::new("opt-la", if self.form_lookahead { "ON" } else { "OFF" }).variant(if self.form_lookahead { ButtonVariant::Default } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_lookahead = !this.form_lookahead; cx.notify(); }))))
-                                                        )
-                                                        .child(
-                                                            Tooltip::new("Spatial Adaptive Quantization. Improves quality in low-detail areas by redistributing bitrate.")
-                                                                .placement(TooltipPlacement::Left)
-                                                                .child(HStack::new().justify_between().p_2().bg(theme.tokens.background).rounded_md().child(div().child("Spatial AQ")).child(Button::new("opt-saq", if self.form_spatial_aq { "ON" } else { "OFF" }).variant(if self.form_spatial_aq { ButtonVariant::Default } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_spatial_aq = !this.form_spatial_aq; cx.notify(); }))))
-                                                        )
-                                                        .child(
-                                                            Tooltip::new("Temporal Adaptive Quantization. Improves quality in complex moving scenes.")
-                                                                .placement(TooltipPlacement::Left)
-                                                                .child(HStack::new().justify_between().p_2().bg(theme.tokens.background).rounded_md().child(div().child("Temporal AQ")).child(Button::new("opt-taq", if self.form_temporal_aq { "ON" } else { "OFF" }).variant(if self.form_temporal_aq { ButtonVariant::Default } else { ButtonVariant::Ghost }).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_temporal_aq = !this.form_temporal_aq; cx.notify(); }))))
-                                                        )
-                                                )
-                                                .child(
-                                                    VStack::new()
-                                                        .gap_1()
-                                                        .child(
-                                                            Tooltip::new("GOP Size (Group of Pictures). Controls how often a full frame is stored. Standard: 60 (1s intervals).")
-                                                                .placement(TooltipPlacement::Left)
-                                                                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("GOP Size (frames)"))
-                                                        )
-                                                        .child(
-                                                            HStack::new()
-                                                                .gap_4()
-                                                                .items_center()
-                                                                .child(Button::new("gop-dec", "-").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { this.form_gop = (this.form_gop - 10).max(1); cx.notify(); })))
-                                                                .child(div().p_3().bg(theme.tokens.background).rounded_md().min_w(px(100.0)).child(div().text_center().child(self.form_gop.to_string())))
-                                                                .child(Button::new("gop-inc", "+").variant(ButtonVariant::Outline).on_click(cx.listener(|this, _, _, cx| { this.form_gop = (this.form_gop + 10).min(1000); cx.notify(); })))
-                                                        )
-                                                )
-                                                .into_any_element()
-                                        },
-                                        _ => div().into_any_element(),
-                                    })
-                            )
+                                Button::new("close-settings", "")
+                                    .icon(IconSource::Named("x".into()))
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .on_click(cx.listener(|this, _, _, cx| { this.advanced_settings_source = None; cx.notify(); })),
+                            ),
                     )
+                    // Tabs
                     .child(
-                        // Footer
+                        HStack::new()
+                            .px_6()
+                            .pt_4()
+                            .gap_1()
+                            .child(ss_tab(&theme, cx, 0, active_tab, "Video", "video"))
+                            .child(ss_tab(&theme, cx, 1, active_tab, "Audio", "volume-2"))
+                            .child(ss_tab(&theme, cx, 2, active_tab, "Advanced", "sliders-horizontal")),
+                    )
+                    // Body
+                    .child(
+                        div()
+                            .id("settings-tab-scroll")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px_6()
+                            .py_5()
+                            .child(body),
+                    )
+                    // Footer
+                    .child(
                         HStack::new()
                             .justify_between()
-                            .p_6()
+                            .items_center()
+                            .px_6()
+                            .py_4()
                             .border_t_1()
                             .border_color(theme.tokens.border)
                             .child({
-                                let is_monitor = source_name == "monitor";
                                 let source_name_del = source_name.clone();
-                                div().child(
-                                    if !is_monitor {
-                                        Button::new("delete-session", "Delete Session")
-                                            .variant(ButtonVariant::Destructive)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                // Find the session ID by name
-                                                let mut session_id_to_remove = None;
-                                                for session in this.app_state.manual_sessions.iter() {
-                                                    if session.value().title == source_name_del {
-                                                        session_id_to_remove = Some(*session.key());
-                                                        break;
-                                                    }
+                                if !is_monitor {
+                                    Button::new("delete-session", "Delete source")
+                                        .icon(IconSource::Named("trash".into()))
+                                        .variant(ButtonVariant::Destructive)
+                                        .size(ButtonSize::Sm)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let mut session_id_to_remove = None;
+                                            for session in this.app_state.manual_sessions.iter() {
+                                                if session.value().title == source_name_del {
+                                                    session_id_to_remove = Some(*session.key());
+                                                    break;
                                                 }
-
-                                                if let Some(id) = session_id_to_remove {
-                                                    this.session_to_delete = Some(id);
-                                                    this.advanced_settings_source = None;
-                                                    cx.notify();
-                                                }
-                                            }))
-                                            .into_any_element()
-                                    } else {
-                                        div().into_any_element()
-                                    }
-                                )
+                                            }
+                                            if let Some(id) = session_id_to_remove {
+                                                this.session_to_delete = Some(id);
+                                                this.advanced_settings_source = None;
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
                             })
                             .child(
                                 HStack::new()
-                                    .gap_4()
+                                    .gap_3()
                                     .child(
                                         Button::new("cancel-settings", "Cancel")
                                             .variant(ButtonVariant::Ghost)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.advanced_settings_source = None;
-                                                cx.notify();
-                                            }))
+                                            .on_click(cx.listener(|this, _, _, cx| { this.advanced_settings_source = None; cx.notify(); })),
                                     )
                                     .child(
-                                        Button::new("save-settings", "Save Changes")
+                                        Button::new("save-settings", "Save changes")
+                                            .icon(IconSource::Named("check".into()))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 let mut config = crate::config::AppConfig::load();
                                                 if source_name == "monitor" {
@@ -750,9 +673,9 @@ impl RekaptrWorkspace {
                                                 this.advanced_settings_source = None;
                                                 this.show_toast("Settings Saved", Some("Source overrides have been updated."), adabraka_ui::overlays::toast::ToastVariant::Success, window, cx);
                                                 cx.notify();
-                                            }))
-                                    )
-                            )
+                                            })),
+                                    ),
+                            ),
                     )
             )
     }
@@ -1058,4 +981,232 @@ pub(super) fn stepper_f32<V: 'static>(
                     });
                 }),
         )
+}
+
+// ── Source-settings dialog: shared controls ─────────────────────────
+fn ss_tab(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    index: usize,
+    active_tab: usize,
+    label: &'static str,
+    icon: &'static str,
+) -> impl IntoElement {
+    let active = index == active_tab;
+    div()
+        .id(SharedString::from(format!("ss-tab-{}", index)))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_t_lg()
+        .cursor_pointer()
+        .bg(if active { theme.tokens.muted } else { gpui::transparent_black() })
+        .border_b_2()
+        .border_color(if active { theme.tokens.primary } else { gpui::transparent_black() })
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.form_active_tab = index;
+            this.form_editing_track_index = None;
+            cx.notify();
+        }))
+        .child(Icon::new(IconSource::Named(icon.into()))
+            .size(px(15.0))
+            .color(if active { theme.tokens.primary.into() } else { theme.tokens.muted_foreground.into() }))
+        .child(div()
+            .text_sm()
+            .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+            .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+            .child(label))
+}
+
+fn ss_card(theme: &Theme, title: &str, body: impl IntoElement) -> impl IntoElement {
+    VStack::new()
+        .w_full()
+        .rounded_xl()
+        .border_1()
+        .border_color(theme.tokens.border)
+        .bg(theme.tokens.background)
+        .child(div()
+            .px_5()
+            .pt_4()
+            .pb_2()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.tokens.muted_foreground)
+            .child(title.to_string()))
+        .child(div().px_5().pb_4().child(body))
+}
+
+fn ss_row(theme: &Theme, label: &str, description: Option<&str>, control: AnyElement) -> impl IntoElement {
+    let mut left = VStack::new().flex_1().gap_0p5().child(div()
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.tokens.foreground)
+        .child(label.to_string()));
+    if let Some(d) = description {
+        left = left.child(div().text_xs().text_color(theme.tokens.muted_foreground).child(d.to_string()));
+    }
+    HStack::new()
+        .w_full()
+        .py_2p5()
+        .gap_4()
+        .items_center()
+        .justify_between()
+        .child(left)
+        .child(div().child(control))
+}
+
+fn ss_switch(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    id: impl Into<ElementId>,
+    value: bool,
+    on_toggle: impl Fn(&mut RekaptrWorkspace) + 'static + Send + Sync,
+) -> impl IntoElement {
+    let fg = theme.tokens.foreground;
+    div()
+        .id(id.into())
+        .w(px(40.0))
+        .h(px(22.0))
+        .rounded_full()
+        .relative()
+        .cursor_pointer()
+        .bg(if value { theme.tokens.primary } else { theme.tokens.border })
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            on_toggle(this);
+            cx.notify();
+        }))
+        .child(div()
+            .absolute()
+            .top(px(2.0))
+            .left(if value { px(20.0) } else { px(2.0) })
+            .size(px(18.0))
+            .rounded_full()
+            .bg(fg))
+}
+
+fn ss_toggle_row(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    id: &'static str,
+    label: &str,
+    description: Option<&str>,
+    value: bool,
+    on_toggle: impl Fn(&mut RekaptrWorkspace) + 'static + Send + Sync,
+) -> impl IntoElement {
+    let sw = ss_switch(theme, cx, id, value, on_toggle);
+    ss_row(theme, label, description, sw.into_any_element())
+}
+
+fn ss_segmented_row(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    id_prefix: &'static str,
+    label: &str,
+    current: &str,
+    options: &[(&'static str, &'static str)],
+    on_pick: impl Fn(&mut RekaptrWorkspace, String) + 'static + Send + Sync,
+) -> impl IntoElement {
+    let on_pick = Arc::new(on_pick);
+    let current_owned = current.to_string();
+    let mut group = div()
+        .flex()
+        .flex_row()
+        .rounded_md()
+        .bg(theme.tokens.card)
+        .border_1()
+        .border_color(theme.tokens.border)
+        .p(px(2.0))
+        .gap(px(2.0));
+    for (i, (lbl, val)) in options.iter().enumerate() {
+        let active = *val == current_owned;
+        let val_string = val.to_string();
+        let on_pick = on_pick.clone();
+        group = group.child(div()
+            .id(SharedString::from(format!("{}-{}", id_prefix, i)))
+            .px_3()
+            .py_1()
+            .rounded_sm()
+            .text_xs()
+            .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+            .cursor_pointer()
+            .bg(if active { theme.tokens.primary } else { gpui::transparent_black() })
+            .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+            .hover(|s| s.text_color(theme.tokens.foreground))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                on_pick(this, val_string.clone());
+                cx.notify();
+            }))
+            .child(lbl.to_string()));
+    }
+    ss_row(theme, label, None, group.into_any_element())
+}
+
+fn ss_stepper_row(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    id_prefix: &'static str,
+    label: &str,
+    description: Option<&str>,
+    value: i32,
+    min: i32,
+    max: i32,
+    step: i32,
+    on_change: impl Fn(&mut RekaptrWorkspace, i32) + 'static + Send + Sync,
+) -> impl IntoElement {
+    let on_change = Arc::new(on_change);
+    let on_dec = on_change.clone();
+    let on_inc = on_change;
+    let ctl = HStack::new()
+        .gap_2()
+        .items_center()
+        .child(Button::new(SharedString::from(format!("{}-dec", id_prefix)), "")
+            .icon(IconSource::Named("minus".into()))
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Outline)
+            .on_click(cx.listener(move |this, _, _, cx| { on_dec(this, (value - step).max(min)); cx.notify(); })))
+        .child(div()
+            .min_w(px(72.0))
+            .text_center()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.tokens.foreground)
+            .child(format!("{}", value)))
+        .child(Button::new(SharedString::from(format!("{}-inc", id_prefix)), "")
+            .icon(IconSource::Named("plus".into()))
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Outline)
+            .on_click(cx.listener(move |this, _, _, cx| { on_inc(this, (value + step).min(max)); cx.notify(); })));
+    ss_row(theme, label, description, ctl.into_any_element())
+}
+
+fn ss_source_pill(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    idx: usize,
+    id_suffix: &'static str,
+    label: &'static str,
+    current: &str,
+) -> impl IntoElement {
+    let active = current == label;
+    div()
+        .id(SharedString::from(format!("ss-pill-{}-{}", idx, id_suffix)))
+        .px_2()
+        .py_0p5()
+        .rounded_sm()
+        .text_xs()
+        .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        .cursor_pointer()
+        .bg(if active { theme.tokens.accent } else { theme.tokens.background })
+        .border_1()
+        .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
+        .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
+        .hover(|s| s.text_color(theme.tokens.foreground))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.form_audio_tracks[idx].source_type = label.to_string();
+            cx.notify();
+        }))
+        .child(label)
 }

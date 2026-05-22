@@ -79,7 +79,7 @@ begin
     '"install_layout":"unspecified",' +
     '"install_prefix":"' + EscapedPrefix + '",' +
     '"modify_path":false,' +
-    '"provider":{"source":"inno-setup","version":"6"},' +
+    '"provider":{"source":"inno-setup","version":"6.0.0"},' +
     '"source":{"app_name":"{#MyAppNameLower}","name":"{#MyAppName}","owner":"Sierra8953","release_type":"github"},' +
     '"version":"{#MyAppVersion}"}';
 

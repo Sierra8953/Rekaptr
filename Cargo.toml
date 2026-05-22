@@ -47,6 +47,14 @@ env_logger = "0.11.9"
 rfd = "0.15"
 axoupdater = { version = "0.10", features = ["blocking"] }
 
+[[example]]
+name = "game_settings_mockup"
+path = "mockups/game_settings_mockup.rs"
+
+[[example]]
+name = "export_redesign_mockup"
+path = "mockups/export_redesign_mockup.rs"
+
 [build-dependencies]
 winresource = "0.1"
 image = "0.25"

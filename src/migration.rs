@@ -8,7 +8,6 @@ use winreg::RegKey;
 const LEGACY_APPDATA_DIR: &str = "Luma";
 const NEW_APPDATA_DIR: &str = "Rekaptr";
 const LEGACY_DB_FILENAME: &str = "luma.db";
-const NEW_DB_FILENAME: &str = "rekaptr.db";
 const LEGACY_STARTUP_REG_VALUE: &str = "Luma";
 const NEW_STARTUP_REG_VALUE: &str = "Rekaptr";
 const STARTUP_REG_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -51,10 +50,13 @@ fn migrate_db_file() {
         return;
     };
     let legacy = dir.join(LEGACY_DB_FILENAME);
-    let new = dir.join(NEW_DB_FILENAME);
+    let new = crate::config::AppConfig::get_db_path();
 
     if !legacy.exists() || new.exists() {
         return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
     log::info!(

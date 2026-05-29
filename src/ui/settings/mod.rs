@@ -165,6 +165,7 @@ impl RekaptrWorkspace {
                             _ => {}
                         }
                         config.save();
+                        crate::hotkeys::reload_hotkeys();
                         this.hotkey_listening = None;
                         cx.notify();
                     }
@@ -348,6 +349,30 @@ impl RekaptrWorkspace {
                                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child(format!("Select apps for {}", track_name)))
                                 .child(Button::new("back-to-tracks", "Back").variant(ButtonVariant::Ghost).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_editing_track_index = None; cx.notify(); })))
                         )
+                        .child({
+                            let selected_apps = self.form_audio_tracks[track_idx].app_targets.clone();
+                            if selected_apps.is_empty() {
+                                div().text_xs().text_color(theme.tokens.muted_foreground)
+                                    .child("No apps selected yet. Pick from the list below.")
+                                    .into_any_element()
+                            } else {
+                                div().flex().flex_row().flex_wrap().gap_2().children(selected_apps.iter().map(|app| {
+                                    let app_owned = app.clone();
+                                    HStack::new().gap_1p5().items_center().px_2().py_1().rounded_md()
+                                        .bg(theme.tokens.accent).border_1().border_color(theme.tokens.primary)
+                                        .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.foreground).child(app.clone()))
+                                        .child(div().id(SharedString::from(format!("sel-chip-x-{}-{}", track_idx, app)))
+                                            .flex().items_center().justify_center().cursor_pointer()
+                                            .text_color(theme.tokens.muted_foreground)
+                                            .hover(|s| s.text_color(theme.tokens.foreground))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
+                                                this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
+                                                cx.notify();
+                                            }))
+                                            .child(Icon::new(IconSource::Named("x".into())).size(px(12.0)).color(theme.tokens.muted_foreground.into())))
+                                })).into_any_element()
+                            }
+                        })
                         .child(
                             div().id("app-routing-list").max_h(px(320.0)).overflow_y_scroll().child(
                                 VStack::new().gap_1().children(

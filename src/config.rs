@@ -137,6 +137,12 @@ pub struct HotkeyConfig {
     pub marker_highlight_mod: u32,
 }
 
+impl HotkeyConfig {
+    pub fn defaults() -> Self {
+        default_hotkeys()
+    }
+}
+
 fn default_hotkeys() -> HotkeyConfig {
     HotkeyConfig {
         toggle_recording_vk: 0x78, // F9

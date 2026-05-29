@@ -885,6 +885,7 @@ impl RekaptrWorkspace {
                                                             .border_1()
                                                             .border_color(rgba(0xffffff_1a))
                                                             .cursor_pointer()
+                                                            .hover(|s| s.bg(rgba(0x000000_aa)).border_color(rgba(0xffffff_55)))
                                                             .child(Icon::new("settings").size(px(14.0)).color(gpui::white()))
                                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                                 cx.stop_propagation();

@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use gpui::*;
 use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
 use crate::updater::UpdateState;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logo.png");
 
 impl RekaptrWorkspace {
     pub(crate) fn render_settings_about(
@@ -22,14 +24,9 @@ impl RekaptrWorkspace {
                         .items_center()
                         .gap_4()
                         .child(
-                            div()
+                            img(Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_BYTES.to_vec())))
                                 .size(px(80.0))
                                 .rounded_2xl()
-                                .bg(theme.tokens.primary)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(Icon::new("play").size(px(40.0)).text_color(gpui::white()))
                         )
                         .child(
                             VStack::new()

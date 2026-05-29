@@ -143,8 +143,60 @@ impl gpui::AssetSource for Assets {
     }
 }
 
+/// Named event used to ask the running instance to surface its window.
+#[cfg(target_os = "windows")]
+const FOCUS_EVENT_NAME: windows::core::PCWSTR = windows::core::w!("Rekaptr_FocusEvent_v1");
+
+/// Returns true if another instance of Rekaptr is already running.
+///
+/// Creates a named mutex; if it already exists, another instance owns it.
+/// The handle is intentionally leaked so the mutex lives for this process's
+/// lifetime — Windows releases it automatically when the process exits.
+#[cfg(target_os = "windows")]
+fn another_instance_running() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        match CreateMutexW(None, false, w!("Rekaptr_SingleInstance_Mutex_v1")) {
+            Ok(_handle) => GetLastError() == ERROR_ALREADY_EXISTS,
+            // If the mutex can't be created, fail open and allow launch.
+            Err(_) => false,
+        }
+    }
+}
+
+/// Signals the already-running instance to bring its window to the foreground.
+#[cfg(target_os = "windows")]
+fn signal_existing_instance() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    unsafe {
+        if let Ok(handle) = OpenEventW(EVENT_MODIFY_STATE, false, FOCUS_EVENT_NAME) {
+            let _ = SetEvent(handle);
+            let _ = CloseHandle(handle);
+        }
+    }
+}
+
+/// Creates the auto-reset focus event for this (primary) instance. The running
+/// instance polls it; a second launch sets it to request a window focus.
+#[cfg(target_os = "windows")]
+fn create_focus_event() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::System::Threading::CreateEventW;
+    // auto-reset, initially non-signaled
+    unsafe { CreateEventW(None, false, false, FOCUS_EVENT_NAME).ok() }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --- Single-instance guard ---
+    #[cfg(target_os = "windows")]
+    if another_instance_running() {
+        signal_existing_instance();
+        return Ok(());
+    }
+
     // --- Portable Path Configuration ---
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop(); // Root directory (next to rekaptr.exe)
@@ -336,7 +388,27 @@ async fn main() -> Result<()> {
                 let tray_icon = tray_icon;
                 let menu_channel = MenuEvent::receiver();
                 let _tray_channel = TrayIconEvent::receiver();
+                #[cfg(target_os = "windows")]
+                let focus_event = create_focus_event();
                 loop {
+                    // A second launch signals this event to ask us to surface
+                    // the window instead of starting a new process.
+                    #[cfg(target_os = "windows")]
+                    if let Some(ev) = focus_event {
+                        use windows::Win32::Foundation::WAIT_OBJECT_0;
+                        use windows::Win32::System::Threading::WaitForSingleObject;
+                        if unsafe { WaitForSingleObject(ev, 0) } == WAIT_OBJECT_0 {
+                            let _ = cx.update(|cx| {
+                                if let Some(window) = cx.windows().first() {
+                                    let _ = window.update(cx, |_, window: &mut Window, _| {
+                                        window.show_window();
+                                        window.activate_window();
+                                    });
+                                }
+                            });
+                        }
+                    }
+
                     // Handle tray commands from app logic
                     while let Ok(cmd) = tray_rx.try_recv() {
                         match cmd {

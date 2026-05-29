@@ -575,6 +575,7 @@ impl RekaptrWorkspace {
     fn render_audio_app_picker(&self, theme: &Theme, track_idx: usize, cx: &mut Context<Self>) -> AnyElement {
         let track_name = self.form_audio_tracks[track_idx].name.clone();
         let windows = self.app_state.available_windows.lock().clone();
+        let selected_apps = self.form_audio_tracks[track_idx].app_targets.clone();
 
         VStack::new()
             .gap_2()
@@ -608,6 +609,7 @@ impl RekaptrWorkspace {
                             .text_color(theme.tokens.foreground)
                             .child(format!("Select apps for {}", track_name)),
                     )
+                    .child(self.render_selected_apps(theme, track_idx, &selected_apps, cx))
                     .child(
                         div()
                             .id("audio-app-list")
@@ -674,6 +676,67 @@ impl RekaptrWorkspace {
                             }),
                     ),
             )
+            .into_any_element()
+    }
+
+    fn render_selected_apps(
+        &self,
+        theme: &Theme,
+        track_idx: usize,
+        selected_apps: &[String],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if selected_apps.is_empty() {
+            return div()
+                .text_xs()
+                .text_color(theme.tokens.muted_foreground)
+                .child("No apps selected yet. Pick from the list below.")
+                .into_any_element();
+        }
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .children(selected_apps.iter().map(|app| {
+                let app_owned = app.clone();
+                HStack::new()
+                    .gap_1p5()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgba(PRIMARY_DIM_A25))
+                    .border_1()
+                    .border_color(theme.tokens.primary)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.tokens.foreground)
+                            .child(app.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("app-chip-x-{}-{}", track_idx, app)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_color(theme.tokens.muted_foreground)
+                            .hover(|s| s.text_color(theme.tokens.foreground))
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
+                                this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
+                                cx.notify();
+                            }))
+                            .child(
+                                Icon::new(IconSource::Named("x".into()))
+                                    .size(px(12.0))
+                                    .color(theme.tokens.muted_foreground.into()),
+                            ),
+                    )
+            }))
             .into_any_element()
     }
 

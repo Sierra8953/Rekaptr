@@ -1,4 +1,12 @@
 use std::sync::mpsc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Thread ID of the hotkey listener, so we can post it a reload request.
+static HOTKEY_THREAD_ID: OnceLock<AtomicU32> = OnceLock::new();
+
+/// Custom thread message that asks the listener to re-register from current config.
+const WM_RELOAD_HOTKEYS: u32 = 0x8000 + 1; // WM_APP + 1
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
@@ -90,28 +98,48 @@ pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
             unsafe {
                 use windows::Win32::UI::Input::KeyboardAndMouse::*;
                 use windows::Win32::UI::WindowsAndMessaging::*;
+                use windows::Win32::System::Threading::GetCurrentThreadId;
 
-                let config = crate::config::AppConfig::load();
-                let hk = &config.hotkeys;
+                HOTKEY_THREAD_ID
+                    .get_or_init(|| AtomicU32::new(0))
+                    .store(GetCurrentThreadId(), Ordering::SeqCst);
 
-                for binding in BINDINGS {
-                    let (modifiers, vk) = get_binding_keys(hk, binding.id);
-                    if vk == 0 { continue; }
-                    let ok = RegisterHotKey(
-                        None,
-                        binding.id,
-                        HOT_KEY_MODIFIERS(modifiers | 0x4000),
-                        vk,
-                    ).is_ok();
-                    if ok {
-                        log::info!("[Hotkeys] Registered: {} (vk=0x{:02X})", binding.label, vk);
-                    } else {
-                        log::warn!("[Hotkeys] Failed to register {} hotkey", binding.label);
+                let register_all = || {
+                    let config = crate::config::AppConfig::load();
+                    let hk = &config.hotkeys;
+                    for binding in BINDINGS {
+                        let (modifiers, vk) = get_binding_keys(hk, binding.id);
+                        if vk == 0 { continue; }
+                        let ok = RegisterHotKey(
+                            None,
+                            binding.id,
+                            HOT_KEY_MODIFIERS(modifiers | 0x4000),
+                            vk,
+                        ).is_ok();
+                        if ok {
+                            log::info!("[Hotkeys] Registered: {} (vk=0x{:02X})", binding.label, vk);
+                        } else {
+                            log::warn!("[Hotkeys] Failed to register {} hotkey", binding.label);
+                        }
                     }
-                }
+                };
+
+                let unregister_all = || {
+                    for binding in BINDINGS {
+                        let _ = UnregisterHotKey(None, binding.id);
+                    }
+                };
+
+                register_all();
 
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    if msg.message == WM_RELOAD_HOTKEYS {
+                        log::info!("[Hotkeys] Reloading bindings from config");
+                        unregister_all();
+                        register_all();
+                        continue;
+                    }
                     if msg.message == WM_HOTKEY {
                         let id = msg.wParam.0 as i32;
                         if let Some(binding) = BINDINGS.iter().find(|b| b.id == id) {
@@ -122,12 +150,26 @@ pub fn start_hotkey_listener() -> mpsc::Receiver<HotkeyAction> {
                     DispatchMessageW(&msg);
                 }
 
-                for binding in BINDINGS {
-                    let _ = UnregisterHotKey(None, binding.id);
-                }
+                unregister_all();
             }
         })
         .ok();
 
     rx
+}
+
+/// Asks the running hotkey listener to unregister and re-register from the
+/// current config. Safe to call before the listener has started (no-op).
+pub fn reload_hotkeys() {
+    use windows::Win32::Foundation::{WPARAM, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+
+    if let Some(id) = HOTKEY_THREAD_ID.get() {
+        let tid = id.load(Ordering::SeqCst);
+        if tid != 0 {
+            unsafe {
+                let _ = PostThreadMessageW(tid, WM_RELOAD_HOTKEYS, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
 }

@@ -1186,8 +1186,8 @@ impl RekaptrWorkspace {
     }
 
     pub fn delete_session(&mut self, session_id: i32, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(session) = self.app_state.manual_sessions.get(&session_id) {
-            let title = session.title.clone();
+        let title = self.app_state.manual_sessions.get(&session_id).map(|s| s.title.clone());
+        if let Some(title) = title {
             self.app_state.manual_sessions.remove(&session_id);
             self.app_state.game_registry.remove(&title);
             let mut config = AppConfig::load();

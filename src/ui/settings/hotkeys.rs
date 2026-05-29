@@ -26,6 +26,8 @@ impl RekaptrWorkspace {
             )
         };
 
+        let reset_vh = vh.clone();
+
         VStack::new()
             .gap_6()
             .child(settings_card(theme, "Capture",
@@ -47,5 +49,25 @@ impl RekaptrWorkspace {
                     .child(hk(6, "Mark death", config.hotkeys.marker_death_vk, config.hotkeys.marker_death_mod))
                     .child(hk(7, "Mark highlight", config.hotkeys.marker_highlight_vk, config.hotkeys.marker_highlight_mod))
             ))
+            .child(
+                HStack::new()
+                    .justify_end()
+                    .child(
+                        Button::new("reset-hotkeys", "Reset to defaults")
+                            .icon(IconSource::Named("rotate-ccw".into()))
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .on_click(move |_, _, cx| {
+                                let _ = reset_vh.update(cx, |this, cx| {
+                                    let mut config = crate::config::AppConfig::load();
+                                    config.hotkeys = crate::config::HotkeyConfig::defaults();
+                                    config.save();
+                                    crate::hotkeys::reload_hotkeys();
+                                    this.hotkey_listening = None;
+                                    cx.notify();
+                                });
+                            })
+                    )
+            )
     }
 }

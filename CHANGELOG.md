@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.3
+
+### Fixed
+
+- Fixed audio track app selection not showing which apps were already assigned to a track.
+- Fixed being unable to remove an app from an audio track once it was added.
+- Fixed assigned apps disappearing from the audio selection screen when their window was closed.
+- Fixed audio routing not displaying all configured tracks when editing an existing source.
+- Fixed the app allowing multiple copies to run at the same time; launching it again now brings the existing window to the front.
+
 ## v0.1.1 — Stability (unreleased)
 
 Theme: fix every bug that causes crashes, data loss, or silent failures.

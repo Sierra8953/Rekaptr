@@ -7,9 +7,6 @@ use crate::ui::RekaptrWorkspace;
 use crate::state::GameSession;
 use crate::config::{AudioRouting, GameSettings};
 
-// ── Theme constants (kept local; theme tokens cover most of this elsewhere)
-const PRIMARY_DIM_A25: u32 = 0x5B3FA840;
-
 impl RekaptrWorkspace {
     pub fn render_add_source_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
@@ -22,8 +19,8 @@ impl RekaptrWorkspace {
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                this.close_add_source_modal(cx);
+            .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, window, cx| {
+                this.close_add_source_modal(window, cx);
             }))
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
@@ -77,7 +74,7 @@ impl RekaptrWorkspace {
                         div()
                             .size(px(28.0))
                             .rounded_md()
-                            .bg(rgba(PRIMARY_DIM_A25))
+                            .bg(theme.tokens.primary.opacity(0.25))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -109,8 +106,8 @@ impl RekaptrWorkspace {
                     .icon(IconSource::Named("x".into()))
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
-                    .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                        this.close_add_source_modal(cx);
+                    .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                        this.close_add_source_modal(window, cx);
                     })),
             )
     }
@@ -219,7 +216,7 @@ impl RekaptrWorkspace {
             .py_2()
             .rounded_md()
             .cursor_pointer()
-            .bg(if selected { rgba(PRIMARY_DIM_A25).into() } else { theme.tokens.card })
+            .bg(if selected { theme.tokens.primary.opacity(0.25) } else { theme.tokens.card })
             .hover(|s| s.bg(theme.tokens.muted))
             .on_mouse_down(
                 MouseButton::Left,
@@ -277,7 +274,7 @@ impl RekaptrWorkspace {
     }
 
     // ── Section 2: Details ──────────────────────────────────────────
-    fn render_details_section(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_details_section(&self, theme: &Theme, _cx: &mut Context<Self>) -> impl IntoElement {
         if self.form_hwnd.is_none() {
             return VStack::new()
                 .gap_2()
@@ -637,7 +634,7 @@ impl RekaptrWorkspace {
                                             .px_2()
                                             .py_1p5()
                                             .rounded_md()
-                                            .bg(if is_selected { rgba(PRIMARY_DIM_A25).into() } else { theme.tokens.card })
+                                            .bg(if is_selected { theme.tokens.primary.opacity(0.25) } else { theme.tokens.card })
                                             .child(
                                                 VStack::new()
                                                     .gap_0p5()
@@ -707,7 +704,7 @@ impl RekaptrWorkspace {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgba(PRIMARY_DIM_A25))
+                    .bg(theme.tokens.primary.opacity(0.25))
                     .border_1()
                     .border_color(theme.tokens.primary)
                     .child(
@@ -763,29 +760,16 @@ impl RekaptrWorkspace {
             .border_1()
             .border_color(theme.tokens.border)
             // Toggle
-            .child(
-                div()
-                    .id(SharedString::from(format!("at-en-{}", idx)))
-                    .w(px(28.0))
-                    .h(px(16.0))
-                    .rounded_full()
-                    .relative()
-                    .cursor_pointer()
-                    .bg(if enabled { theme.tokens.primary } else { theme.tokens.border })
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
-                        this.form_audio_tracks[idx].enabled = !this.form_audio_tracks[idx].enabled;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(2.0))
-                            .left(if enabled { px(14.0) } else { px(2.0) })
-                            .size(px(12.0))
-                            .rounded_full()
-                            .bg(theme.tokens.foreground),
-                    ),
-            )
+            .child(crate::ui::toggle_switch(
+                theme,
+                cx,
+                SharedString::from(format!("at-en-{}", idx)),
+                enabled,
+                true,
+                move |this| {
+                    this.form_audio_tracks[idx].enabled = !this.form_audio_tracks[idx].enabled;
+                },
+            ))
             .child(
                 div()
                     .w(px(72.0))
@@ -902,8 +886,8 @@ impl RekaptrWorkspace {
                     .child(
                         Button::new("modal-cancel", "Cancel")
                             .variant(ButtonVariant::Ghost)
-                            .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                this.close_add_source_modal(cx);
+                            .on_click(cx.listener(|this: &mut Self, _, window, cx| {
+                                this.close_add_source_modal(window, cx);
                             }))
                     )
                     .child(
@@ -987,19 +971,20 @@ impl RekaptrWorkspace {
             window,
             cx,
         );
-        self.close_add_source_modal(cx);
+        self.close_add_source_modal(window, cx);
     }
 
-    fn close_add_source_modal(&mut self, cx: &mut Context<Self>) {
+    fn close_add_source_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_add_source_modal = false;
         self.form_hwnd = None;
         self.form_title = String::new();
         self.form_target_process = None;
         self.form_active_tab = 0;
+        self.form_editing_track_index = None;
         self.add_source_show_overrides = false;
-        // Clear inputs by overwriting with empty.
-        // We don't have a Window handle here, so leave the inputs as-is —
-        // they'll be reset the next time a window is selected.
+        // Reset the search/title inputs so a reopen starts clean.
+        self.add_source_search_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
+        self.add_source_title_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
         cx.notify();
     }
 }
@@ -1046,7 +1031,7 @@ fn track_source_pill(
         .text_xs()
         .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
         .cursor_pointer()
-        .bg(if active { rgba(PRIMARY_DIM_A25).into() } else { theme.tokens.card })
+        .bg(if active { theme.tokens.primary.opacity(0.25) } else { theme.tokens.card })
         .border_1()
         .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
         .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })

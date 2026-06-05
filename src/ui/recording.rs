@@ -192,6 +192,10 @@ impl RekaptrWorkspace {
 
         let total_existing_duration = crate::utils::compute_total_duration(&game_dir);
         let ts_offset_ns = (total_existing_duration * 1_000_000_000.0) as i64;
+        log::info!(
+            "[Recording] cross-session decode-time-offset = {:.3}s ({} ns) from existing segments in {}",
+            total_existing_duration, ts_offset_ns, game_dir.display()
+        );
 
         *self.app_state.recording.current_recording_duration.lock() = ts_offset_ns as f64 / 1_000_000_000.0;
 

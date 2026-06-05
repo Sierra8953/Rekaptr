@@ -71,18 +71,9 @@ pub struct SendHandle(pub HANDLE);
 unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VideoOptions {
-    pub frame_buffer_capacity: Option<usize>,
-    pub looping: Option<bool>,
-    pub speed: Option<f64>,
     pub source_name: Option<String>,
-}
-
-impl Default for VideoOptions {
-    fn default() -> Self {
-        Self { frame_buffer_capacity: Some(3), looping: Some(false), speed: Some(1.0), source_name: None }
-    }
 }
 
 pub(crate) struct Internal {
@@ -384,7 +375,6 @@ impl Drop for Internal {
 impl Video {
     pub(crate) fn read(&'_ self) -> parking_lot::RwLockReadGuard<'_, Internal> { self.0.read() }
     pub fn render_image(&self) -> Arc<RenderImage> { self.read().render_image.clone() }
-    pub fn size(&self) -> (i32, i32) { let inner = self.read(); (inner.width as i32, inner.height as i32) }
     pub fn display_size(&self) -> (u32, u32) {
         let inner = self.read();
         let (nw, nh) = (inner.width, inner.height);
@@ -397,11 +387,6 @@ impl Video {
         }
     }
 
-    pub fn eof_reached(&self) -> bool {
-        self.read().mpv.get_property::<bool>("eof-reached").unwrap_or(false)
-    }
-
-    pub fn aspect_ratio(&self) -> f32 { let (w, h) = self.size(); w as f32 / h as f32 }
     pub fn set_paused(&self, p: bool) { let _ = self.read().mpv.set_property("pause", p); }
     pub fn paused(&self) -> bool { self.read().mpv.get_property::<bool>("pause").unwrap_or(true) }
     pub fn position(&self) -> Duration { Duration::from_secs_f64(self.read().mpv.get_property::<f64>("time-pos").unwrap_or(0.0)) }
@@ -417,16 +402,9 @@ impl Video {
             .or_else(|| inner.mpv.get_property::<String>("path").ok())
     }
     pub fn take_frame_ready(&self) -> bool { self.render_to_texture(); self.read().upload_frame.swap(false, Ordering::SeqCst) }
-    pub fn set_display_size(&self, w: Option<u32>, h: Option<u32>) { let mut inner = self.0.write(); inner.display_width_override = w; inner.display_height_override = h; }
 
-        pub fn load_file(&self, path: &str) -> Result<(), Error> {
-            let inner = self.read();
-            inner.mpv.command("loadfile", &[path, "replace"]).map_err(|_| Error::Bus)
-        }
         pub fn seek(&self, pos: Duration, _: bool) -> Result<(), Error> { 
      self.read().mpv.command("seek", &[&format!("{}", pos.as_secs_f64()), "absolute"]).map_err(|_| Error::Bus) }
-    pub fn buffered_len(&self) -> usize { 0 }
-    pub fn set_frame_buffer_capacity(&self, _: usize) {}
     pub fn set_volume(&self, volume: f64) {
         let _ = self.read().mpv.set_property("volume", volume);
     }
@@ -454,13 +432,4 @@ impl Video {
         tracks
     }
 
-    /// Get currently active audio track ID (0 = none/disabled)
-    pub fn current_audio_track(&self) -> i64 {
-        self.read().mpv.get_property::<i64>("aid").unwrap_or(1)
-    }
-
-    /// Set active audio track by ID (0 to disable audio)
-    pub fn set_audio_track(&self, id: i64) {
-        let _ = self.read().mpv.set_property("aid", id);
-    }
 }

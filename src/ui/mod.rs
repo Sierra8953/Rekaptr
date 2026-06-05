@@ -23,10 +23,8 @@ mod timeline;
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::display::data_table::DataTable;
 
-#[allow(dead_code)]
 pub struct RekaptrWorkspace {
     pub active_view: ActiveView,
-    pub clips_view_mode: ClipsViewMode,
     pub settings_tab: SettingsTab,
     pub app_state: Arc<AppState>,
     pub video_source: Option<Video>,
@@ -39,7 +37,6 @@ pub struct RekaptrWorkspace {
     pub clip_to_preview: Option<crate::state::Clip>,
     pub last_preview_mouse_move: std::time::Instant,
     pub show_preview_controls: bool,
-    pub last_preview_controls_task: Option<Task<()>>,
     pub is_scrubbing_preview: bool,
     pub preview_scrubbing_progress: f32,
     pub preview_audio_enabled: Vec<bool>,
@@ -56,7 +53,6 @@ pub struct RekaptrWorkspace {
     pub drag_target: Option<TimelineDragTarget>,
     pub scrubbing_progress: f32,
     pub last_seek_at: std::time::Instant,
-    pub last_mix_update_at: std::time::Instant,
     pub toast_manager: Entity<adabraka_ui::overlays::toast::ToastManager>,
     pub show_export_modal: bool,
     pub export_stage: crate::state::ExportStage,
@@ -64,10 +60,14 @@ pub struct RekaptrWorkspace {
     pub export_encoder: String,
     pub export_bitrate: i32,
     pub export_preset: String,
-    pub export_crf: i32,
     pub export_title_input: Entity<adabraka_ui::components::input_state::InputState>,
     pub export_container: String,
     pub export_audio_tracks: Vec<AudioRouting>,
+    /// Physical audio-stream index in the recorded file for each entry in
+    /// `export_audio_tracks`, or `None` if that track had no stream at record
+    /// time. Frozen when the export dialog opens so the dialog's include
+    /// toggles don't shift the ffmpeg `-map 0:a:N` indices.
+    pub export_track_stream_idx: Vec<Option<usize>>,
     pub export_destination: std::path::PathBuf,
     pub export_clip_duration: f64,
     pub export_result_path: Option<std::path::PathBuf>,
@@ -98,6 +98,10 @@ pub struct RekaptrWorkspace {
     pub add_source_title_input: Entity<adabraka_ui::components::input_state::InputState>,
     pub add_source_show_overrides: bool,
     pub playback_volumes: Vec<f64>,
+    /// Last `lavfi-complex` string applied to the playback mpv, so we don't
+    /// rebuild the audio filter graph every poll tick. Reset to `None` whenever
+    /// the video source changes. (DEBUG-era fix for main-thread freezes.)
+    pub last_audio_mix_sig: Option<String>,
     pub track_vol_sliders: Vec<Entity<volume_slider::VolumeSlider>>,
     pub last_notified_position: f64,
     pub timeline_zoom: f32,
@@ -117,8 +121,6 @@ pub struct RekaptrWorkspace {
     pub selected_clips: std::collections::HashSet<String>,
     pub selected_clip_for_details: Option<crate::state::Clip>,
     pub clips_filter: crate::ui::clips::ClipsFilter,
-    pub hovered_clip_idx: Option<usize>,
-    pub hovered_clip_preview_progress: f32,
     pub recording_start_time: Option<std::time::Instant>,
     pub recording_session_id: Option<u64>,
     // Setup wizard state
@@ -169,9 +171,7 @@ pub struct RekaptrWorkspace {
     pub settings_form_auto_delete_days: i32,
     pub settings_form_export_format: String,
     // Dropdown states (persisted across renders)
-    pub custom_res_input: Entity<adabraka_ui::components::input_state::InputState>,
     pub dd_mic: Entity<DropdownState>,
-    pub dd_export_format: Entity<DropdownState>,
     // AppSelect entities for settings
     pub select_encoder: Entity<select::AppSelect>,
     pub select_resolution: Entity<select::AppSelect>,
@@ -180,6 +180,57 @@ pub struct RekaptrWorkspace {
     pub update_state: crate::updater::UpdateState,
     pub update_has_receipt: bool,
     _quit_subscription: Option<Subscription>,
+}
+
+/// Canonical icon name for an audio track's source type. Shared across the
+/// timeline, export dialog and source settings so the same track type always
+/// shows the same glyph.
+pub fn audio_track_icon(source_type: &str) -> &'static str {
+    match source_type {
+        "Mic" => "mic",
+        "App" => "gamepad-2",
+        _ => "volume-2",
+    }
+}
+
+/// Shared pill toggle switch. `small` renders the compact 28×16 variant used in
+/// dense rows; otherwise the standard 40×22 variant. Calling `on_toggle` and
+/// `cx.notify()` is handled here so every toggle behaves and looks identical.
+pub(crate) fn toggle_switch(
+    theme: &Theme,
+    cx: &mut Context<RekaptrWorkspace>,
+    id: impl Into<ElementId>,
+    value: bool,
+    small: bool,
+    on_toggle: impl Fn(&mut RekaptrWorkspace) + 'static + Send + Sync,
+) -> impl IntoElement {
+    let (w, h, thumb, on_left) = if small {
+        (28.0, 16.0, 12.0, 14.0)
+    } else {
+        (40.0, 22.0, 18.0, 20.0)
+    };
+    let fg = theme.tokens.foreground;
+    div()
+        .id(id.into())
+        .w(px(w))
+        .h(px(h))
+        .rounded_full()
+        .relative()
+        .cursor_pointer()
+        .bg(if value { theme.tokens.primary } else { theme.tokens.border })
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            on_toggle(this);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .absolute()
+                .top(px(2.0))
+                .left(if value { px(on_left) } else { px(2.0) })
+                .size(px(thumb))
+                .rounded_full()
+                .bg(fg),
+        )
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -194,12 +245,6 @@ pub enum ActiveView {
     Dashboard,
     Settings,
     Clips,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum ClipsViewMode {
-    Grid,
-    Table,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -227,17 +272,6 @@ pub const SETTINGS_NAV: &[SettingsNavGroup] = &[
 ];
 
 impl SettingsTab {
-    pub const ALL: &[SettingsTab] = &[
-        SettingsTab::General,
-        SettingsTab::Startup,
-        SettingsTab::Video,
-        SettingsTab::Audio,
-        SettingsTab::Hotkeys,
-        SettingsTab::Storage,
-        SettingsTab::Export,
-        SettingsTab::About,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             SettingsTab::General => "Behavior",
@@ -313,7 +347,6 @@ impl RekaptrWorkspace {
 
         let mut workspace = Self {
             active_view: ActiveView::Dashboard,
-            clips_view_mode: ClipsViewMode::Grid,
             settings_tab: SettingsTab::General,
             app_state,
             video_source: None,
@@ -326,7 +359,6 @@ impl RekaptrWorkspace {
             clip_to_preview: None,
             last_preview_mouse_move: std::time::Instant::now(),
             show_preview_controls: true,
-            last_preview_controls_task: None,
             is_scrubbing_preview: false,
             preview_audio_enabled: Vec::new(),
             preview_volume: 100.0,
@@ -358,7 +390,6 @@ impl RekaptrWorkspace {
             drag_target: None,
             scrubbing_progress: 0.0,
             last_seek_at: std::time::Instant::now(),
-            last_mix_update_at: std::time::Instant::now(),
             toast_manager,
             show_export_modal: false,
             export_stage: crate::state::ExportStage::Configure,
@@ -366,10 +397,10 @@ impl RekaptrWorkspace {
             export_encoder: "h264_nvenc".to_string(),
             export_bitrate: 50000,
             export_preset: "p4".to_string(),
-            export_crf: 23,
             export_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             export_container: "mp4".to_string(),
             export_audio_tracks: Vec::new(),
+            export_track_stream_idx: Vec::new(),
             export_destination: std::path::PathBuf::new(),
             export_clip_duration: 0.0,
             export_result_path: None,
@@ -399,6 +430,7 @@ impl RekaptrWorkspace {
             add_source_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             add_source_show_overrides: false,
             playback_volumes: vec![100.0; 10],
+            last_audio_mix_sig: None,
             track_vol_sliders: Vec::new(),
             last_notified_position: 0.0,
             timeline_zoom: 1.0,
@@ -418,8 +450,6 @@ impl RekaptrWorkspace {
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
             clips_filter: crate::ui::clips::ClipsFilter::All,
-            hovered_clip_idx: None,
-            hovered_clip_preview_progress: 0.0,
             recording_start_time: None,
             recording_session_id: None,
             // Setup wizard
@@ -470,9 +500,7 @@ impl RekaptrWorkspace {
             settings_form_auto_delete_days: config.auto_delete_clips_days.unwrap_or(30),
             settings_form_export_format: config.default_export_format.clone(),
             // Dropdown states
-            custom_res_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             dd_mic: cx.new(|cx| DropdownState::new(cx)),
-            dd_export_format: cx.new(|cx| DropdownState::new(cx)),
             select_encoder: {
                 let vh = cx.entity().downgrade();
                 cx.new(|cx| {
@@ -666,7 +694,7 @@ impl RekaptrWorkspace {
                                 if (pos - this.last_notified_position).abs() > 0.05 || this.is_scrubbing {
                                     this.last_notified_position = pos;
                                     should_notify = true;
-                                    
+
                                     // Re-check audio mix in case track count changed between segments.
                                     this.update_mpv_audio_mix();
                                 }
@@ -693,48 +721,53 @@ impl RekaptrWorkspace {
         workspace
     }
 
-    pub fn update_mpv_audio_mix(&self) {
-        if let Some(v) = &self.video_source {
-            // Get the actual number of audio tracks present in the current file/segment
-            let actual_track_count = v.audio_tracks().len();
-            
-            let active_tracks = self.get_current_audio_tracks();
-            let mut enabled_aids = Vec::new();
-            for (i, t) in active_tracks.iter().enumerate() {
-                // ONLY attempt to mix tracks that actually exist in the current stream.
-                // If a user added a Mic track recently, older segments won't have it,
-                // and trying to access [aid2] would crash the filter chain.
-                if t.enabled && i < actual_track_count {
-                    enabled_aids.push(i);
-                }
-            }
+    pub fn update_mpv_audio_mix(&mut self) {
+        let Some(v) = &self.video_source else { return };
 
-            if enabled_aids.is_empty() {
-                let _ = v.read().mpv.set_property("aid", "no");
-                let _ = v.read().mpv.set_property("lavfi-complex", "");
-            } else if enabled_aids.len() == 1 {
-                let idx = enabled_aids[0];
-                let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
-                let complex = format!("[aid{}]volume=volume={}[ao]", idx + 1, vol);
-                
-                let _ = v.read().mpv.set_property("aid", "no");
-                let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
-            } else {
-                let mut complex = String::new();
-                for &idx in &enabled_aids {
-                    let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
-                    complex.push_str(&format!("[aid{}]volume=volume={}[a{}];", idx + 1, vol, idx + 1));
-                }
-                for &idx in &enabled_aids {
-                    complex.push_str(&format!("[a{}]", idx + 1));
-                }
-                // Normalize=0 prevents volume dropping when mixing multiple tracks
-                complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", enabled_aids.len()));
-                
-                let _ = v.read().mpv.set_property("aid", "no");
-                let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
+        // Get the actual number of audio tracks present in the current file/segment
+        let actual_track_count = v.audio_tracks().len();
+
+        let active_tracks = self.get_current_audio_tracks();
+        let mut enabled_aids = Vec::new();
+        for (i, t) in active_tracks.iter().enumerate() {
+            // ONLY attempt to mix tracks that actually exist in the current stream.
+            // If a user added a Mic track recently, older segments won't have it,
+            // and trying to access [aid2] would crash the filter chain.
+            if t.enabled && i < actual_track_count {
+                enabled_aids.push(i);
             }
         }
+
+        // Build the desired filter graph instead of applying it immediately.
+        let complex = if enabled_aids.is_empty() {
+            String::new()
+        } else if enabled_aids.len() == 1 {
+            let idx = enabled_aids[0];
+            let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
+            format!("[aid{}]volume=volume={}[ao]", idx + 1, vol)
+        } else {
+            let mut complex = String::new();
+            for &idx in &enabled_aids {
+                let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
+                complex.push_str(&format!("[aid{}]volume=volume={}[a{}];", idx + 1, vol, idx + 1));
+            }
+            for &idx in &enabled_aids {
+                complex.push_str(&format!("[a{}]", idx + 1));
+            }
+            // Normalize=0 prevents volume dropping when mixing multiple tracks
+            complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", enabled_aids.len()));
+            complex
+        };
+
+        // Re-applying an identical `lavfi-complex` forces mpv to tear down and
+        // rebuild its audio filter graph — an expensive, blocking operation that
+        // the ~20Hz poll loop was triggering constantly. Skip when unchanged.
+        if self.last_audio_mix_sig.as_deref() == Some(complex.as_str()) {
+            return;
+        }
+        let _ = v.read().mpv.set_property("aid", "no");
+        let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
+        self.last_audio_mix_sig = Some(complex);
     }
 
     pub fn update_preview_audio_mix(&self) {
@@ -894,16 +927,6 @@ impl RekaptrWorkspace {
                     this.cached_clips = clips.clone();
                     this.is_loading_clips = false;
 
-                    // Prefetch per-game artwork for any new games.
-                    let game_titles: Vec<String> = {
-                        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-                        for c in &this.cached_clips {
-                            seen.insert(c.title.clone());
-                        }
-                        seen.into_iter().collect()
-                    };
-                    this.fetch_portrait_artwork(&game_titles, cx);
-
                     // Keep the table in sync if it's ever shown.
                     this.clip_table.update(cx, |table, cx| {
                         table.set_data(clips, cx);
@@ -1007,6 +1030,8 @@ impl RekaptrWorkspace {
                         ) {
                             Ok(video) => {
                                 this.video_source = Some(video);
+                                // Fresh mpv instance — force the mix to re-apply.
+                                this.last_audio_mix_sig = None;
                                 if !is_same_source {
                                     this.timeline_markers.clear();
                                 }
@@ -1016,7 +1041,10 @@ impl RekaptrWorkspace {
                                 this.clip_end_mark = None;
                                 this.update_mpv_audio_mix();
                             }
-                            Err(_) => this.video_source = None,
+                            Err(_) => {
+                                this.video_source = None;
+                                this.last_audio_mix_sig = None;
+                            }
                         }
                     } else {
                         this.video_source = None;
@@ -1118,11 +1146,6 @@ impl RekaptrWorkspace {
         log::info!("[MicProvider] Restarted with noise_suppression={}", config.mic_settings.noise_suppression);
     }
 
-    #[allow(dead_code)]
-    pub fn add_marker(&mut self, cx: &mut Context<Self>) {
-        self.add_marker_with_kind(crate::state::MarkerKind::Flag, cx);
-    }
-
     pub fn add_marker_with_kind(&mut self, kind: crate::state::MarkerKind, cx: &mut Context<Self>) {
         if let Some(v) = &self.video_source {
             let time = v.position().as_secs_f64();
@@ -1131,7 +1154,6 @@ impl RekaptrWorkspace {
                 self.timeline_markers.push(crate::state::TimelineMarker {
                     time_secs: time,
                     kind,
-                    label: None,
                 });
                 self.timeline_markers.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
                 cx.notify();
@@ -1144,13 +1166,6 @@ impl RekaptrWorkspace {
             self.timeline_markers.remove(index);
             cx.notify();
         }
-    }
-
-    /// Remove all markers whose time falls within deleted footage.
-    /// Called after retention cleanup trims the start of the buffer.
-    #[allow(dead_code)]
-    pub fn prune_markers_before(&mut self, min_time_secs: f64) {
-        self.timeline_markers.retain(|m| m.time_secs >= min_time_secs);
     }
 
     pub fn ensure_track_vol_sliders(&mut self, track_count: usize, cx: &mut Context<Self>) {

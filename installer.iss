@@ -44,6 +44,9 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "target\x86_64-pc-windows-msvc\dist\rekaptr.exe"; DestDir: "{app}"; Flags: ignoreversion
+; runtime\ holds the bundled GStreamer/libmpv DLLs plus ffmpeg.exe AND ffprobe.exe,
+; copied next to the exe where the app discovers them. ffprobe is required for
+; cross-session recording (decode-time-offset); build-release.ps1 verifies it exists.
 Source: "runtime\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 

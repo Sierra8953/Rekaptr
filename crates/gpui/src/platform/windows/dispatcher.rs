@@ -1,7 +1,16 @@
 use std::{
+    sync::atomic::{AtomicBool, Ordering},
     thread::{ThreadId, current},
     time::Duration,
 };
+
+/// True while a `WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD` wake message is already
+/// queued and not yet drained. Used to coalesce wakes: the handler drains the
+/// whole channel at once, so posting one message per runnable just floods the
+/// thread message queue (hard cap ~10,000) until `PostMessageW` fails with
+/// ERROR_NOT_ENOUGH_QUOTA — which also blocks input/paint messages and freezes
+/// the window. Cleared (before draining) by the message handlers.
+pub(crate) static MAIN_THREAD_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 use async_task::Runnable;
 use flume::Sender;
@@ -86,15 +95,23 @@ impl PlatformDispatcher for WindowsDispatcher {
 
     fn dispatch_on_main_thread(&self, runnable: Runnable) {
         match self.main_sender.send(runnable) {
-            Ok(_) => unsafe {
-                PostMessageW(
-                    Some(self.platform_window_handle.as_raw()),
-                    WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
-                    WPARAM(self.validation_number),
-                    LPARAM(0),
-                )
-                .log_err();
-            },
+            Ok(_) => {
+                // Coalesce wakes: only post a message if one isn't already
+                // pending. The handler drains the entire channel, so a single
+                // queued wake is enough — this keeps the thread message queue
+                // from saturating (ERROR_NOT_ENOUGH_QUOTA) under heavy dispatch.
+                if !MAIN_THREAD_WAKE_PENDING.swap(true, Ordering::AcqRel) {
+                    unsafe {
+                        PostMessageW(
+                            Some(self.platform_window_handle.as_raw()),
+                            WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
+                            WPARAM(self.validation_number),
+                            LPARAM(0),
+                        )
+                        .log_err();
+                    }
+                }
+            }
             Err(runnable) => {
                 // NOTE: Runnable may wrap a Future that is !Send.
                 //

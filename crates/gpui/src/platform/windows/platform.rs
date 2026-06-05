@@ -277,7 +277,7 @@ impl WindowsPlatform {
         std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
-                let vsync_provider = VSyncProvider::new();
+                let mut vsync_provider = VSyncProvider::new();
                 loop {
                     vsync_provider.wait_for_vsync();
                     if check_device_lost(&directx_device.device) {
@@ -1040,6 +1040,10 @@ impl WindowsPlatformInner {
 
     #[inline]
     fn run_foreground_task(&self) -> Option<isize> {
+        // Clear the wake flag before draining so any runnable dispatched during
+        // the drain re-posts a fresh wake (see MAIN_THREAD_WAKE_PENDING).
+        super::dispatcher::MAIN_THREAD_WAKE_PENDING
+            .store(false, std::sync::atomic::Ordering::Release);
         for runnable in self.main_receiver.drain() {
             runnable.run();
         }

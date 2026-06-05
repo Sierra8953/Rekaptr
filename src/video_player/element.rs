@@ -22,10 +22,6 @@ impl VideoElement {
         self
     }
 
-    pub fn buffer_capacity(self, _capacity: usize) -> Self {
-        self
-    }
-
     fn fitted_bounds(
         &self,
         bounds: gpui::Bounds<gpui::Pixels>,

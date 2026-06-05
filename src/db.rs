@@ -44,28 +44,4 @@ impl GameDatabase {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn get_all_sessions(&self) -> Result<Vec<(u64, f64)>> {
-        let mut stmt = self.conn.prepare("SELECT id, duration FROM sessions ORDER BY id ASC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_session_duration(&self, id: u64) -> Result<Option<f64>> {
-        let mut stmt = self.conn.prepare("SELECT duration FROM sessions WHERE id = ?1")?;
-        let mut rows = stmt.query(params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
-        }
-    }
 }

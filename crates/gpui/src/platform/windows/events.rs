@@ -246,6 +246,8 @@ impl WindowsWindowInner {
 
     fn handle_timer_msg(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
         if wparam.0 == SIZE_MOVE_LOOP_TIMER_ID {
+            super::dispatcher::MAIN_THREAD_WAKE_PENDING
+                .store(false, std::sync::atomic::Ordering::Release);
             for runnable in self.main_receiver.drain() {
                 runnable.run();
             }

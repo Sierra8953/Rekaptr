@@ -25,6 +25,13 @@ A third optional artifact for portable users:
    ```
    If you added or removed top-level DLLs, also update the `include = [...]` list in `dist-workspace.toml` so the portable zip matches.
 
+   **`runtime/` must contain both `ffmpeg.exe` and `ffprobe.exe`** (from the same
+   FFmpeg build). The app shells out to ffprobe to compute the cross-session
+   `decode-time-offset` — without it, successive recording sessions reset their
+   timestamps and playback jumps back to the start at the session seam. They ship
+   next to the exe (`{app}\ffmpeg.exe`, `{app}\ffprobe.exe`) and are discovered
+   there at runtime. `scripts/build-release.ps1` fails fast if either is missing.
+
 3. **Build the release artifacts:**
    ```powershell
    pwsh scripts/build-release.ps1

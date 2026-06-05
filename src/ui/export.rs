@@ -46,6 +46,26 @@ impl RekaptrWorkspace {
                 .unwrap_or_else(|| config.global_audio_tracks.clone())
         };
 
+        // Freeze the physical audio-stream layout. The recorder only writes a
+        // stream for tracks that were enabled (see engine::generate_pipeline_string),
+        // so streams are densely packed in enabled order. Capture that mapping now,
+        // before the user can toggle tracks in the dialog.
+        self.export_track_stream_idx = {
+            let mut phys = 0usize;
+            self.export_audio_tracks
+                .iter()
+                .map(|t| {
+                    if t.enabled {
+                        let idx = phys;
+                        phys += 1;
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
         let safe_title = crate::utils::clean_title(&source_name);
         self.export_destination = crate::utils::get_storage_root()
             .join("Clips")
@@ -150,6 +170,7 @@ impl RekaptrWorkspace {
         let preset = self.export_preset.clone();
         let export_reencode = self.export_reencode;
         let audio_tracks = self.export_audio_tracks.clone();
+        let track_stream_idx = self.export_track_stream_idx.clone();
 
         self.export_stage = ExportStage::Exporting;
         cx.notify();
@@ -191,13 +212,14 @@ impl RekaptrWorkspace {
                    .arg("-to").arg(format!("{:.3}", out_offset))
                    .arg("-map").arg("0:v:0");
 
-                let mut physical_stream_idx = 0;
-                for track in &audio_tracks {
+                // Map only tracks the user kept enabled, using each track's frozen
+                // physical stream index (None = no stream existed at record time).
+                for (i, track) in audio_tracks.iter().enumerate() {
                     if track.enabled {
-                        cmd.arg("-map")
-                            .arg(format!("0:a:{}?", physical_stream_idx));
+                        if let Some(phys) = track_stream_idx.get(i).copied().flatten() {
+                            cmd.arg("-map").arg(format!("0:a:{}?", phys));
+                        }
                     }
-                    physical_stream_idx += 1;
                 }
 
                 if export_reencode {
@@ -695,11 +717,7 @@ impl RekaptrWorkspace {
     fn audio_toggle(&self, idx: usize, track: &crate::config::AudioRouting, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let enabled = track.enabled;
-        let icon = match track.source_type.as_str() {
-            "Mic" => "mic",
-            "App" => "speaker",
-            _ => "volume-2",
-        };
+        let icon = crate::ui::audio_track_icon(&track.source_type);
         let name = track.name.clone();
         let detail = track.device_name.clone();
         div()
@@ -709,30 +727,18 @@ impl RekaptrWorkspace {
             .items_center()
             .gap_3()
             .py_1()
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                if let Some(t) = this.export_audio_tracks.get_mut(idx) {
-                    t.enabled = !t.enabled;
-                    cx.notify();
-                }
-            }))
-            .child(
-                div()
-                    .w(px(28.0))
-                    .h(px(16.0))
-                    .rounded_full()
-                    .relative()
-                    .bg(if enabled { theme.tokens.primary } else { theme.tokens.border })
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(2.0))
-                            .left(if enabled { px(14.0) } else { px(2.0) })
-                            .size(px(12.0))
-                            .rounded_full()
-                            .bg(gpui::rgba(0xFAFAFAFF)),
-                    ),
-            )
+            .child(crate::ui::toggle_switch(
+                &theme,
+                cx,
+                SharedString::from(format!("exp-at-tg-{}", idx)),
+                enabled,
+                true,
+                move |this| {
+                    if let Some(t) = this.export_audio_tracks.get_mut(idx) {
+                        t.enabled = !t.enabled;
+                    }
+                },
+            ))
             .child(
                 Icon::new(IconSource::Named(icon.into()))
                     .size(px(14.0))
@@ -1023,7 +1029,6 @@ fn self_reset_encoder(this: &mut RekaptrWorkspace) {
     this.export_encoder = "h264_nvenc".to_string();
     this.export_bitrate = 50000;
     this.export_preset = "p4".to_string();
-    this.export_crf = 23;
     this.export_container = "mp4".to_string();
 }
 

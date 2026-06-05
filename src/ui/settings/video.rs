@@ -42,7 +42,7 @@ impl RekaptrWorkspace {
                             })
                         ))
                         .child(settings_row(theme, "Replay Retention", Some(format!("{} minutes", self.settings_form_retention)),
-                            stepper("ret", self.settings_form_retention, 1, 120, 1, vh.clone(), |this, val, cx| {
+                            stepper("ret", self.settings_form_retention, 1, 600, 1, vh.clone(), |this, val, cx| {
                                 this.settings_form_retention = val;
                                 let mut config = crate::config::AppConfig::load();
                                 config.global_video.retention_minutes = val;
@@ -87,20 +87,28 @@ impl RekaptrWorkspace {
                                         cx.notify();
                                     })
                                 ))
-                                .child(settings_row(theme, "B-Frames", Some(format!("{}", self.settings_form_bframes)),
-                                    stepper("bf", self.settings_form_bframes, 0, 4, 1, vh.clone(), |this, val, cx| {
-                                        this.settings_form_bframes = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.bframes = val;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(settings_row(theme, "Zero Latency", Option::<String>::None,
+                                .when(!self.settings_form_zero_latency, |this| {
+                                    this.child(settings_row(theme, "B-Frames", Some(format!("{}", self.settings_form_bframes)),
+                                        stepper("bf", self.settings_form_bframes, 0, 4, 1, vh.clone(), |this, val, cx| {
+                                            this.settings_form_bframes = val;
+                                            let mut config = crate::config::AppConfig::load();
+                                            config.global_video.bframes = val;
+                                            config.save();
+                                            cx.notify();
+                                        })
+                                    ))
+                                })
+                                .child(settings_row(theme, "Zero Latency", Some("Disables B-frames for real-time capture"),
                                     settings_toggle("toggle-zl", self.settings_form_zero_latency, vh.clone(), |this, cx| {
                                         this.settings_form_zero_latency = !this.settings_form_zero_latency;
                                         let mut config = crate::config::AppConfig::load();
                                         config.global_video.zero_latency = this.settings_form_zero_latency;
+                                        // Zero latency and B-frames are mutually exclusive; clear
+                                        // B-frames so the saved config can't contradict the tuning.
+                                        if this.settings_form_zero_latency {
+                                            this.settings_form_bframes = 0;
+                                            config.global_video.bframes = 0;
+                                        }
                                         config.save();
                                         cx.notify();
                                     })

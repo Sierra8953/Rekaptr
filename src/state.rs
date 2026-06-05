@@ -27,17 +27,6 @@ pub struct SessionBlock {
     pub playlist_path: std::path::PathBuf,
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct SessionInfo {
-    pub game_title: String,
-    pub path: std::path::PathBuf,
-    pub date: String,
-    pub timestamp: u64,
-    pub segment_count: usize,
-    pub total_duration_secs: f64,
-}
-
 /// The kind of event a timeline marker represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkerKind {
@@ -76,6 +65,18 @@ impl MarkerKind {
             Self::Highlight => "star",
         }
     }
+
+    /// Canonical marker color as `(hue 0..1, saturation, lightness, alpha)`.
+    /// Shared by the marker toolbar buttons and the timeline so they always
+    /// agree. Build a color with `gpui::hsla(h, s, l, a)`.
+    pub fn color_hsla(self) -> (f32, f32, f32, f32) {
+        match self {
+            Self::Flag => (45.0 / 360.0, 0.9, 0.55, 1.0),
+            Self::Kill => (0.0, 0.85, 0.55, 1.0),
+            Self::Death => (270.0 / 360.0, 0.6, 0.55, 1.0),
+            Self::Highlight => (50.0 / 360.0, 1.0, 0.55, 1.0),
+        }
+    }
 }
 
 /// Stable reference to a moment in a recording. Survives buffer eviction
@@ -93,15 +94,16 @@ pub struct TimelineMarker {
     pub time_secs: f64,
     /// What kind of event this marker represents
     pub kind: MarkerKind,
-    /// Optional user label
-    #[allow(dead_code)]
-    pub label: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct Clip {
     pub title: String,
     pub path: std::path::PathBuf,
+    /// `path` rendered to a lossy UTF-8 string once at construction. Favorite/
+    /// selection sets are keyed off this, and the clips view compares against it
+    /// every render — precomputing it avoids re-allocating per clip per frame.
+    pub path_str: String,
     pub thumbnail_path: Option<std::path::PathBuf>,
     pub date: String,
     pub duration: String,
@@ -241,8 +243,6 @@ pub struct AppState {
     pub game_registry: Arc<DashMap<String, GameSettings>>,
     pub mic_provider: Arc<Mutex<Option<Arc<MicProvider>>>>,
     pub artwork_cache: Arc<DashMap<String, Option<String>>>,
-    /// Portrait artwork cache for clips page (library_600x900.jpg)
-    pub portrait_cache: Arc<DashMap<String, Option<String>>>,
     /// Game logo cache (logo.png — transparent)
     pub logo_cache: Arc<DashMap<String, Option<String>>>,
     pub d3d11_device: Arc<Mutex<Option<SendHandle>>>,
@@ -264,7 +264,6 @@ impl AppState {
             game_registry: Arc::new(DashMap::new()),
             mic_provider: Arc::new(Mutex::new(None)),
             artwork_cache: Arc::new(DashMap::new()),
-            portrait_cache: Arc::new(DashMap::new()),
             logo_cache: Arc::new(DashMap::new()),
             d3d11_device: Arc::new(Mutex::new(None)),
             virtual_audio_routers: Mutex::new(Vec::new()),
@@ -282,12 +281,6 @@ impl AppState {
             let keys: Vec<String> = self.artwork_cache.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys { self.artwork_cache.remove(&key); }
             log::debug!("[Cache] Evicted {} artwork cache entries", excess);
-        }
-        if self.portrait_cache.len() > CACHE_MAX_ENTRIES {
-            let excess = self.portrait_cache.len() - CACHE_MAX_ENTRIES;
-            let keys: Vec<String> = self.portrait_cache.iter().take(excess).map(|e| e.key().clone()).collect();
-            for key in keys { self.portrait_cache.remove(&key); }
-            log::debug!("[Cache] Evicted {} portrait cache entries", excess);
         }
     }
 }

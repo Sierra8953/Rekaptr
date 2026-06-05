@@ -61,10 +61,6 @@ impl AppSelect {
             .unwrap_or("Select...")
     }
 
-    #[allow(dead_code)]
-    pub fn set_selected_by_id(&mut self, id: &str) {
-        self.selected = self.items.iter().position(|item| item.id.as_ref() == id);
-    }
 }
 
 impl Render for AppSelect {

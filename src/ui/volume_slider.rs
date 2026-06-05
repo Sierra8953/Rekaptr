@@ -41,17 +41,6 @@ impl VolumeSlider {
         self
     }
 
-    pub fn set_value(&mut self, value: f32) {
-        self.value = value.clamp(0.0, 1.0);
-    }
-
-    pub fn set_on_change(
-        &mut self,
-        f: impl Fn(f32, &mut Window, &mut App) + Send + Sync + 'static,
-    ) {
-        self.on_change = Some(Arc::new(f));
-    }
-
     pub fn effective_value(&self) -> f32 {
         if self.muted { 0.0 } else { self.value }
     }

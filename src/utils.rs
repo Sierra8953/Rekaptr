@@ -52,21 +52,37 @@ pub fn get_storage_root() -> PathBuf {
     PathBuf::from(&config.storage_path)
 }
 
-pub fn get_ffmpeg_path() -> PathBuf {
-    // Try alongside the executable first
+/// Locate a bundled tool binary (e.g. `ffmpeg.exe`, `ffprobe.exe`).
+///
+/// Production builds ship these *next to the executable* — the installer copies
+/// `runtime\*` into `{app}` and the portable zip flattens `runtime/<tool>.exe`
+/// to the package root. The dev tree instead keeps them in `bin\`. We therefore
+/// search, in order: `<exe_dir>\bin`, `<exe_dir>`, `<cwd>\bin`, `<cwd>`, then
+/// fall back to the bare name (PATH). Searching the exe/cwd root — not just
+/// `bin\` — is what lets installed builds find the bundled copy instead of
+/// silently relying on a system-PATH install (which may be absent, exactly the
+/// failure that left ffprobe unavailable and broke cross-session offsets).
+fn find_bundled_binary(file_name: &str) -> PathBuf {
+    let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let path = dir.join("bin").join("ffmpeg.exe");
-            if path.exists() { return path; }
+            roots.push(dir.to_path_buf());
         }
     }
-    // Try current directory
     if let Ok(cwd) = std::env::current_dir() {
-        let path = cwd.join("bin").join("ffmpeg.exe");
-        if path.exists() { return path; }
+        roots.push(cwd);
     }
-    // Fallback to PATH
-    PathBuf::from("ffmpeg")
+    for root in &roots {
+        let in_bin = root.join("bin").join(file_name);
+        if in_bin.exists() { return in_bin; }
+        let alongside = root.join(file_name);
+        if alongside.exists() { return alongside; }
+    }
+    PathBuf::from(file_name.trim_end_matches(".exe"))
+}
+
+pub fn get_ffmpeg_path() -> PathBuf {
+    find_bundled_binary("ffmpeg.exe")
 }
 
 pub fn get_dir_size(path: &Path) -> std::io::Result<u64> {
@@ -85,21 +101,32 @@ pub fn get_dir_size(path: &Path) -> std::io::Result<u64> {
     Ok(size)
 }
 
-#[allow(dead_code)]
-pub fn clear_all_buffers() {
+pub fn scan_session_titles() -> Vec<String> {
     let root = get_storage_root();
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name != "Clips" && name != "Cache" && !name.starts_with(".") {
-                    // This is a session folder, potentially containing buffers
-                    let _ = std::fs::remove_dir_all(path);
-                }
-            }
+    let config = crate::config::AppConfig::load();
+    let mut titles = Vec::new();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(_) => return titles,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+        let folder_name = entry.file_name().to_string_lossy().to_string();
+        if folder_name == "Clips" || folder_name == "Cache" || folder_name.starts_with('.') {
+            continue;
         }
+        let has_segments = std::fs::read_dir(&path)
+            .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().extension().map_or(false, |ext| ext == "m4s")))
+            .unwrap_or(false);
+        if !has_segments { continue; }
+        let game_title = config.game_registry.iter()
+            .find(|(t, _)| clean_title(t) == folder_name)
+            .map(|(t, _)| t.clone())
+            .unwrap_or(folder_name);
+        titles.push(game_title);
     }
+    titles
 }
 
 pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
@@ -149,6 +176,7 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
 
                                 clips.push(crate::state::Clip {
                                     title: game_title.clone(),
+                                    path_str: clip_path.to_string_lossy().into_owned(),
                                     path: clip_path,
                                     timestamp,
                                     size: format!("{} MB", size_mb),
@@ -165,82 +193,6 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
     }
     clips.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     clips
-}
-
-#[allow(dead_code)]
-pub fn get_all_clips() -> Vec<crate::state::Clip> {
-    fetch_all_clips()
-}
-
-#[allow(dead_code)]
-pub fn fetch_all_sessions() -> Vec<crate::state::SessionInfo> {
-    let root = get_storage_root();
-    let config = crate::config::AppConfig::load();
-    let mut sessions = Vec::new();
-
-    let entries = match std::fs::read_dir(&root) {
-        Ok(e) => e,
-        Err(_) => return sessions,
-    };
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !path.is_dir() { continue; }
-
-        let folder_name = entry.file_name().to_string_lossy().to_string();
-        if folder_name == "Clips" || folder_name == "Cache" || folder_name.starts_with('.') {
-            continue;
-        }
-
-        // Count segments and compute total duration
-        let mut segment_count = 0usize;
-        let mut total_duration = 0.0f64;
-        let mut latest_modified = std::time::SystemTime::UNIX_EPOCH;
-
-        if let Ok(seg_entries) = std::fs::read_dir(&path) {
-            for seg in seg_entries.filter_map(|e| e.ok()) {
-                let seg_path = seg.path();
-                if seg_path.extension().map_or(false, |ext| ext == "m4s") {
-                    segment_count += 1;
-                    total_duration += get_segment_duration(&seg_path).unwrap_or(DEFAULT_SEGMENT_DURATION_SECS);
-                    if let Ok(meta) = seg.metadata() {
-                        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        if modified > latest_modified {
-                            latest_modified = modified;
-                        }
-                    }
-                }
-            }
-        }
-
-        if segment_count == 0 { continue; }
-
-        let game_title = config.game_registry.iter()
-            .find(|(t, _)| clean_title(t) == folder_name)
-            .map(|(t, _)| t.clone())
-            .unwrap_or_else(|| folder_name.clone());
-
-        let timestamp = latest_modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let date = chrono::DateTime::<chrono::Local>::from(latest_modified)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
-
-        sessions.push(crate::state::SessionInfo {
-            game_title,
-            path,
-            date,
-            timestamp,
-            segment_count,
-            total_duration_secs: total_duration,
-        });
-    }
-
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    sessions
 }
 
 /// Generate a thumbnail for a video file by extracting a frame near the start.
@@ -304,68 +256,7 @@ fn generate_thumbnail(video_path: &Path, thumb_path: &Path) {
 }
 
 fn get_ffprobe_path() -> PathBuf {
-    // Same search strategy as get_ffmpeg_path
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let path = dir.join("bin").join("ffprobe.exe");
-            if path.exists() { return path; }
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        let path = cwd.join("bin").join("ffprobe.exe");
-        if path.exists() { return path; }
-    }
-    PathBuf::from("ffprobe")
-}
-
-#[allow(dead_code)]
-fn get_exact_duration(file_path: &std::path::Path) -> f64 {
-    // Check duration cache first to avoid N+1 ffprobe spawns
-    static DURATION_CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, f64>>> = std::sync::OnceLock::new();
-    let cache = DURATION_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
-
-    if let Some(&cached) = cache.lock().get(file_path) {
-        return cached;
-    }
-
-    let ffprobe = get_ffprobe_path();
-    let output = std::process::Command::new(&ffprobe)
-        .args([
-            "-v", "error",
-            "-show_entries", "format=duration,start_time",
-            "-of", "default=noprint_wrappers=1",
-            &file_path.to_string_lossy()
-        ])
-        .creation_flags(0x08000000)
-        .output();
-
-    let result = if let Ok(out) = output {
-        let out_str = String::from_utf8_lossy(&out.stdout);
-        let mut start_time = 0.0;
-        let mut duration = 0.0;
-
-        for line in out_str.lines() {
-            if let Some(val) = line.strip_prefix("start_time=") {
-                start_time = val.parse::<f64>().unwrap_or(0.0);
-            } else if let Some(val) = line.strip_prefix("duration=") {
-                duration = val.parse::<f64>().unwrap_or(0.0);
-            }
-        }
-
-        let actual_duration = duration - start_time;
-
-        if actual_duration > 0.0 && actual_duration <= 3.0 {
-            actual_duration
-        } else {
-            2.0
-        }
-    } else {
-        log::warn!("[Utils] ffprobe not found at {:?}, falling back to default duration", ffprobe);
-        2.0
-    };
-
-    cache.lock().insert(file_path.to_path_buf(), result);
-    result
+    find_bundled_binary("ffprobe.exe")
 }
 
 fn parse_segment_index(name: &str) -> Option<u64> {
@@ -399,6 +290,16 @@ fn parse_segment_session_id(name: &str) -> Option<u64> {
 /// session's tfdt: a previous bug let some sessions be written with offsets
 /// lower than earlier sessions still on disk. The next session's offset has
 /// to clear every existing tfdt to keep the timeline monotonic.
+///
+/// Robustness: ffprobe can be unavailable (e.g. ffprobe.exe missing from the
+/// install's `bin/`), in which case every probe returns `None` and the tfdt
+/// scan yields 0. Returning 0 here is catastrophic — the next session records
+/// with `decode-time-offset=0`, its tfdt resets to ~0, overlaps the existing
+/// range, and playback snaps the playhead back to the start at the seam. So we
+/// also sum the filename `_XXXXms` durations (no external process, can't fail)
+/// and return the larger of the two: the probed max wins when ffprobe works
+/// (correct after pruning), and the filename sum is the floor that keeps the
+/// timeline moving forward when ffprobe is missing.
 pub fn compute_total_duration(game_dir: &Path) -> f64 {
     let Ok(entries) = std::fs::read_dir(game_dir) else {
         return 0.0;
@@ -406,6 +307,7 @@ pub fn compute_total_duration(game_dir: &Path) -> f64 {
 
     let mut by_session: std::collections::HashMap<u64, Vec<(u64, std::path::PathBuf)>> =
         std::collections::HashMap::new();
+    let mut filename_duration_sum: f64 = 0.0;
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if !path.extension().map_or(false, |e| e == "m4s") {
@@ -414,6 +316,9 @@ pub fn compute_total_duration(game_dir: &Path) -> f64 {
         let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
             continue;
         };
+        if let Some(dur) = get_segment_duration(&path) {
+            filename_duration_sum += dur;
+        }
         let Some(idx) = parse_segment_index(&name) else { continue; };
         let Some(sid) = parse_segment_session_id(&name) else { continue; };
         by_session.entry(sid).or_default().push((idx, path));
@@ -434,7 +339,14 @@ pub fn compute_total_duration(game_dir: &Path) -> f64 {
             }
         }
     }
-    max_end
+    if max_end <= 0.0 && filename_duration_sum > 0.0 {
+        log::warn!(
+            "[Utils] tfdt probe found no end time (ffprobe unavailable?); \
+             falling back to filename-duration sum {:.3}s for decode-time-offset",
+            filename_duration_sum
+        );
+    }
+    max_end.max(filename_duration_sum)
 }
 
 /// Read the absolute decode-time at which a segment ends (last packet PTS +
@@ -688,56 +600,25 @@ pub fn generate_master_playlist(game_title: &str) -> Option<PathBuf> {
     let master_playlist_path = game_dir.join("master.m3u8");
     let mut m3u8 = String::from("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n");
 
-    let mut last_session_id: Option<u64> = None;
-    for (_, (_modified, path, duration, session_id)) in &segment_map {
+    // Deliberately NO #EXT-X-DISCONTINUITY between sessions. The cross-session
+    // design keeps ONE continuous timeline: each new session's splitmuxsink is
+    // started with decode-time-offset = the end of the on-disk timeline (see
+    // compute_total_duration), so segment tfdts climb monotonically across the
+    // session seam. A discontinuity tag makes mpv re-anchor its timeline at the
+    // seam — which yanks the playhead back — so the only combination that plays
+    // smoothly is "continuous timeline + flat playlist". Continuity is the
+    // record-side job (the offset); the playlist must stay a plain segment list.
+    for (_, (_modified, path, duration, _session_id)) in &segment_map {
         let file_name = match path.file_name() {
             Some(f) => f.to_string_lossy(),
             None => continue,
         };
-        if last_session_id.is_some() && *session_id != last_session_id {
-            m3u8.push_str("#EXT-X-DISCONTINUITY\n");
-        }
-        last_session_id = *session_id;
         m3u8.push_str(&format!("#EXTINF:{:.3},\n{}\n", duration, file_name));
     }
     m3u8.push_str("#EXT-X-ENDLIST\n");
     let _ = std::fs::write(&master_playlist_path, m3u8);
 
     Some(master_playlist_path)
-}
-
-/// Extract the segment basename (`seg_<idx>_<sid>_<dur>ms.m4s`) from
-/// whatever string mpv reported as the currently-open file. Handles both
-/// filesystem paths and `http(s)://...?token=...` URLs from the local
-/// HLS server.
-pub fn extract_segment_basename(stream_filename: &str) -> Option<String> {
-    let no_query = stream_filename.split('?').next().unwrap_or(stream_filename);
-    let basename = no_query.rsplit(|c| c == '/' || c == '\\').next()?;
-    if basename.starts_with("seg_") && basename.ends_with(".m4s") {
-        Some(basename.to_string())
-    } else {
-        None
-    }
-}
-
-/// Returns the absolute first-PTS (seconds) of a segment, i.e. the value
-/// that mpv's `time-pos` reports at the very first frame of that segment
-/// (because mpv preserves the segment's tfdt-based timestamps when
-/// playing fragmented MP4). Used to convert mpv's playback time into an
-/// offset within the segment without consulting any playlist.
-pub fn segment_internal_start_time(path: &Path) -> Option<f64> {
-    let ffprobe = get_ffprobe_path();
-    let output = std::process::Command::new(&ffprobe)
-        .args(["-v", "error", "-select_streams", "v:0",
-               "-show_entries", "stream=start_time",
-               "-of", "default=noprint_wrappers=1:nokey=1"])
-        .arg(path)
-        .creation_flags(0x08000000)
-        .output()
-        .ok()?;
-    if !output.status.success() { return None; }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.trim().parse::<f64>().ok()
 }
 
 /// Parse a master playlist into `(filename, duration_secs)` entries in order,
@@ -888,45 +769,45 @@ pub fn clip_duration_from_marks(
     Some(out_offset - in_offset)
 }
 
-#[allow(dead_code)]
-pub fn generate_ffconcat_playlist(game_title: &str) -> Option<PathBuf> {
-    let game_dir = game_dir_for(game_title);
-    if !game_dir.exists() { return None; }
-
-    let segment_map = scan_segments(&game_dir);
-    if segment_map.is_empty() { return None; }
-
-    let ffconcat_path = game_dir.join("view.ffconcat");
-    let mut content = String::from("ffconcat version 1.0\n");
-    for (_, (_, path, duration, _)) in &segment_map {
-        let file_name = match path.file_name() {
-            Some(f) => f.to_string_lossy(),
-            None => continue,
-        };
-        content.push_str(&format!("file '{}'\nduration {}\n", file_name, duration));
+fn resolve_steam_app_id(game_title: &str) -> Option<String> {
+    // 1. Bundled/cached catalog of popular games — instant, offline, no network.
+    if let Some(appid) = crate::game_catalog::lookup_appid(game_title) {
+        return Some(appid.to_string());
     }
 
-    std::fs::write(&ffconcat_path, content).ok()?;
-    Some(ffconcat_path)
-}
+    // 2. Per-process memo so a catalog miss is searched at most once per run
+    //    (including negative results, so we don't re-hit the network on retries).
+    static SEARCH_MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    let memo = SEARCH_MEMO.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Some(cached) = memo.lock().ok().and_then(|m| m.get(game_title).cloned()) {
+        return cached;
+    }
 
+    // 3. Network fallback: Steam storesearch.
+    let result = (|| {
+        let url = format!(
+            "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
+            url::form_urlencoded::byte_serialize(game_title.as_bytes()).collect::<String>()
+        );
 
-fn resolve_steam_app_id(game_title: &str) -> Option<String> {
-    let url = format!(
-        "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
-        url::form_urlencoded::byte_serialize(game_title.as_bytes()).collect::<String>()
-    );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .user_agent("Rekaptr/1.0")
+            .build()
+            .ok()?;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .user_agent("Rekaptr/1.0")
-        .build()
-        .ok()?;
+        let json = client.get(&url).send().ok()?.json::<serde_json::Value>().ok()?;
+        let id = json.get("items")?.as_array()?.first()?.get("id")?.as_i64()?;
+        log::info!("[Utils] Found Steam AppID {} for '{}' via search API", id, game_title);
+        Some(id.to_string())
+    })();
 
-    let json = client.get(&url).send().ok()?.json::<serde_json::Value>().ok()?;
-    let id = json.get("items")?.as_array()?.first()?.get("id")?.as_i64()?;
-    log::info!("[Utils] Found Steam AppID {} for '{}' via search API", id, game_title);
-    Some(id.to_string())
+    if let Ok(mut m) = memo.lock() {
+        m.insert(game_title.to_string(), result.clone());
+    }
+    result
 }
 
 fn resolve_steam_artwork(game_title: &str, cdn_filename: &str, cache_suffix: &str) -> Option<String> {
@@ -954,19 +835,73 @@ fn resolve_steam_artwork(game_title: &str, cdn_filename: &str, cache_suffix: &st
     Some(url)
 }
 
-/// Returns a landscape hero image URL/path (used on dashboard).
+/// Returns Steam's pre-blurred landscape hero image URL/path (used as the
+/// source-card backdrop). Steam already ships a blurred variant, so we use it
+/// directly rather than blurring the sharp hero ourselves.
 pub fn find_steam_artwork(game_title: &str) -> Option<String> {
-    resolve_steam_artwork(game_title, "library_hero.jpg", "hero")
+    // Cache suffix `heroblur` (not `hero`) so any sharp hero cached by older
+    // builds is ignored rather than reused.
+    resolve_steam_artwork(game_title, "library_hero_blur.jpg", "heroblur")
 }
 
-/// Returns a portrait library capsule URL/path (used on clips page game cards).
-pub fn find_steam_artwork_portrait(game_title: &str) -> Option<String> {
-    resolve_steam_artwork(game_title, "library_600x900.jpg", "portrait")
-}
 
 /// Returns a game logo (transparent PNG) URL/path.
 pub fn find_steam_logo(game_title: &str) -> Option<String> {
     resolve_steam_artwork(game_title, "logo.png", "logo")
+}
+
+/// Download one artwork asset to the local cache if not already present.
+/// Returns the cached file path, or `None` if the appid can't be resolved or
+/// the download is missing/too small. Blocking.
+fn download_artwork_to_cache(game_title: &str, cdn_filename: &str, cache_suffix: &str) -> Option<std::path::PathBuf> {
+    let app_id = resolve_steam_app_id(game_title)?;
+    let cache_dir = get_storage_root().join("Cache").join("Artwork");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    // Already cached (any common extension, non-trivial size)?
+    for ext in &["webp", "png", "jpg"] {
+        let p = cache_dir.join(format!("{}_{}.{}", app_id, cache_suffix, ext));
+        if p.metadata().map(|m| m.len() > 5000).unwrap_or(false) {
+            return Some(p);
+        }
+    }
+
+    let url = format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/{}", app_id, cdn_filename);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("Rekaptr/1.0")
+        .build()
+        .ok()?;
+    let bytes = client.get(&url).send().ok()?.bytes().ok()?;
+    if bytes.len() <= 5000 {
+        return None;
+    }
+    let ext = cdn_filename.rsplit('.').next().unwrap_or("jpg");
+    let path = cache_dir.join(format!("{}_{}.{}", app_id, cache_suffix, ext));
+    std::fs::write(&path, &bytes).ok()?;
+    Some(path)
+}
+
+/// Warm the artwork cache for the given game titles on a background thread, so
+/// their dashboard/clips cards render without an on-demand network fetch. Also
+/// refreshes the popular-games catalog if it's stale. Titles that aren't real
+/// games (empty, "monitor", "desktop") are skipped. Non-blocking.
+pub fn prefetch_artwork(titles: Vec<String>) {
+    let _ = std::thread::Builder::new()
+        .name("rekaptr-artwork-prefetch".into())
+        .spawn(move || {
+            crate::game_catalog::refresh_if_stale();
+            for title in titles {
+                let t = title.trim();
+                if t.is_empty() || t.eq_ignore_ascii_case("monitor") || t.eq_ignore_ascii_case("desktop") {
+                    continue;
+                }
+                // Steam's pre-blurred hero drives the source cards; logo is the
+                // transparent overlay on the dashboard video preview.
+                let _ = download_artwork_to_cache(t, "library_hero_blur.jpg", "heroblur");
+                let _ = download_artwork_to_cache(t, "logo.png", "logo");
+            }
+        });
 }
 pub fn start_buffer_cleanup_thread(root_dir: PathBuf) {
     use notify::{RecursiveMode, Watcher, Config};

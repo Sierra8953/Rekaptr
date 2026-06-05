@@ -157,7 +157,7 @@ impl RekaptrWorkspace {
                                                     HStack::new()
                                                         .items_center()
                                                         .gap_1_5()
-                                                        .child(div().w_1_5().h_1_5().rounded_full().bg(theme.tokens.destructive))
+                                                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(theme.tokens.destructive))
                                                         .child(
                                                             div()
                                                                 .text_xs()
@@ -249,13 +249,6 @@ impl RekaptrWorkspace {
                         };
 
                         let divider = || div().w(px(1.0)).h(px(18.0)).bg(theme.tokens.border);
-
-                        let marker_colors = [
-                            hsla(210.0 / 360.0, 0.78, 0.60, 1.0), // Flag - blue
-                            hsla(0.0, 0.7, 0.55, 1.0),             // Kill - red
-                            hsla(30.0 / 360.0, 0.9, 0.55, 1.0),    // Death - orange
-                            hsla(50.0 / 360.0, 0.9, 0.55, 1.0),    // Highlight - yellow
-                        ];
 
                         div()
                             .w_full()
@@ -427,8 +420,9 @@ impl RekaptrWorkspace {
                                                     .child("Markers"),
                                             )
                                             .children(
-                                                crate::state::MarkerKind::ALL.iter().enumerate().map(|(i, &kind)| {
-                                                    let color = marker_colors[i % marker_colors.len()];
+                                                crate::state::MarkerKind::ALL.iter().map(|&kind| {
+                                                    let (h, s, l, a) = kind.color_hsla();
+                                                    let color = hsla(h, s, l, a);
                                                     div()
                                                         .id(SharedString::from(format!("mk-{}", kind.label())))
                                                         .flex()
@@ -550,16 +544,38 @@ impl RekaptrWorkspace {
                     .child(
                         VStack::new()
                             .gap_4()
-                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Recent Sessions"))
+                            .child(div().text_xl().font_weight(FontWeight::BOLD).child("Sources"))
                             .child(self.render_game_gallery(window, cx))
                     )
             )
     }
 
-    pub fn render_game_gallery(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_game_gallery(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = &self.app_state.manual_sessions;
         let theme = use_theme();
         let global_recording = self.app_state.recording.phase.lock().is_recording();
+
+        // Responsive card sizing. Fixed-width cards left a dead gap on the right
+        // because only 3 of the 304px cards fit the default window. Instead we
+        // size cards to fill the row with at least 4 columns, growing the column
+        // count (not the gap) on wider windows. Cards keep the original 304:188
+        // aspect ratio.
+        const GAP: f32 = 20.0;            // gap_5
+        const FOOTER_PX: f32 = 52.0;      // stat_strip height (constant, doesn't scale)
+        // Aspect of the art region *above* the footer. The card is sized as
+        // art + fixed footer so this aspect stays constant at every card width —
+        // which lets us pre-crop the art to it (see `ensure_card_art`) and display
+        // with Fill (the only fit this gpui build rounds corners for) without
+        // stretching. ART_ASPECT_INV = height / width.
+        const ART_ASPECT_INV: f32 = 136.0 / 304.0;
+        // Width the gallery actually gets: viewport minus the 72px sidebar, the
+        // dashboard's p_8 (64px), and a margin covering the scrollbar / rounding.
+        // Underestimating here is safe — it only ever makes cards slightly
+        // narrower, never wide enough to drop a column.
+        let avail = (window.viewport_size().width.0 - 72.0 - 64.0 - 24.0).max(400.0);
+        let columns = (((avail + GAP) / (320.0 + GAP)).floor()).max(4.0);
+        let card_w = ((avail - (columns - 1.0) * GAP) / columns).floor();
+        let card_h = (card_w * ART_ASPECT_INV).round() + FOOTER_PX;
 
         let mut gallery = div()
             .id("source-gallery")
@@ -573,8 +589,8 @@ impl RekaptrWorkspace {
                 .id("add-source-wrap")
                 .child(
                     div()
-                        .w(px(304.0))
-                        .h(px(188.0))
+                        .w(px(card_w))
+                        .h(px(card_h))
                         .bg(theme.tokens.card)
                         .border_2()
                         .border_color(theme.tokens.border)
@@ -611,8 +627,8 @@ impl RekaptrWorkspace {
             div()
                 .id("monitor-source-wrap")
                 .relative()
-                .w(px(304.0))
-                .h(px(188.0))
+                .w(px(card_w))
+                .h(px(card_h))
                 .child(
                     div()
                         .relative()
@@ -676,6 +692,7 @@ impl RekaptrWorkspace {
                                                         .border_1()
                                                         .border_color(rgba(0xffffff_1a))
                                                         .cursor_pointer()
+                                                        .hover(|s| s.bg(rgba(0x000000_aa)).border_color(rgba(0xffffff_55)))
                                                         .child(Icon::new("settings").size(px(14.0)).color(theme.tokens.foreground))
                                                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                             cx.stop_propagation();
@@ -762,9 +779,9 @@ impl RekaptrWorkspace {
                         let Some(source) = resolved else { return; };
 
                         if !source.starts_with("http") {
-                            // Local file already on disk — produce a blurred sibling for the card bg
+                            // Local file already on disk (Steam's pre-blurred hero).
                             let raw = std::path::PathBuf::from(&source);
-                            let final_path = ensure_blurred(&raw).unwrap_or(raw);
+                            let final_path = ensure_card_art(&raw).unwrap_or(raw);
                             let path_str = final_path.to_string_lossy().replace('\\', "/");
                             app_state.artwork_cache.insert(title, Some(path_str));
                             let _ = handle.update(&mut cx, |_, cx| cx.notify());
@@ -780,9 +797,9 @@ impl RekaptrWorkspace {
                             let app_id = source.split('/').nth(5).unwrap_or("unknown");
                             let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
                             let _ = std::fs::create_dir_all(&cache_dir);
-                            let local_path = cache_dir.join(format!("{}_hero.jpg", app_id));
+                            let local_path = cache_dir.join(format!("{}_heroblur.jpg", app_id));
                             if std::fs::write(&local_path, &bytes).is_ok() {
-                                let final_path = ensure_blurred(&local_path).unwrap_or(local_path);
+                                let final_path = ensure_card_art(&local_path).unwrap_or(local_path);
                                 let path_str = final_path.to_string_lossy().replace('\\', "/");
                                 app_state.artwork_cache.insert(title, Some(path_str));
                                 let _ = handle.update(&mut cx, |_, cx| cx.notify());
@@ -801,8 +818,8 @@ impl RekaptrWorkspace {
                 div()
                     .id(("session-wrap", session_key))
                     .relative()
-                    .w(px(304.0))
-                    .h(px(188.0))
+                    .w(px(card_w))
+                    .h(px(card_h))
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, cx.listener({
                         let title = title.clone();
@@ -832,12 +849,19 @@ impl RekaptrWorkspace {
                                     .rounded_t_2xl()
                                     .bg(rgba((tint << 8) | 0x14))
                                     .when_some(final_image_path, |this, path| {
+                                        // The art is pre-cropped to the card's aspect
+                                        // ratio (see `ensure_card_art`), so Fill renders
+                                        // it without distortion. We use Fill rather than
+                                        // Cover because this gpui build squares the
+                                        // corners of an image that overflows its box, and
+                                        // Cover always overflows.
                                         this.child(
                                             img(path)
                                                 .absolute()
                                                 .inset_0()
                                                 .size_full()
-                                                .object_fit(ObjectFit::Cover),
+                                                .rounded_t_2xl()
+                                                .object_fit(ObjectFit::Fill),
                                         )
                                     })
                                     .child(
@@ -1025,17 +1049,36 @@ fn stat_divider() -> Div {
     div().my_3().w(px(1.0)).bg(theme.tokens.border)
 }
 
-/// Generate a Gaussian-blurred sibling JPEG for an artwork file. Returns the
-/// blurred path if it exists or was successfully generated; `None` on any
-/// I/O / decode failure (caller falls back to the original).
-fn ensure_blurred(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+/// Center-crop an artwork file to the source-card aspect ratio (304:188) and
+/// cache the result next to the original. The card displays art with
+/// `ObjectFit::Fill` so its rounded corners render (this gpui build squares the
+/// corners of an image that overflows its box, which `Cover` does); pre-cropping
+/// to the card's aspect means `Fill` no longer distorts the image. Returns the
+/// cropped path, or `None` on any decode/encode failure (caller falls back to
+/// the original).
+fn ensure_card_art(raw: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Must match `render_game_gallery`'s art region: width / height = 304 / 136.
+    const TARGET: f64 = 304.0 / 136.0;
     let stem = raw.file_stem()?.to_string_lossy().into_owned();
     let ext = raw.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-    let blurred = raw.with_file_name(format!("{stem}_blur.{ext}"));
-    if blurred.exists() {
-        return Some(blurred);
+    // `_card2` so any mis-cropped art cached by an earlier build is regenerated.
+    let cropped = raw.with_file_name(format!("{stem}_card2.{ext}"));
+    if cropped.exists() {
+        return Some(cropped);
     }
     let img = image::open(raw).ok()?;
-    img.blur(4.0).save(&blurred).ok()?;
-    Some(blurred)
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let (cw, ch) = if (w as f64 / h as f64) > TARGET {
+        ((h as f64 * TARGET).round() as u32, h) // too wide → trim sides
+    } else {
+        (w, (w as f64 / TARGET).round() as u32) // too tall → trim top/bottom
+    };
+    let x = (w - cw) / 2;
+    let y = (h - ch) / 2;
+    img.crop_imm(x, y, cw, ch).save(&cropped).ok()?;
+    Some(cropped)
 }
+

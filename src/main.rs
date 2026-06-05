@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod db;
 mod engine;
+mod game_catalog;
 mod game_detector;
 mod hotkeys;
 mod mic_dsp;
@@ -37,6 +38,12 @@ static HLS_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// Port the local HLS server is bound to. 0 means "not yet started or bind failed".
 /// Picked at startup from a fallback range so a conflict on 8080 doesn't break playback.
 static HLS_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Wall-clock millis of the last async-runtime heartbeat. Used for the periodic
+/// "alive" log line so we can see how long the app ran before a freeze.
+static LAST_HEARTBEAT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Ensures the watchdog thread is only started once.
+static WATCHDOG_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn get_hls_token() -> &'static str {
     HLS_TOKEN.get_or_init(|| {
@@ -86,32 +93,130 @@ fn hex_val(b: u8) -> Option<u8> {
 /// nowhere. We route output to `%LOCALAPPDATA%\Rekaptr\rekaptr.log` (rolling
 /// the previous run to `rekaptr.log.prev` on each launch). Debug builds keep
 /// the default stderr destination so `cargo run` still prints.
+/// Directory where logs and crash dumps are written (LOCALAPPDATA\Rekaptr).
+fn diagnostics_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Rekaptr")
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Log file writer that flushes after every record. A freeze is diagnosed by
+/// killing the process from Task Manager, so anything still buffered would be
+/// lost — flushing each line guarantees the log on disk is complete up to the hang.
+struct FlushingWriter {
+    file: std::fs::File,
+}
+
+impl std::io::Write for FlushingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // In debug builds also mirror to stderr so the dev console still works.
+        #[cfg(debug_assertions)]
+        {
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), buf);
+        }
+        let n = self.file.write(buf)?;
+        let _ = self.file.flush();
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
 fn init_logging() {
+    let dir = diagnostics_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let log_path = dir.join("rekaptr.log");
+    let prev_path = dir.join("rekaptr.log.prev");
+    let _ = std::fs::remove_file(&prev_path);
+    let _ = std::fs::rename(&log_path, &prev_path);
+
     let env = env_logger::Env::default().default_filter_or("info");
     let mut builder = env_logger::Builder::from_env(env);
+    builder.format_timestamp_millis();
 
-    #[cfg(not(debug_assertions))]
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)
     {
-        let log_dir = std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Rekaptr");
-        let _ = std::fs::create_dir_all(&log_dir);
-        let log_path = log_dir.join("rekaptr.log");
-        let prev_path = log_dir.join("rekaptr.log.prev");
-        let _ = std::fs::remove_file(&prev_path);
-        let _ = std::fs::rename(&log_path, &prev_path);
-        if let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&log_path)
-        {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
+        builder.target(env_logger::Target::Pipe(Box::new(FlushingWriter { file })));
     }
 
     let _ = builder.try_init();
+    install_panic_hook();
+}
+
+/// Logs every panic (including ones on background threads, which otherwise vanish
+/// silently) with thread name, location, and a full backtrace.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        log::error!(
+            "[PANIC] thread '{}' panicked at {}: {}\nbacktrace:\n{}",
+            thread_name, location, msg, backtrace
+        );
+        default_hook(info);
+    }));
+}
+
+/// Starts a dedicated OS thread that logs a periodic "alive" line with the app's
+/// uptime and how long ago the async runtime last ticked, so logs show how long
+/// the app ran before a freeze.
+fn start_watchdog() {
+    use std::sync::atomic::Ordering;
+    if WATCHDOG_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let init = now_millis();
+    LAST_HEARTBEAT_MS.store(init, Ordering::Relaxed);
+
+    let _ = std::thread::Builder::new()
+        .name("rekaptr-watchdog".into())
+        .spawn(|| {
+            const ALIVE_LOG_INTERVAL_MS: u64 = 60_000;
+            let start = now_millis();
+            let mut last_alive_log = start;
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+                let now = now_millis();
+                let async_lag = now.saturating_sub(LAST_HEARTBEAT_MS.load(Ordering::Relaxed));
+
+                // Periodic timeline marker so the log shows exactly how long the
+                // app ran before freezing.
+                if now.saturating_sub(last_alive_log) >= ALIVE_LOG_INTERVAL_MS {
+                    last_alive_log = now;
+                    log::info!(
+                        "[Watchdog] alive — uptime {}s, last runtime tick {}ms ago",
+                        (now.saturating_sub(start)) / 1000,
+                        async_lag
+                    );
+                }
+            }
+        });
 }
 
 struct Assets {
@@ -227,6 +332,7 @@ async fn main() -> Result<()> {
     }
 
     init_logging();
+    start_watchdog();
     log::info!("[Main] Starting Rekaptr...");
     crate::migration::run();
     gstreamer::init()?;
@@ -280,6 +386,21 @@ async fn main() -> Result<()> {
 
         // Start the background buffer cleanup thread
         crate::utils::start_buffer_cleanup_thread(crate::utils::get_storage_root());
+
+        // Warm the artwork cache for the user's known games (registry + recorded
+        // sessions) and refresh the popular-games catalog if stale — both run on
+        // a background thread so startup isn't blocked.
+        {
+            let mut titles: Vec<String> = crate::config::AppConfig::load()
+                .game_registry
+                .keys()
+                .cloned()
+                .collect();
+            titles.extend(crate::utils::scan_session_titles());
+            titles.sort();
+            titles.dedup();
+            crate::utils::prefetch_artwork(titles);
+        }
 
         // Start the local HLS server
         start_local_server(crate::utils::get_storage_root());
@@ -359,6 +480,12 @@ async fn main() -> Result<()> {
 
         let mut tray_builder = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
+            // Defaults to true in tray-icon 0.19; a left-click would otherwise
+            // open the modal context menu. The menu's dismissal-on-click-outside
+            // is unreliable (TrackPopupMenu + hidden owner-window edge case), so
+            // a stuck menu blocks the main thread inside its modal pump and the
+            // app appears frozen until the menu is dismissed.
+            .with_menu_on_left_click(false)
             .with_tooltip("Rekaptr");
 
         if let Some((base, _, w, h)) = icon_buffers.as_ref() {
@@ -376,6 +503,22 @@ async fn main() -> Result<()> {
         };
         let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
         *app_state.tray_tx.lock() = Some(tray_tx);
+
+        // --- UI heartbeat ---
+        // This task runs on the foreground (main-thread) executor. As long as the
+        // event loop is pumping, it keeps bumping the heartbeat; if the UI freezes,
+        // the heartbeat goes stale and the watchdog thread's "alive" log shows it.
+        cx.spawn(|cx: &mut gpui::AsyncApp| {
+            let cx = cx.clone();
+            async move {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(500))
+                        .await;
+                    LAST_HEARTBEAT_MS.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }).detach();
 
         // --- Tray Event Loop ---
         let workspace_handle_tray = workspace_handle.clone();
@@ -710,15 +853,28 @@ async fn main() -> Result<()> {
                 let _ = detector.enumerate_windows(); 
 
                 loop {
-                    // Wait for either a focus change event or a periodic fallback (every 60s)
-                    tokio::select! {
-                        _ = rx.recv() => {
-                            // Focus changed! Wait a moment for the window to fully initialize
-                            cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+                    // Wait for a focus-change event, polling the channel on a fixed
+                    // gpui cadence with a ~60s fallback scan. The previous
+                    // `tokio::select!` over a gpui timer future busy-spun the
+                    // main-thread executor (~250k wakes/s), starving the UI — never
+                    // mix a gpui/smol timer into tokio::select!.
+                    let mut focus_fired = false;
+                    for _ in 0..240 {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(250))
+                            .await;
+                        if rx.try_recv().is_ok() {
+                            focus_fired = true;
+                            break;
                         }
-                        _ = cx.background_executor().timer(std::time::Duration::from_secs(60)) => {
-                            // Fallback scan
-                        }
+                    }
+                    if focus_fired {
+                        // Focus changed! Let the window finish initializing, then
+                        // coalesce any burst of follow-up focus events.
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(500))
+                            .await;
+                        while rx.try_recv().is_ok() {}
                     }
 
                     // Periodically evict oversized caches

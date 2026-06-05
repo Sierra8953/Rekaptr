@@ -19,6 +19,18 @@ Set-Location $Root
 $Version = (Select-String -Path "Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 Write-Host "Building Rekaptr $Version"
 
+# Bundled tools the app shells out to at runtime. ffprobe in particular is
+# required for cross-session recording: the decode-time-offset that keeps
+# successive sessions on one continuous timeline is derived by probing on-disk
+# segments. A missing ffprobe.exe makes the offset 0, which resets each new
+# session's timestamps and breaks playback at the seam — fail the build instead.
+$RequiredRuntimeBins = @("runtime\ffmpeg.exe", "runtime\ffprobe.exe")
+$MissingBins = $RequiredRuntimeBins | Where-Object { -not (Test-Path $_) }
+if ($MissingBins) {
+    throw "Missing required runtime binaries: $($MissingBins -join ', '). " +
+          "Place them in runtime\ (same FFmpeg build for both) before packaging."
+}
+
 if (-not $SkipBuild) {
     Write-Host "==> dist build"
     & dist build

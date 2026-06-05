@@ -78,11 +78,7 @@ impl RekaptrWorkspace {
                             .children(
                                 enabled_audio_tracks.iter().enumerate().map(|(i, track)| {
                                     let color = track_colors[i % track_colors.len()];
-                                    let icon = match track.source_type.as_str() {
-                                        "Mic" => "mic",
-                                        "App" => "gamepad-2",
-                                        _ => "speaker",
-                                    };
+                                    let icon = crate::ui::audio_track_icon(&track.source_type);
                                     let slider = self.track_vol_sliders.get(i).cloned();
                                     self.render_audio_track_header(&track.name, icon, color, slider)
                                 }),
@@ -267,19 +263,17 @@ impl RekaptrWorkspace {
                                                 }
                                             }
 
-                                            // User markers
-                                            let icon_sz = px(18.0);
-                                            let icon_y = top - icon_sz - px(4.0);
+                                            // User markers — centered within the marker band
+                                            // above the lanes (bounds.top()..top), not clipped
+                                            // off the top edge of the canvas.
+                                            let icon_sz = px(16.0);
+                                            let icon_y = bounds.top() + (marker_area_h - icon_sz) / 2.0;
                                             for &(prog, kind) in &marker_data {
                                                 let mx = to_x(prog);
                                                 if mx < left || mx > left + width { continue; }
 
-                                                let color = match kind {
-                                                    crate::state::MarkerKind::Flag => gpui::hsla(45.0/360.0, 0.9, 0.55, 1.0),
-                                                    crate::state::MarkerKind::Kill => gpui::hsla(0.0/360.0, 0.85, 0.55, 1.0),
-                                                    crate::state::MarkerKind::Death => gpui::hsla(270.0/360.0, 0.6, 0.55, 1.0),
-                                                    crate::state::MarkerKind::Highlight => gpui::hsla(50.0/360.0, 1.0, 0.55, 1.0),
-                                                };
+                                                let (h, s, l, a) = kind.color_hsla();
+                                                let color = gpui::hsla(h, s, l, a);
 
                                                 window.paint_quad(fill(
                                                     Bounds::new(point(mx - px(1.0), top), size(px(2.0), height)),
@@ -402,19 +396,6 @@ impl RekaptrWorkspace {
             )
     }
 
-    #[allow(dead_code)]
-    fn format_time(secs: f64, show_hours: bool) -> String {
-        let total = secs.max(0.0) as u64;
-        let h = total / 3600;
-        let m = (total % 3600) / 60;
-        let s = total % 60;
-        if show_hours {
-            format!("{:01}:{:02}:{:02}", h, m, s)
-        } else {
-            format!("{:01}:{:02}", m, s)
-        }
-    }
-
     fn render_video_track_header(&self, color: Hsla) -> impl IntoElement {
         let theme = use_theme();
         div()
@@ -456,9 +437,9 @@ impl RekaptrWorkspace {
         let theme = use_theme();
         div()
             .w(px(220.0))
-            .h(px(50.0))
+            .h(px(64.0))
             .px(px(10.0))
-            .py(px(6.0))
+            .py(px(8.0))
             .bg(theme.tokens.card)
             .rounded_md()
             .border_1()
@@ -491,51 +472,14 @@ impl RekaptrWorkspace {
             .when_some(slider, |this, s| this.child(s))
     }
 
-    #[allow(dead_code)]
-    fn render_ruler_row(&self, duration: f64, zoom: f32, scroll: f32) -> impl IntoElement {
-        let theme = use_theme();
-        let show_hours = duration >= 3600.0;
-
-        div()
-            .h(px(18.0))
-            .w_full()
-            .relative()
-            .overflow_hidden()
-            .child(
-                div()
-                    .absolute()
-                    .left(px(-scroll))
-                    .w(relative(zoom))
-                    .h_full()
-                    .children({
-                        let num_labels = (5.0 * zoom).max(2.0) as i32;
-                        (0..=num_labels).map(move |i| {
-                            let p = i as f64 / num_labels as f64;
-                            let time_secs = p * duration;
-                            let label = Self::format_time(time_secs, show_hours);
-                            let left_pct = (p * 100.0) as f32;
-
-                            div()
-                                .absolute()
-                                .left(relative(left_pct / 100.0))
-                                .top_0()
-                                .text_xs()
-                                .line_height(px(14.0))
-                                .text_color(theme.tokens.muted_foreground.opacity(0.7))
-                                .child(label)
-                        })
-                    })
-            )
-    }
-
-    fn render_track_lane(&self, progress: f32, _is_video: bool, color: Hsla) -> Div {
+    fn render_track_lane(&self, progress: f32, is_video: bool, color: Hsla) -> Div {
         let theme = use_theme();
         let zoom = self.timeline_zoom;
         let scroll = self.timeline_scroll;
 
         div()
             .flex_1()
-            .h(px(50.0))
+            .h(px(if is_video { 50.0 } else { 64.0 }))
             .bg(theme.tokens.background)
             .rounded_md()
             .border_1()

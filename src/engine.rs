@@ -189,44 +189,6 @@ pub fn parse_res(res: &str) -> (i32, i32) {
     (1920, 1080)
 }
 
-#[allow(dead_code)]
-pub fn resolve_pid(app_name: &str) -> u32 {
-    if app_name.is_empty() || app_name == "Default" {
-        return 0;
-    }
-    let mut sys = System::new_all();
-    sys.refresh_processes();
-
-    let target_name = app_name.to_lowercase();
-    let target_name_no_ext = if target_name.ends_with(".exe") {
-        &target_name[..target_name.len() - 4]
-    } else {
-        &target_name
-    };
-
-    let matching_processes: Vec<_> = sys
-        .processes()
-        .values()
-        .filter(|p| {
-            let name = p.name().to_string().to_lowercase();
-            name == target_name
-                || name == target_name_no_ext
-                || (name.ends_with(".exe") && &name[..name.len() - 4] == target_name_no_ext)
-        })
-        .collect();
-
-    if matching_processes.is_empty() {
-        return 0;
-    }
-
-    // Pick the process with the highest memory usage as a heuristic for the main process
-    // Safety: matching_processes is non-empty (checked above)
-    match matching_processes.iter().max_by_key(|p| p.memory()) {
-        Some(best) => best.pid().as_u32(),
-        None => 0,
-    }
-}
-
 pub fn diagnose_pipeline_failure(pipeline_str: &str, err: &gst::glib::Error) {
     let kind = err.kind::<gst::ParseError>()
         .map(|k| format!("{:?}", k))

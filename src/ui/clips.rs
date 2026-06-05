@@ -84,7 +84,7 @@ impl RekaptrWorkspace {
             .iter()
             .filter(|c| match &self.clips_filter {
                 ClipsFilter::All => true,
-                ClipsFilter::Favorites => favs.contains(&c.path.to_string_lossy().to_string()),
+                ClipsFilter::Favorites => favs.contains(&c.path_str),
                 ClipsFilter::Recent => true,
                 ClipsFilter::Game(g) => &c.title == g,
             })
@@ -93,7 +93,7 @@ impl RekaptrWorkspace {
                     return true;
                 }
                 c.title.to_lowercase().contains(&q)
-                    || c.path.to_string_lossy().to_lowercase().contains(&q)
+                    || c.path_str.to_lowercase().contains(&q)
             })
             .cloned()
             .collect();
@@ -120,11 +120,15 @@ impl RekaptrWorkspace {
             None
         };
 
+        // `clips` is already timestamp-DESC; track first-seen order in `order`
+        // while bucketing by title in a map, so grouping is O(n) not O(n²).
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut groups: Vec<(String, Vec<Clip>)> = Vec::new();
         for c in clips {
-            if let Some(entry) = groups.iter_mut().find(|(g, _)| g == &c.title) {
-                entry.1.push(c.clone());
+            if let Some(&i) = index.get(c.title.as_str()) {
+                groups[i].1.push(c.clone());
             } else {
+                index.insert(c.title.as_str(), groups.len());
                 groups.push((c.title.clone(), vec![c.clone()]));
             }
         }
@@ -135,17 +139,20 @@ impl RekaptrWorkspace {
     fn render_clips_filter_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let total = self.cached_clips.len();
-        let fav_count = self
-            .cached_clips
-            .iter()
-            .filter(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
-            .count();
 
+        // Single pass: favorites count and per-game counts together, bucketing
+        // games through a map (O(n)) instead of a linear find per clip (O(n²)).
+        let mut fav_count = 0usize;
+        let mut game_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut games: Vec<(String, usize)> = Vec::new();
         for c in &self.cached_clips {
-            if let Some(entry) = games.iter_mut().find(|(g, _)| g == &c.title) {
-                entry.1 += 1;
+            if self.favorite_clips.contains(&c.path_str) {
+                fav_count += 1;
+            }
+            if let Some(&i) = game_index.get(c.title.as_str()) {
+                games[i].1 += 1;
             } else {
+                game_index.insert(c.title.as_str(), games.len());
                 games.push((c.title.clone(), 1));
             }
         }
@@ -275,19 +282,7 @@ impl RekaptrWorkspace {
                 HStack::new()
                     .gap_3()
                     .items_center()
-                    .child(self.render_clips_search(cx))
-                    .child(
-                        Button::new("clips-topbar-sort", "")
-                            .icon(IconSource::Named("chevron-down".to_string()))
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm),
-                    )
-                    .child(
-                        Button::new("clips-topbar-more", "")
-                            .icon(IconSource::Named("settings".to_string()))
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm),
-                    ),
+                    .child(self.render_clips_search(cx)),
             )
     }
 
@@ -392,9 +387,10 @@ impl RekaptrWorkspace {
 
     fn render_clips_hero(&self, clip: Clip, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let clip_path = clip.path.to_string_lossy().to_string();
+        let clip_path = clip.path_str.clone();
         let is_fav = self.favorite_clips.contains(&clip_path);
         let clip_for_play = clip.clone();
+        let clip_for_more = clip.clone();
         let thumb = clip.thumbnail_path.clone();
         let title = clip.title.clone();
         let date = clip.date.clone();
@@ -477,7 +473,7 @@ impl RekaptrWorkspace {
                                         .bg(theme.tokens.primary)
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.tokens.foreground)
+                                        .text_color(theme.tokens.primary_foreground)
                                         .child("LATEST"),
                                 )
                                 .child(
@@ -521,16 +517,15 @@ impl RekaptrWorkspace {
                                         }))
                                 })
                                 .child(
-                                    Button::new("clips-hero-export", "Export")
-                                        .icon(IconSource::Named("scissors".to_string()))
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Lg),
-                                )
-                                .child(
                                     Button::new("clips-hero-more", "")
-                                        .icon(IconSource::Named("settings".to_string()))
+                                        .icon(IconSource::Named("ellipsis".to_string()))
                                         .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::Lg),
+                                        .size(ButtonSize::Lg)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            let mouse_pos = window.mouse_position();
+                                            this.clip_popover = Some((mouse_pos, clip_for_more.clone()));
+                                            cx.notify();
+                                        })),
                                 ),
                         ),
                 ),
@@ -553,11 +548,11 @@ impl RekaptrWorkspace {
 
         let fav_map: Vec<bool> = visible_clips
             .iter()
-            .map(|c| self.favorite_clips.contains(&c.path.to_string_lossy().to_string()))
+            .map(|c| self.favorite_clips.contains(&c.path_str))
             .collect();
         let sel_map: Vec<bool> = visible_clips
             .iter()
-            .map(|c| self.selected_clips.contains(&c.path.to_string_lossy().to_string()))
+            .map(|c| self.selected_clips.contains(&c.path_str))
             .collect();
 
         let theme = use_theme();
@@ -700,72 +695,6 @@ impl RekaptrWorkspace {
 }
 
 impl RekaptrWorkspace {
-    /// Trigger portrait artwork fetches for a list of game titles.
-    /// Everything runs off the UI thread — app_id resolution, local cache check, and download.
-    pub fn fetch_portrait_artwork(&self, titles: &[String], cx: &mut Context<Self>) {
-        let app_state = self.app_state.clone();
-        for title in titles {
-            // Already fetched or fetch in progress
-            if app_state.portrait_cache.contains_key(title) {
-                continue;
-            }
-
-            // Mark as in-progress immediately so we don't double-fetch
-            app_state.portrait_cache.insert(title.clone(), None);
-
-            let handle = cx.weak_entity();
-            let title_cache = title.clone();
-            let app_state_spawn = app_state.clone();
-
-            cx.spawn(move |_, cx: &mut gpui::AsyncApp| {
-                let app_state = app_state_spawn;
-                let handle = handle;
-                let mut cx = cx.clone();
-                let title = title_cache;
-                async move {
-                    // Run the blocking app_id resolution + local cache check off the UI thread
-                    let resolved = cx.background_executor().spawn({
-                        let title = title.clone();
-                        async move {
-                            crate::utils::find_steam_artwork_portrait(&title)
-                        }
-                    }).await;
-
-                    let Some(source) = resolved else {
-                        // No artwork found — leave None in cache
-                        return;
-                    };
-
-                    if !source.starts_with("http") {
-                        // Local file already cached on disk
-                        app_state.portrait_cache.insert(title, Some(source));
-                        let _ = handle.update(&mut cx, |_, cx| cx.notify());
-                        return;
-                    }
-
-                    // Download from CDN
-                    let result = if let Ok(resp) = reqwest::get(&source).await {
-                        if let Ok(bytes) = resp.bytes().await {
-                            Some(bytes)
-                        } else { None }
-                    } else { None };
-
-                    if let Some(bytes) = result {
-                        let app_id = source.split('/').nth(5).unwrap_or("unknown");
-                        let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
-                        let _ = std::fs::create_dir_all(&cache_dir);
-                        let local_path = cache_dir.join(format!("{}_portrait.jpg", app_id));
-                        if std::fs::write(&local_path, &bytes).is_ok() {
-                            let path_str = local_path.to_string_lossy().replace('\\', "/");
-                            app_state.portrait_cache.insert(title, Some(path_str));
-                            let _ = handle.update(&mut cx, |_, cx| cx.notify());
-                        }
-                    }
-                }
-            }).detach();
-        }
-    }
-
     fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
@@ -892,7 +821,7 @@ impl RekaptrWorkspace {
                                 div()
                                     .child(
                                         Button::new(("actions-btn", clip.timestamp), "")
-                                            .icon(IconSource::Named("plus".to_string()))
+                                            .icon(IconSource::Named("ellipsis".to_string()))
                                             .variant(ButtonVariant::Ghost)
                                             .size(ButtonSize::Sm)
                                             .on_click({
@@ -950,8 +879,12 @@ impl RekaptrWorkspace {
             }
         };
 
-        let player_width = 1120.0;
         let window_width = window.viewport_size().width.0;
+        let window_height = window.viewport_size().height.0;
+        // Fit within the window on smaller displays instead of overflowing a
+        // fixed 1120px box (which also broke the scrub-position math).
+        let player_width = (window_width - 80.0).clamp(480.0, 1120.0);
+        let player_height = (player_width * 630.0 / 1120.0).min(window_height - 80.0);
         let left_offset = (window_width - player_width) / 2.0;
 
         div()
@@ -992,7 +925,7 @@ impl RekaptrWorkspace {
                     }))
                     .id("mini-player-container")
                     .w(px(player_width))
-                    .h(px(630.0))
+                    .h(px(player_height))
                     .bg(theme.tokens.card)
                     .rounded_xl()
                     .border_1()
@@ -1300,6 +1233,7 @@ impl RekaptrWorkspace {
                                 this.child(
                                     img(path.to_string_lossy().to_string())
                                         .size_full()
+                                        .object_fit(ObjectFit::Cover)
                                 )
                             })
                     )

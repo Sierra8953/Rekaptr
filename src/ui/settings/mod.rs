@@ -16,50 +16,6 @@ use gstreamer::prelude::*;
 use gstreamer;
 use std::sync::Arc;
 
-/// Format a Win32 VK code + modifier bitmask into a human-readable string.
-#[allow(dead_code)]
-fn format_hotkey(vk: u32, modifiers: u32) -> String {
-    let mut parts = Vec::new();
-    if modifiers & 2 != 0 { parts.push("Ctrl".to_string()); }
-    if modifiers & 1 != 0 { parts.push("Alt".to_string()); }
-    if modifiers & 4 != 0 { parts.push("Shift".to_string()); }
-    let key_name = match vk {
-        0x70..=0x87 => format!("F{}", vk - 0x6F),
-        0x30..=0x39 => format!("{}", (vk - 0x30)),
-        0x41..=0x5A => format!("{}", (vk as u8) as char),
-        0x6A => "*".to_string(),
-        0x6B => "+".to_string(),
-        0x6D => "-".to_string(),
-        0x20 => "Space".to_string(),
-        0x0D => "Enter".to_string(),
-        0x09 => "Tab".to_string(),
-        0x14 => "CapsLock".to_string(),
-        0xC0 => "`".to_string(),
-        0xBD => "-".to_string(),
-        0xBB => "=".to_string(),
-        0xDB => "[".to_string(),
-        0xDD => "]".to_string(),
-        0xDC => "\\".to_string(),
-        0xBA => ";".to_string(),
-        0xDE => "'".to_string(),
-        0xBC => ",".to_string(),
-        0xBE => ".".to_string(),
-        0xBF => "/".to_string(),
-        0x2D => "Insert".to_string(),
-        0x2E => "Delete".to_string(),
-        0x24 => "Home".to_string(),
-        0x23 => "End".to_string(),
-        0x21 => "PageUp".to_string(),
-        0x22 => "PageDown".to_string(),
-        0x90 => "NumLock".to_string(),
-        0x91 => "ScrollLock".to_string(),
-        0x13 => "Pause".to_string(),
-        _ => format!("Key(0x{:02X})", vk),
-    };
-    parts.push(key_name);
-    parts.join(" + ")
-}
-
 /// Convert a gpui Keystroke to a Win32 VK code and modifier bitmask.
 fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
     let key_str = keystroke.key.as_str();
@@ -114,13 +70,7 @@ impl RekaptrWorkspace {
     pub fn render_settings_view(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 
-        let clips_gb = self.storage_clips_mb as f64 / 1024.0;
-        let sessions_gb = self.storage_sessions_mb as f64 / 1024.0;
-        let _total_gb = clips_gb + sessions_gb;
-
         let view_handle = cx.entity().downgrade();
-        let _is_calculating = self.is_calculating_storage;
-        let _max_buf_gb = self.form_max_buffer_size_gb;
         let current_tab = self.settings_tab;
 
         let mut root = div()
@@ -241,51 +191,6 @@ impl RekaptrWorkspace {
         self.settings_form_auto_delete_enabled = config.auto_delete_clips_days.is_some();
         self.settings_form_auto_delete_days = config.auto_delete_clips_days.unwrap_or(30);
         self.settings_form_export_format = config.default_export_format.clone();
-    }
-
-    #[allow(dead_code)]
-    pub fn refresh_storage_info(&mut self, cx: &mut Context<Self>) {
-        if self.is_calculating_storage {
-            return;
-        }
-        self.is_calculating_storage = true;
-        let task = cx.background_spawn(async move {
-            let root = crate::utils::get_storage_root();
-            let clips_dir = root.join("Clips");
-
-            let clips_size = crate::utils::get_dir_size(&clips_dir).unwrap_or(0);
-            let mut sessions_size = 0;
-
-            if let Ok(entries) = std::fs::read_dir(&root) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let name_lower = name.to_lowercase();
-                        if name != "Clips" && name != "Cache" && !name.starts_with(".")
-                           && name_lower != "target" && name_lower != "dist"
-                           && !name_lower.contains("gstreamer") {
-                            sessions_size += crate::utils::get_dir_size(&path).unwrap_or(0);
-                        }
-                    }
-                }
-            }
-            (clips_size, sessions_size)
-        });
-
-        cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                let (clips_bytes, sessions_bytes) = task.await;
-                let _ = this.update(&mut cx, |this, cx| {
-                    this.storage_clips_mb = clips_bytes / (1024 * 1024);
-                    this.storage_sessions_mb = sessions_bytes / (1024 * 1024);
-                    this.is_calculating_storage = false;
-                    cx.notify();
-                });
-            }
-        }).detach();
-        cx.notify();
     }
 
     pub fn render_advanced_settings_dialog(&self, source: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -504,7 +409,7 @@ impl RekaptrWorkspace {
                                 self.form_temporal_aq, |this| this.form_temporal_aq = !this.form_temporal_aq)))))
                     .child(ss_card(&theme, "Keyframes", VStack::new().child(ss_stepper_row(
                         &theme, cx, "gop", "GOP size", Some("How often a full frame is stored. Standard: 60 (1s intervals)."),
-                        self.form_gop, 1, 1000, 10, |this, v| this.form_gop = v))));
+                        self.form_gop, 0, 600, 10, |this, v| this.form_gop = v))));
                 col.into_any_element()
             }
 
@@ -884,15 +789,6 @@ pub(super) fn settings_card(
         .child(div().px_6().pb_5().child(body))
 }
 
-pub(super) fn section_header(title: &str) -> impl IntoElement {
-    div()
-        .text_sm()
-        .font_weight(FontWeight::BOLD)
-        .text_color(use_theme().tokens.primary)
-        .mb_2()
-        .child(title.to_uppercase())
-}
-
 pub(super) fn settings_row(theme: &Theme, label: impl Into<SharedString>, description: Option<impl Into<SharedString>>, control: impl IntoElement) -> impl IntoElement {
     HStack::new()
         .justify_between()
@@ -1090,26 +986,7 @@ fn ss_switch(
     value: bool,
     on_toggle: impl Fn(&mut RekaptrWorkspace) + 'static + Send + Sync,
 ) -> impl IntoElement {
-    let fg = theme.tokens.foreground;
-    div()
-        .id(id.into())
-        .w(px(40.0))
-        .h(px(22.0))
-        .rounded_full()
-        .relative()
-        .cursor_pointer()
-        .bg(if value { theme.tokens.primary } else { theme.tokens.border })
-        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            on_toggle(this);
-            cx.notify();
-        }))
-        .child(div()
-            .absolute()
-            .top(px(2.0))
-            .left(if value { px(20.0) } else { px(2.0) })
-            .size(px(18.0))
-            .rounded_full()
-            .bg(fg))
+    crate::ui::toggle_switch(theme, cx, id, value, false, on_toggle)
 }
 
 fn ss_toggle_row(

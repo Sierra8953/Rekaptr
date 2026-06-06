@@ -48,5 +48,10 @@ libmpv-2.dll
 /deps/
 /tests/
 
+# Development artifacts (UI test designs, component previews, internal notes)
+/mockups/
+/components/
+/docs/
+
 # NOTE: /crates/ MUST BE UPLOADED because it's a local dependency.
 # It is listed in Cargo.toml as gpui = { path = "crates/gpui" }

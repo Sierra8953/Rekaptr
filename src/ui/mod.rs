@@ -96,18 +96,8 @@ pub struct RekaptrWorkspace {
     pub sources_scrollbar_dragging: bool,
     pub sources_track_bounds: Bounds<Pixels>,
     pub add_source_show_overrides: bool,
-    pub playback_volumes: Vec<f64>,
-    /// Last `lavfi-complex` string applied to the playback mpv, so we don't
-    /// rebuild the audio filter graph every poll tick. Reset to `None` whenever
-    /// the video source changes. (DEBUG-era fix for main-thread freezes.)
-    pub last_audio_mix_sig: Option<String>,
-    pub track_vol_sliders: Vec<Entity<volume_slider::VolumeSlider>>,
-    /// Per-enabled-track mute / solo state for the dashboard audio mixer,
-    /// indexed in the same enabled order as `track_vol_sliders`.
-    pub mixer_muted: Vec<bool>,
-    pub mixer_solo: Vec<bool>,
-    /// Master volume bar for the mixer (drives mpv's overall `volume` property).
-    pub master_vol_slider: Option<Entity<volume_slider::VolumeSlider>>,
+    /// Playback audio-mixer state, grouped (see [`crate::ui::dashboard::MixerState`]).
+    pub mixer: crate::ui::dashboard::MixerState,
     pub last_notified_position: f64,
     pub is_refreshing_windows: bool,
     pub is_loading_video: bool,
@@ -496,12 +486,7 @@ impl RekaptrWorkspace {
             sources_scrollbar_dragging: false,
             sources_track_bounds: Bounds::default(),
             add_source_show_overrides: false,
-            playback_volumes: vec![100.0; 10],
-            last_audio_mix_sig: None,
-            track_vol_sliders: Vec::new(),
-            mixer_muted: Vec::new(),
-            mixer_solo: Vec::new(),
-            master_vol_slider: None,
+            mixer: crate::ui::dashboard::MixerState::new(),
             last_notified_position: 0.0,
             is_refreshing_windows: false,
             is_loading_video: false,
@@ -801,7 +786,7 @@ impl RekaptrWorkspace {
         let actual_track_count = v.audio_tracks().len();
 
         let active_tracks = self.get_current_audio_tracks();
-        let any_solo = self.mixer_solo.iter().any(|&s| s);
+        let any_solo = self.mixer.solo.iter().any(|&s| s);
 
         // Walk enabled tracks in order. The recorded file has one audio stream
         // per enabled-at-record-time track, in that order, so the mpv aid for the
@@ -820,13 +805,13 @@ impl RekaptrWorkspace {
             if p >= actual_track_count {
                 continue;
             }
-            let muted = self.mixer_muted.get(p).copied().unwrap_or(false);
-            let soloed = self.mixer_solo.get(p).copied().unwrap_or(false);
+            let muted = self.mixer.muted.get(p).copied().unwrap_or(false);
+            let soloed = self.mixer.solo.get(p).copied().unwrap_or(false);
             let audible = if any_solo { soloed && !muted } else { !muted };
             if !audible {
                 continue;
             }
-            let vol = self.playback_volumes.get(p).copied().unwrap_or(100.0) / 100.0;
+            let vol = self.mixer.volumes.get(p).copied().unwrap_or(100.0) / 100.0;
             aids.push((p + 1, vol));
         }
 
@@ -852,12 +837,12 @@ impl RekaptrWorkspace {
         // Re-applying an identical `lavfi-complex` forces mpv to tear down and
         // rebuild its audio filter graph — an expensive, blocking operation that
         // the ~20Hz poll loop was triggering constantly. Skip when unchanged.
-        if self.last_audio_mix_sig.as_deref() == Some(complex.as_str()) {
+        if self.mixer.last_mix_sig.as_deref() == Some(complex.as_str()) {
             return;
         }
         let _ = v.read().mpv.set_property("aid", "no");
         let _ = v.read().mpv.set_property("lavfi-complex", &*complex);
-        self.last_audio_mix_sig = Some(complex);
+        self.mixer.last_mix_sig = Some(complex);
     }
 
     pub fn update_preview_audio_mix(&self) {
@@ -1138,7 +1123,7 @@ impl RekaptrWorkspace {
                             Ok(video) => {
                                 this.video_source = Some(video);
                                 // Fresh mpv instance — force the mix to re-apply.
-                                this.last_audio_mix_sig = None;
+                                this.mixer.last_mix_sig = None;
                                 // Markers are keyed per source in shared state, so
                                 // switching sources just renders the new source's set.
                                 this.clip_start = -1.0;
@@ -1149,7 +1134,7 @@ impl RekaptrWorkspace {
                             }
                             Err(_) => {
                                 this.video_source = None;
-                                this.last_audio_mix_sig = None;
+                                this.mixer.last_mix_sig = None;
                             }
                         }
                     } else {
@@ -1343,7 +1328,7 @@ impl RekaptrWorkspace {
         let view = cx.entity().downgrade();
 
         // Master volume bar (created once) — drives mpv's overall `volume`.
-        if self.master_vol_slider.is_none() {
+        if self.mixer.master_slider.is_none() {
             let vh = view.clone();
             let master = cx.new(|cx| {
                 volume_slider::VolumeSlider::new(cx)
@@ -1357,18 +1342,18 @@ impl RekaptrWorkspace {
                         });
                     })
             });
-            self.master_vol_slider = Some(master);
+            self.mixer.master_slider = Some(master);
         }
 
-        if self.track_vol_sliders.len() == track_count {
+        if self.mixer.sliders.len() == track_count {
             return;
         }
-        self.mixer_muted = vec![false; track_count];
-        self.mixer_solo = vec![false; track_count];
-        self.track_vol_sliders.clear();
+        self.mixer.muted = vec![false; track_count];
+        self.mixer.solo = vec![false; track_count];
+        self.mixer.sliders.clear();
         for idx in 0..track_count {
             let vh = view.clone();
-            let initial_vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0);
+            let initial_vol = self.mixer.volumes.get(idx).copied().unwrap_or(100.0);
             let slider = cx.new(|cx| {
                 volume_slider::VolumeSlider::new(cx)
                     .compact()
@@ -1377,10 +1362,10 @@ impl RekaptrWorkspace {
                     .on_change(move |value, _window, cx| {
                         let _ = vh.update(cx, |this, cx| {
                             let volume = (value * 150.0) as f64;
-                            if this.playback_volumes.len() <= idx {
-                                this.playback_volumes.resize(idx + 1, 100.0);
+                            if this.mixer.volumes.len() <= idx {
+                                this.mixer.volumes.resize(idx + 1, 100.0);
                             }
-                            this.playback_volumes[idx] = volume;
+                            this.mixer.volumes[idx] = volume;
                             let now = std::time::Instant::now();
                             if now.duration_since(this.last_volume_update_at).as_millis() > 50 {
                                 this.last_volume_update_at = now;
@@ -1390,18 +1375,18 @@ impl RekaptrWorkspace {
                         });
                     })
             });
-            self.track_vol_sliders.push(slider);
+            self.mixer.sliders.push(slider);
         }
     }
 
     /// Toggle mute for an enabled mixer track (by its enabled-order index) and
     /// re-apply the playback mix.
     pub fn toggle_mixer_mute(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.mixer_muted.len() {
-            self.mixer_muted.resize(idx + 1, false);
+        if idx >= self.mixer.muted.len() {
+            self.mixer.muted.resize(idx + 1, false);
         }
-        self.mixer_muted[idx] = !self.mixer_muted[idx];
-        self.last_audio_mix_sig = None; // force re-apply
+        self.mixer.muted[idx] = !self.mixer.muted[idx];
+        self.mixer.last_mix_sig = None; // force re-apply
         self.update_mpv_audio_mix();
         cx.notify();
     }
@@ -1409,11 +1394,11 @@ impl RekaptrWorkspace {
     /// Toggle solo for an enabled mixer track (by its enabled-order index) and
     /// re-apply the playback mix.
     pub fn toggle_mixer_solo(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.mixer_solo.len() {
-            self.mixer_solo.resize(idx + 1, false);
+        if idx >= self.mixer.solo.len() {
+            self.mixer.solo.resize(idx + 1, false);
         }
-        self.mixer_solo[idx] = !self.mixer_solo[idx];
-        self.last_audio_mix_sig = None; // force re-apply
+        self.mixer.solo[idx] = !self.mixer.solo[idx];
+        self.mixer.last_mix_sig = None; // force re-apply
         self.update_mpv_audio_mix();
         cx.notify();
     }

@@ -5,6 +5,43 @@ use adabraka_ui::components::input::Input;
 use crate::config::AudioRouting;
 use crate::ui::RekaptrWorkspace;
 
+/// Playback audio-mixer state, grouped out of the `RekaptrWorkspace` god-object.
+/// Per-enabled-track volume/mute/solo plus the master bar, all indexed in the
+/// same enabled-track order.
+pub struct MixerState {
+    /// Per-track playback volume (0..150, 100 == unity).
+    pub volumes: Vec<f64>,
+    /// Last `lavfi-complex` string applied to the playback mpv, so we don't
+    /// rebuild the audio filter graph every poll tick. Reset to `None` whenever
+    /// the video source changes.
+    pub last_mix_sig: Option<String>,
+    pub sliders: Vec<gpui::Entity<crate::ui::volume_slider::VolumeSlider>>,
+    /// Per-enabled-track mute / solo state, indexed like `sliders`.
+    pub muted: Vec<bool>,
+    pub solo: Vec<bool>,
+    /// Master volume bar (drives mpv's overall `volume` property).
+    pub master_slider: Option<gpui::Entity<crate::ui::volume_slider::VolumeSlider>>,
+}
+
+impl MixerState {
+    pub fn new() -> Self {
+        Self {
+            volumes: vec![100.0; 10],
+            last_mix_sig: None,
+            sliders: Vec::new(),
+            muted: Vec::new(),
+            solo: Vec::new(),
+            master_slider: None,
+        }
+    }
+}
+
+impl Default for MixerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RekaptrWorkspace {
     pub fn render_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
@@ -175,7 +212,7 @@ impl RekaptrWorkspace {
             format!("{:.1}", 20.0 * (v / 100.0).log10())
         };
 
-        let master = self.master_vol_slider.clone();
+        let master = self.mixer.master_slider.clone();
         let master_val = master.as_ref().map(|s| s.read(cx).effective_value()).unwrap_or(1.0);
 
         // ── per-track rows ──
@@ -197,10 +234,10 @@ impl RekaptrWorkspace {
             for (i, track) in enabled_tracks.iter().enumerate() {
                 let color = crate::ui::track_color(i);
                 let icon = crate::ui::audio_track_icon(&track.source_type);
-                let slider = self.track_vol_sliders.get(i).cloned();
-                let muted = self.mixer_muted.get(i).copied().unwrap_or(false);
-                let soloed = self.mixer_solo.get(i).copied().unwrap_or(false);
-                let vol = self.playback_volumes.get(i).copied().unwrap_or(100.0);
+                let slider = self.mixer.sliders.get(i).cloned();
+                let muted = self.mixer.muted.get(i).copied().unwrap_or(false);
+                let soloed = self.mixer.solo.get(i).copied().unwrap_or(false);
+                let vol = self.mixer.volumes.get(i).copied().unwrap_or(100.0);
                 let db = if muted { "mute".to_string() } else { db_text(vol) };
 
                 let mut row = div()

@@ -142,33 +142,8 @@ pub struct RekaptrWorkspace {
     pub selected_clips: std::collections::HashSet<String>,
     pub selected_clip_for_details: Option<crate::state::Clip>,
     pub clips_filter: crate::ui::clips::ClipsFilter,
-    // Teams view state. Local/mock until the rekaptr.dev backend is wired.
-    pub teams: Vec<crate::ui::teams::Team>,
-    pub teams_active: Option<usize>,
-    pub teams_member_filter: Option<usize>,
-    pub teams_panel: crate::ui::teams::TeamsPanel,
-    pub team_name_input: Entity<adabraka_ui::components::input_state::InputState>,
-    pub join_code_input: Entity<adabraka_ui::components::input_state::InputState>,
-    /// Cloud (Clerk) sign-in state for the Teams tab.
-    pub teams_signed_in: bool,
-    /// A cloud request (sign-in / list / create / join / load) is in flight.
-    pub teams_busy: bool,
-    /// Whether the team list has been fetched at least once this session.
-    pub teams_listed: bool,
-    /// Last cloud error, surfaced inline in the Teams tab.
-    pub teams_error: Option<String>,
-    /// Whether the presence-heartbeat loop is already running (prevents dupes).
-    pub teams_presence_running: bool,
-    /// A "Share a clip" upload (create → TUS → complete) is in flight.
-    pub teams_sharing: bool,
-    /// Upload progress (0.0–1.0) for the in-flight share, for the progress UI.
-    pub teams_share_progress: f32,
-    /// Mini-player for a team clip: the libmpv Video streaming a Bunny MP4 URL,
-    /// plus the clip's title for the player HUD. `None` = no player open.
-    pub teams_player: Option<Video>,
-    pub teams_player_title: Option<String>,
-    /// Whether the user is dragging the team player's scrub bar.
-    pub teams_player_scrubbing: bool,
+    /// Teams view state, grouped (see [`crate::ui::teams::TeamsState`]).
+    pub teams: crate::ui::teams::TeamsState,
     pub recording_start_time: Option<std::time::Instant>,
     pub recording_session_id: Option<u64>,
     // Setup wizard state
@@ -574,22 +549,7 @@ impl RekaptrWorkspace {
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
             clips_filter: crate::ui::clips::ClipsFilter::All,
-            teams: Vec::new(),
-            teams_active: None,
-            teams_member_filter: None,
-            teams_panel: crate::ui::teams::TeamsPanel::None,
-            team_name_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            join_code_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            teams_signed_in,
-            teams_busy: false,
-            teams_listed: false,
-            teams_error: None,
-            teams_presence_running: false,
-            teams_sharing: false,
-            teams_share_progress: 0.0,
-            teams_player: None,
-            teams_player_title: None,
-            teams_player_scrubbing: false,
+            teams: crate::ui::teams::TeamsState::new(teams_signed_in, cx),
             recording_start_time: None,
             recording_session_id: None,
             // Setup wizard
@@ -1003,20 +963,20 @@ impl RekaptrWorkspace {
 
         // Load the user's teams the first time the signed-in Teams tab opens.
         if view == ActiveView::Teams
-            && self.teams_signed_in
-            && !self.teams_listed
-            && !self.teams_busy
+            && self.teams.signed_in
+            && !self.teams.listed
+            && !self.teams.busy
         {
             self.reload_teams(cx);
         }
-        if view == ActiveView::Teams && self.teams_signed_in {
+        if view == ActiveView::Teams && self.teams.signed_in {
             self.start_presence_heartbeat(cx);
         }
         // Leaving Teams: tear down any open clip player so its audio/mpv stops.
         if view != ActiveView::Teams {
-            self.teams_player = None;
-            self.teams_player_title = None;
-            self.teams_player_scrubbing = false;
+            self.teams.player = None;
+            self.teams.player_title = None;
+            self.teams.player_scrubbing = false;
         }
 
         if view == ActiveView::Clips {

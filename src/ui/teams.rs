@@ -66,6 +66,61 @@ pub enum TeamsPanel {
     Join,
 }
 
+/// All Teams-tab view state, grouped out of the `RekaptrWorkspace` god-object.
+/// Local/mock until the rekaptr.dev backend is fully wired.
+pub struct TeamsState {
+    /// The user's teams (left rail).
+    pub list: Vec<Team>,
+    pub active: Option<usize>,
+    pub member_filter: Option<usize>,
+    pub panel: TeamsPanel,
+    pub name_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub join_code_input: Entity<adabraka_ui::components::input_state::InputState>,
+    /// Cloud (Clerk) sign-in state for the Teams tab.
+    pub signed_in: bool,
+    /// A cloud request (sign-in / list / create / join / load) is in flight.
+    pub busy: bool,
+    /// Whether the team list has been fetched at least once this session.
+    pub listed: bool,
+    /// Last cloud error, surfaced inline in the Teams tab.
+    pub error: Option<String>,
+    /// Whether the presence-heartbeat loop is already running (prevents dupes).
+    pub presence_running: bool,
+    /// A "Share a clip" upload (create → TUS → complete) is in flight.
+    pub sharing: bool,
+    /// Upload progress (0.0–1.0) for the in-flight share, for the progress UI.
+    pub share_progress: f32,
+    /// Mini-player for a team clip: the libmpv Video streaming a Bunny MP4 URL,
+    /// plus the clip's title for the player HUD. `None` = no player open.
+    pub player: Option<crate::video_player::Video>,
+    pub player_title: Option<String>,
+    /// Whether the user is dragging the team player's scrub bar.
+    pub player_scrubbing: bool,
+}
+
+impl TeamsState {
+    pub fn new(signed_in: bool, cx: &mut Context<RekaptrWorkspace>) -> Self {
+        Self {
+            list: Vec::new(),
+            active: None,
+            member_filter: None,
+            panel: TeamsPanel::None,
+            name_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            join_code_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            signed_in,
+            busy: false,
+            listed: false,
+            error: None,
+            presence_running: false,
+            sharing: false,
+            share_progress: 0.0,
+            player: None,
+            player_title: None,
+            player_scrubbing: false,
+        }
+    }
+}
+
 // ── API → UI mapping ────────────────────────────────────────────────
 // Convert the cloud DTOs (`crate::cloud::api`) into the local view structs the
 // render code already uses.
@@ -155,16 +210,16 @@ fn thumb_tint_for(id: &str) -> u32 {
 
 impl RekaptrWorkspace {
     fn active_team(&self) -> Option<&Team> {
-        self.teams_active
-            .and_then(|i| self.teams.get(i))
-            .or_else(|| self.teams.first())
+        self.teams.active
+            .and_then(|i| self.teams.list.get(i))
+            .or_else(|| self.teams.list.first())
     }
 
     pub fn render_teams(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.teams_signed_in {
+        if !self.teams.signed_in {
             return self.render_teams_signin(cx).into_any_element();
         }
-        let show_empty = self.teams.is_empty();
+        let show_empty = self.teams.list.is_empty();
 
         div()
             .size_full()
@@ -176,7 +231,7 @@ impl RekaptrWorkspace {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .when_some(self.teams_error.clone(), |this, msg| {
+                    .when_some(self.teams.error.clone(), |this, msg| {
                         this.child(self.render_teams_error_banner(msg, cx))
                     })
                     .child(
@@ -190,10 +245,10 @@ impl RekaptrWorkspace {
                             }),
                     ),
             )
-            .when(self.teams_panel != TeamsPanel::None, |this| {
+            .when(self.teams.panel != TeamsPanel::None, |this| {
                 this.child(self.render_teams_overlay(cx))
             })
-            .when(self.teams_player.is_some(), |this| {
+            .when(self.teams.player.is_some(), |this| {
                 this.child(self.render_team_player_overlay(window, cx))
             })
             .into_any_element()
@@ -222,7 +277,7 @@ impl RekaptrWorkspace {
                     .child("YOUR TEAMS"),
             )
             .children(
-                self.teams
+                self.teams.list
                     .iter()
                     .enumerate()
                     .map(|(i, t)| self.team_rail_item(i, t, cx).into_any_element())
@@ -245,7 +300,7 @@ impl RekaptrWorkspace {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.teams_panel = TeamsPanel::Create;
+                            this.teams.panel = TeamsPanel::Create;
                             cx.notify();
                         }),
                     )
@@ -269,7 +324,7 @@ impl RekaptrWorkspace {
     /// Sign-out control: revokes tokens and returns to the sign-in gate.
     fn render_sign_out_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let busy = self.teams_busy;
+        let busy = self.teams.busy;
 
         div()
             .id("teams-sign-out")
@@ -302,7 +357,7 @@ impl RekaptrWorkspace {
 
     fn team_rail_item(&self, i: usize, team: &Team, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let active = self.teams_active.unwrap_or(0) == i;
+        let active = self.teams.active.unwrap_or(0) == i;
         let online = team.members.iter().filter(|m| m.online).count();
 
         div()
@@ -320,8 +375,8 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.teams_active = Some(i);
-                    this.teams_member_filter = None;
+                    this.teams.active = Some(i);
+                    this.teams.member_filter = None;
                     this.load_active_team(cx);
                     cx.notify();
                 }),
@@ -376,7 +431,7 @@ impl RekaptrWorkspace {
         };
 
         let clips = self.feed_clips(team);
-        let heading = match self.teams_member_filter {
+        let heading = match self.teams.member_filter {
             Some(m) => format!("{}'s clips", team.members[m].name),
             None => "Shared clips".to_string(),
         };
@@ -407,7 +462,7 @@ impl RekaptrWorkspace {
     fn feed_clips<'a>(&self, team: &'a Team) -> Vec<&'a TeamClip> {
         team.clips
             .iter()
-            .filter(|c| self.teams_member_filter.map_or(true, |m| c.author == m))
+            .filter(|c| self.teams.member_filter.map_or(true, |m| c.author == m))
             .collect()
     }
 
@@ -496,8 +551,8 @@ impl RekaptrWorkspace {
                     .items_center()
                     .child(render_member_stack(&team.members))
                     .child({
-                        let label = if self.teams_sharing {
-                            format!("Uploading… {}%", (self.teams_share_progress * 100.0) as u32)
+                        let label = if self.teams.sharing {
+                            format!("Uploading… {}%", (self.teams.share_progress * 100.0) as u32)
                         } else {
                             "Share a clip".to_string()
                         };
@@ -515,7 +570,7 @@ impl RekaptrWorkspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.teams_panel = TeamsPanel::Create;
+                                this.teams.panel = TeamsPanel::Create;
                                 cx.notify();
                             })),
                     ),
@@ -527,9 +582,9 @@ impl RekaptrWorkspace {
             .gap_2()
             .flex_wrap()
             .items_center()
-            .child(self.member_chip("All", None, self.teams_member_filter.is_none(), cx))
+            .child(self.member_chip("All", None, self.teams.member_filter.is_none(), cx))
             .children(team.members.iter().enumerate().map(|(i, m)| {
-                self.member_chip(&m.name, Some(i), self.teams_member_filter == Some(i), cx)
+                self.member_chip(&m.name, Some(i), self.teams.member_filter == Some(i), cx)
                     .into_any_element()
             }))
     }
@@ -566,7 +621,7 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.teams_member_filter = member;
+                    this.teams.member_filter = member;
                     cx.notify();
                 }),
             )
@@ -830,7 +885,7 @@ impl RekaptrWorkspace {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.teams_error = None;
+                            this.teams.error = None;
                             cx.notify();
                         }),
                     )
@@ -945,7 +1000,7 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.teams_panel = target;
+                    this.teams.panel = target;
                     cx.notify();
                 }),
             )
@@ -980,7 +1035,7 @@ impl RekaptrWorkspace {
     // ── Modal overlay: create / join forms ──────────────────────────
     fn render_teams_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let is_create = self.teams_panel == TeamsPanel::Create;
+        let is_create = self.teams.panel == TeamsPanel::Create;
 
         div()
             .absolute()
@@ -1023,7 +1078,7 @@ impl RekaptrWorkspace {
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
-                                            this.teams_panel = TeamsPanel::None;
+                                            this.teams.panel = TeamsPanel::None;
                                             cx.notify();
                                         }),
                                     )
@@ -1038,7 +1093,7 @@ impl RekaptrWorkspace {
                         VStack::new()
                             .gap_2()
                             .child(field_label("Team name"))
-                            .child(Input::new(&self.team_name_input).placeholder("e.g. Night Squad"))
+                            .child(Input::new(&self.teams.name_input).placeholder("e.g. Night Squad"))
                             .child(
                                 div()
                                     .text_xs()
@@ -1050,7 +1105,7 @@ impl RekaptrWorkspace {
                         VStack::new()
                             .gap_2()
                             .child(field_label("Invite code"))
-                            .child(Input::new(&self.join_code_input).placeholder("XXXX-XXXX"))
+                            .child(Input::new(&self.teams.join_code_input).placeholder("XXXX-XXXX"))
                             .child(
                                 HStack::new()
                                     .gap_2()
@@ -1079,7 +1134,7 @@ impl RekaptrWorkspace {
                                     .variant(ButtonVariant::Ghost)
                                     .size(ButtonSize::Md)
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.teams_panel = TeamsPanel::None;
+                                        this.teams.panel = TeamsPanel::None;
                                         cx.notify();
                                     })),
                             )
@@ -1105,22 +1160,22 @@ impl RekaptrWorkspace {
     /// a background thread (the calls are blocking) and then refresh the team
     /// list and select the resulting team.
     fn confirm_teams_panel(&mut self, is_create: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.teams_busy {
+        if self.teams.busy {
             return;
         }
         let auth = self.app_state.cloud_auth.clone();
 
         if is_create {
-            let name = self.team_name_input.read(cx).content.trim().to_string();
+            let name = self.teams.name_input.read(cx).content.trim().to_string();
             if name.is_empty() {
-                self.teams_error = Some("Enter a team name.".to_string());
+                self.teams.error = Some("Enter a team name.".to_string());
                 cx.notify();
                 return;
             }
-            self.team_name_input.update(cx, |s, cx| s.set_value("", window, cx));
-            self.teams_panel = TeamsPanel::None;
-            self.teams_busy = true;
-            self.teams_error = None;
+            self.teams.name_input.update(cx, |s, cx| s.set_value("", window, cx));
+            self.teams.panel = TeamsPanel::None;
+            self.teams.busy = true;
+            self.teams.error = None;
             cx.notify();
 
             cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1136,16 +1191,16 @@ impl RekaptrWorkspace {
                         })
                         .await;
                     let _ = this.update(&mut cx, |this, cx| {
-                        this.teams_busy = false;
+                        this.teams.busy = false;
                         match result {
                             Ok((new_id, code, teams)) => {
-                                this.teams =
+                                this.teams.list =
                                     teams.into_iter().map(team_from_summary).collect();
-                                this.teams_listed = true;
-                                this.teams_member_filter = None;
-                                if let Some(pos) = this.teams.iter().position(|t| t.id == new_id) {
-                                    this.teams_active = Some(pos);
-                                    if let Some(t) = this.teams.get_mut(pos) {
+                                this.teams.listed = true;
+                                this.teams.member_filter = None;
+                                if let Some(pos) = this.teams.list.iter().position(|t| t.id == new_id) {
+                                    this.teams.active = Some(pos);
+                                    if let Some(t) = this.teams.list.get_mut(pos) {
                                         t.invite_code = Some(code);
                                     }
                                     this.load_active_team(cx);
@@ -1159,16 +1214,16 @@ impl RekaptrWorkspace {
             })
             .detach();
         } else {
-            let code = self.join_code_input.read(cx).content.trim().to_string();
+            let code = self.teams.join_code_input.read(cx).content.trim().to_string();
             if code.is_empty() {
-                self.teams_error = Some("Enter an invite code.".to_string());
+                self.teams.error = Some("Enter an invite code.".to_string());
                 cx.notify();
                 return;
             }
-            self.join_code_input.update(cx, |s, cx| s.set_value("", window, cx));
-            self.teams_panel = TeamsPanel::None;
-            self.teams_busy = true;
-            self.teams_error = None;
+            self.teams.join_code_input.update(cx, |s, cx| s.set_value("", window, cx));
+            self.teams.panel = TeamsPanel::None;
+            self.teams.busy = true;
+            self.teams.error = None;
             cx.notify();
 
             cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1184,16 +1239,16 @@ impl RekaptrWorkspace {
                         })
                         .await;
                     let _ = this.update(&mut cx, |this, cx| {
-                        this.teams_busy = false;
+                        this.teams.busy = false;
                         match result {
                             Ok((team_id, teams)) => {
-                                this.teams =
+                                this.teams.list =
                                     teams.into_iter().map(team_from_summary).collect();
-                                this.teams_listed = true;
-                                this.teams_member_filter = None;
-                                this.teams_active =
-                                    this.teams.iter().position(|t| t.id == team_id);
-                                if this.teams_active.is_some() {
+                                this.teams.listed = true;
+                                this.teams.member_filter = None;
+                                this.teams.active =
+                                    this.teams.list.iter().position(|t| t.id == team_id);
+                                if this.teams.active.is_some() {
                                     this.load_active_team(cx);
                                 }
                             }
@@ -1218,23 +1273,23 @@ impl RekaptrWorkspace {
     /// back to the signed-out state so the user sees the "Sign in" gate again
     /// instead of a signed-in tab where every action silently errors.
     fn note_cloud_error(&mut self, e: String) {
-        self.teams_error = Some(e);
+        self.teams.error = Some(e);
         if !self.app_state.cloud_auth.is_signed_in() {
-            self.teams_signed_in = false;
-            self.teams_listed = false;
-            self.teams = Vec::new();
-            self.teams_active = None;
-            self.teams_member_filter = None;
-            self.teams_panel = TeamsPanel::None;
+            self.teams.signed_in = false;
+            self.teams.listed = false;
+            self.teams.list = Vec::new();
+            self.teams.active = None;
+            self.teams.member_filter = None;
+            self.teams.panel = TeamsPanel::None;
         }
     }
 
     pub fn start_cloud_sign_in(&mut self, cx: &mut Context<Self>) {
-        if self.teams_busy {
+        if self.teams.busy {
             return;
         }
-        self.teams_busy = true;
-        self.teams_error = None;
+        self.teams.busy = true;
+        self.teams.error = None;
         cx.notify();
         let auth = self.app_state.cloud_auth.clone();
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1248,15 +1303,15 @@ impl RekaptrWorkspace {
                     })
                     .await;
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.teams_busy = false;
+                    this.teams.busy = false;
                     match result {
                         Ok(summaries) => {
-                            this.teams = summaries.into_iter().map(team_from_summary).collect();
-                            this.teams_signed_in = true;
-                            this.teams_listed = true;
-                            this.teams_error = None;
-                            this.teams_active = (!this.teams.is_empty()).then_some(0);
-                            if this.teams_active.is_some() {
+                            this.teams.list = summaries.into_iter().map(team_from_summary).collect();
+                            this.teams.signed_in = true;
+                            this.teams.listed = true;
+                            this.teams.error = None;
+                            this.teams.active = (!this.teams.list.is_empty()).then_some(0);
+                            if this.teams.active.is_some() {
                                 this.load_active_team(cx);
                             }
                             this.start_presence_heartbeat(cx);
@@ -1272,11 +1327,11 @@ impl RekaptrWorkspace {
 
     /// Refresh the team list from the cloud (used on first opening the tab).
     pub fn reload_teams(&mut self, cx: &mut Context<Self>) {
-        if self.teams_busy {
+        if self.teams.busy {
             return;
         }
-        self.teams_busy = true;
-        self.teams_error = None;
+        self.teams.busy = true;
+        self.teams.error = None;
         cx.notify();
         let auth = self.app_state.cloud_auth.clone();
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1287,16 +1342,16 @@ impl RekaptrWorkspace {
                     .spawn(async move { api::list_teams(&auth).map_err(|e| e.to_string()) })
                     .await;
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.teams_busy = false;
+                    this.teams.busy = false;
                     match result {
                         Ok(summaries) => {
-                            this.teams = summaries.into_iter().map(team_from_summary).collect();
-                            this.teams_listed = true;
-                            this.teams_error = None;
-                            if this.teams_active.map_or(true, |i| i >= this.teams.len()) {
-                                this.teams_active = (!this.teams.is_empty()).then_some(0);
+                            this.teams.list = summaries.into_iter().map(team_from_summary).collect();
+                            this.teams.listed = true;
+                            this.teams.error = None;
+                            if this.teams.active.map_or(true, |i| i >= this.teams.list.len()) {
+                                this.teams.active = (!this.teams.list.is_empty()).then_some(0);
                             }
-                            if this.teams_active.is_some() {
+                            if this.teams.active.is_some() {
                                 this.load_active_team(cx);
                             }
                         }
@@ -1312,11 +1367,11 @@ impl RekaptrWorkspace {
     /// Sign out of the cloud account: revoke + clear tokens on a background
     /// thread, then drop all team state so the sign-in gate reappears.
     pub fn sign_out_cloud(&mut self, cx: &mut Context<Self>) {
-        if self.teams_busy {
+        if self.teams.busy {
             return;
         }
-        self.teams_busy = true;
-        self.teams_error = None;
+        self.teams.busy = true;
+        self.teams.error = None;
         cx.notify();
         let auth = self.app_state.cloud_auth.clone();
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1327,17 +1382,17 @@ impl RekaptrWorkspace {
                     .spawn(async move { auth.sign_out().map_err(|e| e.to_string()) })
                     .await;
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.teams_busy = false;
-                    this.teams_signed_in = false;
-                    this.teams_listed = false;
-                    this.teams_presence_running = false;
-                    this.teams_player = None;
-                    this.teams_player_title = None;
-                    this.teams.clear();
-                    this.teams_active = None;
-                    this.teams_member_filter = None;
-                    this.teams_panel = TeamsPanel::None;
-                    this.teams_error = result.err();
+                    this.teams.busy = false;
+                    this.teams.signed_in = false;
+                    this.teams.listed = false;
+                    this.teams.presence_running = false;
+                    this.teams.player = None;
+                    this.teams.player_title = None;
+                    this.teams.list.clear();
+                    this.teams.active = None;
+                    this.teams.member_filter = None;
+                    this.teams.panel = TeamsPanel::None;
+                    this.teams.error = result.err();
                     cx.notify();
                 });
             }
@@ -1350,7 +1405,7 @@ impl RekaptrWorkspace {
     /// background threads. Progress is surfaced via `teams_share_progress`; on
     /// success the team feed is reloaded so the new clip appears.
     pub fn share_clip_to_active_team(&mut self, cx: &mut Context<Self>) {
-        if self.teams_busy || self.teams_sharing {
+        if self.teams.busy || self.teams.sharing {
             return;
         }
         let Some(team) = self.active_team() else {
@@ -1359,7 +1414,7 @@ impl RekaptrWorkspace {
         let team_id = team.id.clone();
         let auth = self.app_state.cloud_auth.clone();
         let start_dir = self.export_destination.clone();
-        self.teams_error = None;
+        self.teams.error = None;
         cx.notify();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1390,15 +1445,15 @@ impl RekaptrWorkspace {
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 if size == 0 {
                     let _ = this.update(&mut cx, |this, cx| {
-                        this.teams_error = Some("Selected file is empty or unreadable.".into());
+                        this.teams.error = Some("Selected file is empty or unreadable.".into());
                         cx.notify();
                     });
                     return;
                 }
 
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.teams_sharing = true;
-                    this.teams_share_progress = 0.0;
+                    this.teams.sharing = true;
+                    this.teams.share_progress = 0.0;
                     cx.notify();
                 });
 
@@ -1412,8 +1467,8 @@ impl RekaptrWorkspace {
                         loop {
                             let still = ticker
                                 .update(&mut cx, |this, cx| {
-                                    if this.teams_sharing {
-                                        this.teams_share_progress = *progress_ui.lock();
+                                    if this.teams.sharing {
+                                        this.teams.share_progress = *progress_ui.lock();
                                         cx.notify();
                                         true
                                     } else {
@@ -1463,8 +1518,8 @@ impl RekaptrWorkspace {
                     .await;
 
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.teams_sharing = false;
-                    this.teams_share_progress = 0.0;
+                    this.teams.sharing = false;
+                    this.teams.share_progress = 0.0;
                     match result {
                         Ok(()) => {
                             // Refresh the feed if this team is still active.
@@ -1485,10 +1540,10 @@ impl RekaptrWorkspace {
     /// open and a team is active, POST `/presence` every 30s so the team's
     /// "X online" count stays live. The loop self-terminates on sign-out.
     pub fn start_presence_heartbeat(&mut self, cx: &mut Context<Self>) {
-        if self.teams_presence_running || !self.teams_signed_in {
+        if self.teams.presence_running || !self.teams.signed_in {
             return;
         }
-        self.teams_presence_running = true;
+        self.teams.presence_running = true;
         let auth = self.app_state.cloud_auth.clone();
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
@@ -1496,8 +1551,8 @@ impl RekaptrWorkspace {
                 loop {
                     // Read current state on the main thread; stop when signed out.
                     let team_id = match this.update(&mut cx, |this, _| {
-                        if !this.teams_signed_in {
-                            this.teams_presence_running = false;
+                        if !this.teams.signed_in {
+                            this.teams.presence_running = false;
                             return None;
                         }
                         if this.active_view == crate::ui::ActiveView::Teams {
@@ -1541,7 +1596,7 @@ impl RekaptrWorkspace {
         cx: &mut Context<Self>,
     ) {
         // Optimistic update + capture the desired on/off state.
-        let Some(team) = self.teams.iter_mut().find(|t| t.id == team_id) else {
+        let Some(team) = self.teams.list.iter_mut().find(|t| t.id == team_id) else {
             return;
         };
         let Some(clip) = team.clips.iter_mut().find(|c| c.id == clip_id) else {
@@ -1569,7 +1624,7 @@ impl RekaptrWorkspace {
                     .await;
                 let _ = this.update(&mut cx, |this, cx| {
                     let mut pending_err = None;
-                    if let Some(team) = this.teams.iter_mut().find(|t| t.id == team_id) {
+                    if let Some(team) = this.teams.list.iter_mut().find(|t| t.id == team_id) {
                         if let Some(clip) = team.clips.iter_mut().find(|c| c.id == clip_id) {
                             match result {
                                 Ok(state) => {
@@ -1590,7 +1645,7 @@ impl RekaptrWorkspace {
                         }
                     }
                     // Record the error (and reconcile sign-in state) once the
-                    // mutable borrow of `this.teams` above has been released.
+                    // mutable borrow of `this.teams.list` above has been released.
                     if let Some(e) = pending_err {
                         this.note_cloud_error(e);
                     }
@@ -1603,10 +1658,10 @@ impl RekaptrWorkspace {
 
     /// Fetch the active team's members + clip feed and populate it.
     pub fn load_active_team(&mut self, cx: &mut Context<Self>) {
-        let Some(idx) = self.teams_active else {
+        let Some(idx) = self.teams.active else {
             return;
         };
-        let Some(team) = self.teams.get(idx) else {
+        let Some(team) = self.teams.list.get(idx) else {
             return;
         };
         let team_id = team.id.clone();
@@ -1625,7 +1680,7 @@ impl RekaptrWorkspace {
                 let _ = this.update(&mut cx, |this, cx| {
                     match result {
                         Ok((team_id, detail, feed)) => {
-                            if let Some(t) = this.teams.iter_mut().find(|t| t.id == team_id) {
+                            if let Some(t) = this.teams.list.iter_mut().find(|t| t.id == team_id) {
                                 let members = members_from_detail(&detail);
                                 t.clips = clips_from_feed(&feed.items, &members);
                                 t.members = members;
@@ -1644,7 +1699,7 @@ impl RekaptrWorkspace {
     /// Signed-out gate for the Teams tab: a single "Sign in" call to action.
     fn render_teams_signin(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let busy = self.teams_busy;
+        let busy = self.teams.busy;
 
         div()
             .size_full()
@@ -1715,12 +1770,12 @@ impl RekaptrWorkspace {
                             )
                             .child(if busy { "Signing in…" } else { "Sign in" }),
                     )
-                    .when(self.teams_error.is_some(), |this| {
+                    .when(self.teams.error.is_some(), |this| {
                         this.child(
                             div()
                                 .text_sm()
                                 .text_color(gpui::rgb(0xef4444))
-                                .child(self.teams_error.clone().unwrap_or_default()),
+                                .child(self.teams.error.clone().unwrap_or_default()),
                         )
                     }),
             )
@@ -1740,7 +1795,7 @@ impl RekaptrWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let old = self.teams_player.take();
+        let old = self.teams.player.take();
         let d3d_device_ptr = self.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
         match crate::video_player::Video::new_with_options(
             &url,
@@ -1751,13 +1806,13 @@ impl RekaptrWorkspace {
             d3d_device_ptr,
         ) {
             Ok(video) => {
-                self.teams_player = Some(video);
-                self.teams_player_title = Some(title);
-                self.teams_player_scrubbing = false;
+                self.teams.player = Some(video);
+                self.teams.player_title = Some(title);
+                self.teams.player_scrubbing = false;
             }
             Err(e) => {
                 log::warn!("[Teams] failed to open clip player: {e:?}");
-                self.teams_error = Some("Couldn't play this clip.".to_string());
+                self.teams.error = Some("Couldn't play this clip.".to_string());
             }
         }
         if let Some(old) = old {
@@ -1768,17 +1823,17 @@ impl RekaptrWorkspace {
 
     /// Close the mini player and tear down its mpv instance.
     fn close_team_player(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(old) = self.teams_player.take() {
+        if let Some(old) = self.teams.player.take() {
             window.drop_image(old.render_image()).ok();
         }
-        self.teams_player_title = None;
-        self.teams_player_scrubbing = false;
+        self.teams.player_title = None;
+        self.teams.player_scrubbing = false;
         cx.notify();
     }
 
     fn render_team_player_overlay(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let Some(video) = self.teams_player.as_ref() else {
+        let Some(video) = self.teams.player.as_ref() else {
             return div().into_any_element();
         };
 
@@ -1816,8 +1871,8 @@ impl RekaptrWorkspace {
                     .id("teams-player-box")
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        if this.teams_player_scrubbing {
-                            if let Some(v) = &this.teams_player {
+                        if this.teams.player_scrubbing {
+                            if let Some(v) = &this.teams.player {
                                 let p = ((event.position.x.0 - left_offset) / player_width)
                                     .clamp(0.0, 1.0);
                                 let _ = v.seek(
@@ -1855,7 +1910,7 @@ impl RekaptrWorkspace {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(gpui::white())
                                     .truncate()
-                                    .child(self.teams_player_title.clone().unwrap_or_default()),
+                                    .child(self.teams.player_title.clone().unwrap_or_default()),
                             )
                             .child(
                                 div()
@@ -1891,8 +1946,8 @@ impl RekaptrWorkspace {
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, cx.listener(
                                         move |this, event: &MouseDownEvent, _, cx| {
-                                            this.teams_player_scrubbing = true;
-                                            if let Some(v) = &this.teams_player {
+                                            this.teams.player_scrubbing = true;
+                                            if let Some(v) = &this.teams.player {
                                                 let p = ((event.position.x.0 - left_offset)
                                                     / player_width)
                                                     .clamp(0.0, 1.0);
@@ -1909,7 +1964,7 @@ impl RekaptrWorkspace {
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
-                                            this.teams_player_scrubbing = false;
+                                            this.teams.player_scrubbing = false;
                                             cx.notify();
                                         }),
                                     )
@@ -1933,7 +1988,7 @@ impl RekaptrWorkspace {
                                             .on_mouse_down(
                                                 MouseButton::Left,
                                                 cx.listener(|this, _, _, cx| {
-                                                    if let Some(v) = &this.teams_player {
+                                                    if let Some(v) = &this.teams.player {
                                                         v.set_paused(!v.paused());
                                                     }
                                                     cx.notify();

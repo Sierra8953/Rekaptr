@@ -3,6 +3,7 @@ mod startup;
 mod video;
 mod audio;
 mod hotkeys;
+mod overlay;
 mod storage;
 mod export;
 mod about;
@@ -112,6 +113,7 @@ impl RekaptrWorkspace {
                             5 => { config.hotkeys.marker_kill_vk = vk; config.hotkeys.marker_kill_mod = modifiers; }
                             6 => { config.hotkeys.marker_death_vk = vk; config.hotkeys.marker_death_mod = modifiers; }
                             7 => { config.hotkeys.marker_highlight_vk = vk; config.hotkeys.marker_highlight_mod = modifiers; }
+                            8 => { config.hotkeys.toggle_overlay_vk = vk; config.hotkeys.toggle_overlay_mod = modifiers; }
                             _ => {}
                         }
                         config.save();
@@ -151,6 +153,7 @@ impl RekaptrWorkspace {
                                             SettingsTab::Video => self.render_settings_video(&theme, &view_handle, cx).into_any_element(),
                                             SettingsTab::Audio => self.render_settings_audio(&theme, &view_handle, cx).into_any_element(),
                                             SettingsTab::Hotkeys => self.render_settings_hotkeys(&theme, &view_handle, cx).into_any_element(),
+                                            SettingsTab::Overlay => self.render_settings_overlay(&theme, &view_handle, cx).into_any_element(),
                                             SettingsTab::Storage => self.render_settings_storage(&theme, &view_handle, cx).into_any_element(),
                                             SettingsTab::Export => self.render_settings_export(&theme, &view_handle, cx).into_any_element(),
                                             SettingsTab::About => self.render_settings_about(&theme, &view_handle, cx).into_any_element(),
@@ -319,7 +322,7 @@ impl RekaptrWorkspace {
                                     }))
                                     .child(div().w(px(64.0)).text_sm().font_weight(FontWeight::SEMIBOLD)
                                         .text_color(if enabled { theme.tokens.foreground } else { theme.tokens.muted_foreground })
-                                        .child(track.name.clone()))
+                                        .child(crate::ui::audio_track_display_name(track)))
                                     .child(ss_source_pill(&theme, cx, i, "sys", "System", &source_type))
                                     .child(ss_source_pill(&theme, cx, i, "mic", "Mic", &source_type))
                                     .child(ss_source_pill(&theme, cx, i, "app", "App", &source_type))
@@ -388,6 +391,23 @@ impl RekaptrWorkspace {
                         &theme, cx, "auto-rec", "Auto-record when detected",
                         Some("Automatically start recording when this game is detected."),
                         self.form_auto_record, |this| this.form_auto_record = !this.form_auto_record))));
+
+                    let ov_key = match self.form_overlay_enabled {
+                        None => "def",
+                        Some(true) => "on",
+                        Some(false) => "off",
+                    };
+                    col = col.child(ss_card(&theme, "In-game overlay", VStack::new().child(ss_segmented_row(
+                        &theme, cx, "ov-game", "Overlay for this game",
+                        ov_key,
+                        &[("Default", "def"), ("On", "on"), ("Off", "off")],
+                        |this, v| this.form_overlay_enabled = match v.as_str() {
+                            "on" => Some(true),
+                            "off" => Some(false),
+                            _ => None,
+                        },
+                    )).child(div().pt_1().text_xs().text_color(theme.tokens.muted_foreground)
+                        .child("\"Default\" follows the global setting, but stays off for anti-cheat-sensitive games."))));
                 }
                 col = col
                     .child(ss_card(&theme, "Encoder preset", VStack::new().child(ss_segmented_row(
@@ -406,10 +426,7 @@ impl RekaptrWorkspace {
                                 self.form_spatial_aq, |this| this.form_spatial_aq = !this.form_spatial_aq)))
                         .child(Tooltip::new("Temporal Adaptive Quantization. Improves quality in complex moving scenes.").placement(TooltipPlacement::Left)
                             .child(ss_toggle_row(&theme, cx, "opt-taq", "Temporal AQ", None,
-                                self.form_temporal_aq, |this| this.form_temporal_aq = !this.form_temporal_aq)))))
-                    .child(ss_card(&theme, "Keyframes", VStack::new().child(ss_stepper_row(
-                        &theme, cx, "gop", "GOP size", Some("How often a full frame is stored. Standard: 60 (1s intervals)."),
-                        self.form_gop, 0, 600, 10, |this, v| this.form_gop = v))));
+                                self.form_temporal_aq, |this| this.form_temporal_aq = !this.form_temporal_aq)))));
                 col.into_any_element()
             }
 
@@ -597,6 +614,7 @@ impl RekaptrWorkspace {
                                                         settings.audio_routing = Some(this.form_audio_tracks.clone());
                                                         settings.retention_minutes = this.form_retention;
                                                         settings.auto_record = this.form_auto_record;
+                                                        settings.overlay_enabled = this.form_overlay_enabled;
                                                     }
                                                 }
                                                 config.save();

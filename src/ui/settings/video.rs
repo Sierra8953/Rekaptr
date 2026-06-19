@@ -78,15 +78,6 @@ impl RekaptrWorkspace {
                                 .child(settings_row(theme, "Preset", Option::<String>::None,
                                     div().w(px(180.0)).child(self.select_preset.clone())
                                 ))
-                                .child(settings_row(theme, "GOP Size", Some(format!("{}", self.settings_form_gop)),
-                                    stepper("gop", self.settings_form_gop, 0, 600, 10, vh.clone(), |this, val, cx| {
-                                        this.settings_form_gop = val;
-                                        let mut config = crate::config::AppConfig::load();
-                                        config.global_video.gop_size = val;
-                                        config.save();
-                                        cx.notify();
-                                    })
-                                ))
                                 .when(!self.settings_form_zero_latency, |this| {
                                     this.child(settings_row(theme, "B-Frames", Some(format!("{}", self.settings_form_bframes)),
                                         stepper("bf", self.settings_form_bframes, 0, 4, 1, vh.clone(), |this, val, cx| {

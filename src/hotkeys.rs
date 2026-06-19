@@ -18,6 +18,7 @@ pub enum HotkeyAction {
     MarkerKill,
     MarkerDeath,
     MarkerHighlight,
+    ToggleOverlay,
 }
 
 struct HotkeyBinding {
@@ -35,6 +36,7 @@ const BINDINGS: &[HotkeyBinding] = &[
     HotkeyBinding { id: 6, action: HotkeyAction::MarkerKill,      label: "Marker Kill" },
     HotkeyBinding { id: 7, action: HotkeyAction::MarkerDeath,     label: "Marker Death" },
     HotkeyBinding { id: 8, action: HotkeyAction::MarkerHighlight, label: "Marker Highlight" },
+    HotkeyBinding { id: 9, action: HotkeyAction::ToggleOverlay,   label: "Toggle Overlay" },
 ];
 
 pub fn vk_to_string(vk: u32, modifiers: u32) -> String {
@@ -83,6 +85,7 @@ fn get_binding_keys(hk: &crate::config::HotkeyConfig, id: i32) -> (u32, u32) {
         6 => (hk.marker_kill_mod, hk.marker_kill_vk),
         7 => (hk.marker_death_mod, hk.marker_death_vk),
         8 => (hk.marker_highlight_mod, hk.marker_highlight_vk),
+        9 => (hk.toggle_overlay_mod, hk.toggle_overlay_vk),
         _ => (0, 0),
     }
 }

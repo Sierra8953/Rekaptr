@@ -55,6 +55,10 @@ pub struct GameSettings {
     pub audio_routing: Option<Vec<AudioRouting>>,
     pub record_focus_only: bool,
     pub artwork_path: Option<String>,
+    /// Per-game in-game overlay override: `None` inherits the global setting
+    /// (with the anti-cheat allowlist applied), `Some(true/false)` forces it.
+    #[serde(default)]
+    pub overlay_enabled: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -99,6 +103,9 @@ pub struct AppConfig {
     pub auto_delete_clips_days: Option<i32>,
     #[serde(default = "default_export_format")]
     pub default_export_format: String,
+    /// In-game overlay configuration. See `crate::overlay`.
+    #[serde(default)]
+    pub overlay: crate::overlay::OverlaySettings,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -135,6 +142,15 @@ pub struct HotkeyConfig {
     pub marker_highlight_vk: u32,
     #[serde(default)]
     pub marker_highlight_mod: u32,
+    /// Toggle the in-game overlay (default F8).
+    #[serde(default = "default_overlay_vk")]
+    pub toggle_overlay_vk: u32,
+    #[serde(default)]
+    pub toggle_overlay_mod: u32,
+}
+
+fn default_overlay_vk() -> u32 {
+    0x77 // F8
 }
 
 impl HotkeyConfig {
@@ -161,6 +177,8 @@ fn default_hotkeys() -> HotkeyConfig {
         marker_death_mod: 0,
         marker_highlight_vk: 0,
         marker_highlight_mod: 0,
+        toggle_overlay_vk: default_overlay_vk(),
+        toggle_overlay_mod: 0,
     }
 }
 
@@ -273,6 +291,7 @@ impl Default for AppConfig {
             minimize_to_tray: false,
             auto_delete_clips_days: None,
             default_export_format: default_export_format(),
+            overlay: crate::overlay::OverlaySettings::default(),
         }
     }
 }

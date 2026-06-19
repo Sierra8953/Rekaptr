@@ -14,6 +14,12 @@ pub struct VolumeSlider {
     bounds: Bounds<Pixels>,
     last_change_at: Instant,
     on_change: Option<Arc<dyn Fn(f32, &mut Window, &mut App) + Send + Sync>>,
+    /// Compact "meter bar" variant used by the dashboard audio mixer: a flat
+    /// filled bar with an edge tick, no mute button and no percent label. Still
+    /// fully draggable.
+    compact: bool,
+    /// Fill color for the compact variant (defaults to the primary violet).
+    fill_color: Option<Hsla>,
 }
 
 impl VolumeSlider {
@@ -25,11 +31,23 @@ impl VolumeSlider {
             bounds: Bounds::default(),
             last_change_at: Instant::now(),
             on_change: None,
+            compact: false,
+            fill_color: None,
         }
     }
 
     pub fn with_value(mut self, value: f32) -> Self {
         self.value = value.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    pub fn fill_color(mut self, color: Hsla) -> Self {
+        self.fill_color = Some(color);
         self
     }
 
@@ -84,8 +102,129 @@ impl VolumeSlider {
     }
 }
 
+impl VolumeSlider {
+    /// Compact meter-bar variant rendered to match the dashboard mockup's
+    /// `meter()` exactly: a rounded-full well with a gradient fill and a thin
+    /// white peak tick. No mute button or percent label (the mixer draws those
+    /// separately). The whole 24px cell is the drag target even though the bar
+    /// itself is 6px tall.
+    fn render_compact(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = use_theme();
+        let value = self.effective_value();
+        let dragging = self.dragging;
+        let fill_color = self.fill_color.unwrap_or(gpui::hsla(258.0 / 360.0, 0.9, 0.67, 1.0));
+        let grad = gpui::linear_gradient(
+            90.0,
+            gpui::linear_color_stop(fill_color.opacity(0.67), 0.0),
+            gpui::linear_color_stop(fill_color, 1.0),
+        );
+
+        div()
+            .relative()
+            .w_full()
+            .child(
+                div()
+                    .id("vol-track-area")
+                    .relative()
+                    .w_full()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.dragging = true;
+                            this.update_from_mouse(event.position.x);
+                            if this.muted {
+                                this.muted = false;
+                            }
+                            cx.notify();
+                            this.fire_immediate(window, cx);
+                        }),
+                    )
+                    // the meter bar — exact mockup markup
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .h(px(8.0))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(theme.tokens.background)
+                            .border_1()
+                            .border_color(theme.tokens.border)
+                            .child(div().absolute().top_0().bottom_0().left_0().w(relative(value)).bg(grad))
+                            .when(value > 0.0, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(relative(value))
+                                        .w(px(2.0))
+                                        .bg(gpui::white().opacity(if dragging { 1.0 } else { 0.6 })),
+                                )
+                            }),
+                    )
+                    // invisible bounds capture spanning the full drag cell
+                    .child({
+                        let entity = cx.entity().clone();
+                        canvas(
+                            move |bounds, _, cx| {
+                                entity.update(cx, |this, _| {
+                                    this.bounds = bounds;
+                                });
+                            },
+                            move |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                    }),
+            )
+            .when(dragging, |el| {
+                el.child(
+                    deferred(
+                        div()
+                            .id("h-drag-overlay")
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .cursor_pointer()
+                            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                                if event.pressed_button != Some(MouseButton::Left) {
+                                    this.dragging = false;
+                                    this.fire_immediate(window, cx);
+                                    cx.notify();
+                                    return;
+                                }
+                                this.update_from_mouse(event.position.x);
+                                cx.notify();
+                                this.fire_throttled(window, cx);
+                            }))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.dragging = false;
+                                    cx.notify();
+                                    this.fire_immediate(window, cx);
+                                }),
+                            ),
+                    )
+                    .with_priority(2),
+                )
+            })
+            .into_any_element()
+    }
+}
+
 impl Render for VolumeSlider {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.compact {
+            return self.render_compact(cx);
+        }
+
         let theme = use_theme();
         let value = self.effective_value();
         let pct_text: SharedString = format!("{}%", (value * 100.0).round() as i32).into();
@@ -274,5 +413,6 @@ impl Render for VolumeSlider {
                     .with_priority(2),
                 )
             })
+            .into_any_element()
     }
 }

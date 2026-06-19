@@ -7,6 +7,40 @@ use gstreamer::prelude::*;
 use std::sync::Arc;
 
 impl RekaptrWorkspace {
+    /// Toggle mute on the live recording's microphone by flipping the `mute`
+    /// property of the mic's `volume` element in the running pipeline. The
+    /// pipeline names each mic appsrc `mic_src_{i}` and its downstream gain
+    /// element `vol_{i}` (see `engine::generate_pipeline_string`), so we find
+    /// the mic index from the appsrc name and target the matching `vol_{i}`.
+    ///
+    /// Returns the new muted state, or `None` if there is no active recording
+    /// with a microphone track to mute.
+    pub fn toggle_recording_mic_mute(&mut self) -> Option<bool> {
+        let guard = self.app_state.recording.pipeline.lock();
+        let pipeline = guard.as_ref()?;
+
+        let mut new_state = None;
+        let mut iter = pipeline.iterate_elements();
+        loop {
+            match iter.next() {
+                Ok(Some(el)) => {
+                    let name = el.name();
+                    if let Some(idx) = name.strip_prefix("mic_src_") {
+                        if let Some(vol) = pipeline.by_name(&format!("vol_{}", idx)) {
+                            let muted = !vol.property::<bool>("mute");
+                            vol.set_property("mute", muted);
+                            log::info!("[Recording] Mic vol_{} mute -> {}", idx, muted);
+                            new_state = Some(muted);
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        new_state
+    }
+
     pub fn toggle_recording_internal(&mut self) {
         let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
         let game_dir = crate::utils::get_storage_root().join(crate::utils::clean_title(&source));
@@ -32,6 +66,18 @@ impl RekaptrWorkspace {
         }
         self.clear_mic_subscribers();
         *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
+        // Mirror stop_recording's tray reset: this emergency/error path also ends the
+        // recording, so the tray icon and tooltip must revert. Otherwise the tray stays
+        // stuck on "Recording" and the next stop press routes to start (phase is Idle),
+        // never re-sending the reset.
+        if let Some(tx) = self.app_state.tray_tx.lock().as_ref() {
+            let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(false));
+            let _ = tx.send(crate::state::TrayCommand::SetRecording(false));
+        }
+        crate::overlay::send(
+            &self.app_state,
+            crate::overlay::OverlayEvent::RecordingChanged { active: false, title: None },
+        );
     }
 
     pub fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -108,6 +154,10 @@ impl RekaptrWorkspace {
             let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(false));
             let _ = tx.send(crate::state::TrayCommand::SetRecording(false));
         }
+        crate::overlay::send(
+            &self.app_state,
+            crate::overlay::OverlayEvent::RecordingChanged { active: false, title: None },
+        );
         self.show_toast(
             "Recording Stopped",
             None::<&str>,
@@ -277,6 +327,13 @@ impl RekaptrWorkspace {
                     let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(true));
                     let _ = tx.send(crate::state::TrayCommand::SetRecording(true));
                 }
+                crate::overlay::send(
+                    &self.app_state,
+                    crate::overlay::OverlayEvent::RecordingChanged {
+                        active: true,
+                        title: Some(source_name.clone()),
+                    },
+                );
 
                 self.app_state.recording.reset_stats();
                 self.recording_start_time = Some(std::time::Instant::now());

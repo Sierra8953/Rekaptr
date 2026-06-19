@@ -15,10 +15,10 @@ mod export;
 mod recording;
 pub mod select;
 mod settings;
+pub mod teams;
 pub mod volume_slider;
 mod setup_wizard;
 mod sidebar;
-mod timeline;
 
 use adabraka_ui::overlays::popover_menu::{PopoverMenu, PopoverMenuItem};
 use adabraka_ui::display::data_table::DataTable;
@@ -48,11 +48,12 @@ pub struct RekaptrWorkspace {
     pub clip_end: f64,
     pub clip_start_mark: Option<crate::state::ClipMark>,
     pub clip_end_mark: Option<crate::state::ClipMark>,
-    pub timeline_bounds: Bounds<Pixels>,
     pub is_scrubbing: bool,
-    pub drag_target: Option<TimelineDragTarget>,
+    /// Progress (0..1) shown on the preview seek bar while dragging it.
     pub scrubbing_progress: f32,
-    pub last_seek_at: std::time::Instant,
+    /// Window-space bounds of the preview seek bar, captured each frame so a
+    /// click/drag can be mapped to a playback position.
+    pub preview_bar_bounds: Bounds<Pixels>,
     pub toast_manager: Entity<adabraka_ui::overlays::toast::ToastManager>,
     pub show_export_modal: bool,
     pub export_stage: crate::state::ExportStage,
@@ -71,6 +72,9 @@ pub struct RekaptrWorkspace {
     pub export_destination: std::path::PathBuf,
     pub export_clip_duration: f64,
     pub export_result_path: Option<std::path::PathBuf>,
+    /// Actual size (MB) of the exported file, read from disk after a successful
+    /// export. Falls back to the estimate on the Done screen when unset.
+    pub export_result_size_mb: Option<f32>,
     // Add Source Form State
     pub form_title: String,
     pub form_hwnd: Option<u64>,
@@ -93,9 +97,22 @@ pub struct RekaptrWorkspace {
     pub form_temporal_aq: bool,
     pub form_audio_tracks: Vec<AudioRouting>,
     pub form_auto_record: bool,
+    /// Per-game overlay override in the source dialog: None = default, Some(b) = forced.
+    pub form_overlay_enabled: Option<bool>,
     pub form_target_process: Option<String>,
     pub add_source_search_input: Entity<adabraka_ui::components::input_state::InputState>,
     pub add_source_title_input: Entity<adabraka_ui::components::input_state::InputState>,
+    /// Filter query for the dashboard Sources table.
+    pub sources_search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    /// Persistent scroll position + scrollbar state for the Sources table. These
+    /// must outlive a single frame or the scroll offset resets every render.
+    pub sources_scroll_handle: ScrollHandle,
+    /// Custom Sources scrollbar: the thumb pops up while the box is hovered (or
+    /// being dragged); `track_bounds` is the scroll area's window-space rect,
+    /// captured each frame so a drag can map cursor-Y to a scroll offset.
+    pub sources_box_hovered: bool,
+    pub sources_scrollbar_dragging: bool,
+    pub sources_track_bounds: Bounds<Pixels>,
     pub add_source_show_overrides: bool,
     pub playback_volumes: Vec<f64>,
     /// Last `lavfi-complex` string applied to the playback mpv, so we don't
@@ -103,9 +120,13 @@ pub struct RekaptrWorkspace {
     /// the video source changes. (DEBUG-era fix for main-thread freezes.)
     pub last_audio_mix_sig: Option<String>,
     pub track_vol_sliders: Vec<Entity<volume_slider::VolumeSlider>>,
+    /// Per-enabled-track mute / solo state for the dashboard audio mixer,
+    /// indexed in the same enabled order as `track_vol_sliders`.
+    pub mixer_muted: Vec<bool>,
+    pub mixer_solo: Vec<bool>,
+    /// Master volume bar for the mixer (drives mpv's overall `volume` property).
+    pub master_vol_slider: Option<Entity<volume_slider::VolumeSlider>>,
     pub last_notified_position: f64,
-    pub timeline_zoom: f32,
-    pub timeline_scroll: f32,
     pub is_refreshing_windows: bool,
     pub is_loading_video: bool,
     pub last_volume_update_at: std::time::Instant,
@@ -121,6 +142,33 @@ pub struct RekaptrWorkspace {
     pub selected_clips: std::collections::HashSet<String>,
     pub selected_clip_for_details: Option<crate::state::Clip>,
     pub clips_filter: crate::ui::clips::ClipsFilter,
+    // Teams view state. Local/mock until the rekaptr.dev backend is wired.
+    pub teams: Vec<crate::ui::teams::Team>,
+    pub teams_active: Option<usize>,
+    pub teams_member_filter: Option<usize>,
+    pub teams_panel: crate::ui::teams::TeamsPanel,
+    pub team_name_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub join_code_input: Entity<adabraka_ui::components::input_state::InputState>,
+    /// Cloud (Clerk) sign-in state for the Teams tab.
+    pub teams_signed_in: bool,
+    /// A cloud request (sign-in / list / create / join / load) is in flight.
+    pub teams_busy: bool,
+    /// Whether the team list has been fetched at least once this session.
+    pub teams_listed: bool,
+    /// Last cloud error, surfaced inline in the Teams tab.
+    pub teams_error: Option<String>,
+    /// Whether the presence-heartbeat loop is already running (prevents dupes).
+    pub teams_presence_running: bool,
+    /// A "Share a clip" upload (create → TUS → complete) is in flight.
+    pub teams_sharing: bool,
+    /// Upload progress (0.0–1.0) for the in-flight share, for the progress UI.
+    pub teams_share_progress: f32,
+    /// Mini-player for a team clip: the libmpv Video streaming a Bunny MP4 URL,
+    /// plus the clip's title for the player HUD. `None` = no player open.
+    pub teams_player: Option<Video>,
+    pub teams_player_title: Option<String>,
+    /// Whether the user is dragging the team player's scrub bar.
+    pub teams_player_scrubbing: bool,
     pub recording_start_time: Option<std::time::Instant>,
     pub recording_session_id: Option<u64>,
     // Setup wizard state
@@ -134,7 +182,6 @@ pub struct RekaptrWorkspace {
     /// 4=marker flag, 5=marker kill, 6=marker death, 7=marker highlight
     pub hotkey_listening: Option<usize>,
     pub hotkey_focus_handle: FocusHandle,
-    pub timeline_markers: Vec<crate::state::TimelineMarker>,
     // Settings form state — video tab
     pub settings_form_encoder: String,
     pub settings_form_resolution: String,
@@ -193,6 +240,78 @@ pub fn audio_track_icon(source_type: &str) -> &'static str {
     }
 }
 
+/// Friendly display name for an audio track. App-routed tracks are named after
+/// the process(es) they capture (e.g. `Discord.exe` → "Discord"); System and Mic
+/// tracks get human labels. An explicit user-chosen name (anything other than the
+/// default `Track N`) always wins, so renaming a track is never overridden.
+pub fn audio_track_display_name(track: &crate::config::AudioRouting) -> String {
+    if !is_default_track_name(&track.name) {
+        return track.name.clone();
+    }
+    match track.source_type.as_str() {
+        "System" => "System".to_string(),
+        "Mic" => "Microphone".to_string(),
+        "App" => match track.app_targets.as_slice() {
+            [] => "App".to_string(),
+            [one] => prettify_process_name(one),
+            [first, rest @ ..] => format!("{} +{}", prettify_process_name(first), rest.len()),
+        },
+        _ => track.name.clone(),
+    }
+}
+
+/// True for the auto-generated placeholder names (`Track 1`, `Track 2`, …) so we
+/// know a track hasn't been deliberately renamed.
+fn is_default_track_name(name: &str) -> bool {
+    name.strip_prefix("Track ")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Turn a process / executable name into a friendly label: drop any path and the
+/// `.exe` extension, map well-known processes to their product name, otherwise
+/// capitalize the first letter.
+pub fn prettify_process_name(proc: &str) -> String {
+    let stem = proc.rsplit(['/', '\\']).next().unwrap_or(proc);
+    let stem = stem
+        .strip_suffix(".exe")
+        .or_else(|| stem.strip_suffix(".EXE"))
+        .unwrap_or(stem);
+
+    // Well-known processes whose executable name isn't a nice product name.
+    match stem.to_ascii_lowercase().as_str() {
+        "msedge" => return "Microsoft Edge".to_string(),
+        "chrome" => return "Chrome".to_string(),
+        "firefox" => return "Firefox".to_string(),
+        "brave" => return "Brave".to_string(),
+        "opera" | "opera_gx" => return "Opera".to_string(),
+        "discord" => return "Discord".to_string(),
+        "spotify" => return "Spotify".to_string(),
+        "slack" => return "Slack".to_string(),
+        "teams" | "ms-teams" => return "Microsoft Teams".to_string(),
+        "zoom" => return "Zoom".to_string(),
+        "vlc" => return "VLC".to_string(),
+        "obs64" | "obs32" | "obs" => return "OBS".to_string(),
+        "steam" => return "Steam".to_string(),
+        "pioneergame-d" => return "ARC Raiders".to_string(),
+        "rustclient" => return "Rust".to_string(),
+        _ => {}
+    }
+
+    let mut chars = stem.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => stem.to_string(),
+    }
+}
+
+/// Per-track accent colors for the audio mixer, shared so a track's dot, meter
+/// fill and any other per-track UI all read the same color.
+pub const TRACK_COLORS: [u32; 6] = [0x22d3ee, 0x8b5cf6, 0x4ade80, 0xf472b6, 0x60a5fa, 0xfbbf24];
+
+pub fn track_color(i: usize) -> gpui::Hsla {
+    gpui::rgb(TRACK_COLORS[i % TRACK_COLORS.len()]).into()
+}
+
 /// Shared pill toggle switch. `small` renders the compact 28×16 variant used in
 /// dense rows; otherwise the standard 40×22 variant. Calling `on_toggle` and
 /// `cx.notify()` is handled here so every toggle behaves and looks identical.
@@ -234,17 +353,11 @@ pub(crate) fn toggle_switch(
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub enum TimelineDragTarget {
-    Playhead,
-    InMarker,
-    OutMarker,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum ActiveView {
     Dashboard,
     Settings,
     Clips,
+    Teams,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -254,6 +367,7 @@ pub enum SettingsTab {
     Video,
     Audio,
     Hotkeys,
+    Overlay,
     Storage,
     Export,
     About,
@@ -266,7 +380,7 @@ pub struct SettingsNavGroup {
 
 pub const SETTINGS_NAV: &[SettingsNavGroup] = &[
     SettingsNavGroup { title: "GENERAL", items: &[SettingsTab::General, SettingsTab::Startup] },
-    SettingsNavGroup { title: "CAPTURE", items: &[SettingsTab::Video, SettingsTab::Audio, SettingsTab::Hotkeys] },
+    SettingsNavGroup { title: "CAPTURE", items: &[SettingsTab::Video, SettingsTab::Audio, SettingsTab::Hotkeys, SettingsTab::Overlay] },
     SettingsNavGroup { title: "STORAGE", items: &[SettingsTab::Storage, SettingsTab::Export] },
     SettingsNavGroup { title: "SYSTEM", items: &[SettingsTab::About] },
 ];
@@ -279,6 +393,7 @@ impl SettingsTab {
             SettingsTab::Video => "Video",
             SettingsTab::Audio => "Audio",
             SettingsTab::Hotkeys => "Hotkeys",
+            SettingsTab::Overlay => "Overlay",
             SettingsTab::Storage => "Storage",
             SettingsTab::Export => "Export",
             SettingsTab::About => "About",
@@ -292,6 +407,7 @@ impl SettingsTab {
             SettingsTab::Video => "video",
             SettingsTab::Audio => "mic",
             SettingsTab::Hotkeys => "keyboard",
+            SettingsTab::Overlay => "layout-dashboard",
             SettingsTab::Storage => "hard-drive",
             SettingsTab::Export => "scissors",
             SettingsTab::About => "info",
@@ -301,7 +417,7 @@ impl SettingsTab {
     pub fn group(self) -> &'static str {
         match self {
             SettingsTab::General | SettingsTab::Startup => "General",
-            SettingsTab::Video | SettingsTab::Audio | SettingsTab::Hotkeys => "Capture",
+            SettingsTab::Video | SettingsTab::Audio | SettingsTab::Hotkeys | SettingsTab::Overlay => "Capture",
             SettingsTab::Storage | SettingsTab::Export => "Storage",
             SettingsTab::About => "System",
         }
@@ -345,6 +461,8 @@ impl RekaptrWorkspace {
             }
         }
 
+        let teams_signed_in = app_state.cloud_auth.is_signed_in();
+
         let mut workspace = Self {
             active_view: ActiveView::Dashboard,
             settings_tab: SettingsTab::General,
@@ -385,11 +503,9 @@ impl RekaptrWorkspace {
             clip_end: -1.0,
             clip_start_mark: None,
             clip_end_mark: None,
-            timeline_bounds: Bounds::default(),
             is_scrubbing: false,
-            drag_target: None,
             scrubbing_progress: 0.0,
-            last_seek_at: std::time::Instant::now(),
+            preview_bar_bounds: Bounds::default(),
             toast_manager,
             show_export_modal: false,
             export_stage: crate::state::ExportStage::Configure,
@@ -404,6 +520,7 @@ impl RekaptrWorkspace {
             export_destination: std::path::PathBuf::new(),
             export_clip_duration: 0.0,
             export_result_path: None,
+            export_result_size_mb: None,
             form_title: "New Source".to_string(),
             form_hwnd: None,
             form_active_tab: 0,
@@ -425,16 +542,23 @@ impl RekaptrWorkspace {
             form_temporal_aq: config.global_video.temporal_aq,
             form_audio_tracks: config.global_audio_tracks.clone(),
             form_auto_record: false,
+            form_overlay_enabled: None,
             form_target_process: None,
             add_source_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             add_source_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            sources_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            sources_scroll_handle: ScrollHandle::new(),
+            sources_box_hovered: false,
+            sources_scrollbar_dragging: false,
+            sources_track_bounds: Bounds::default(),
             add_source_show_overrides: false,
             playback_volumes: vec![100.0; 10],
             last_audio_mix_sig: None,
             track_vol_sliders: Vec::new(),
+            mixer_muted: Vec::new(),
+            mixer_solo: Vec::new(),
+            master_vol_slider: None,
             last_notified_position: 0.0,
-            timeline_zoom: 1.0,
-            timeline_scroll: 0.0,
             is_refreshing_windows: false,
             is_loading_video: false,
             last_volume_update_at: std::time::Instant::now(),
@@ -450,6 +574,22 @@ impl RekaptrWorkspace {
             selected_clips: std::collections::HashSet::new(),
             selected_clip_for_details: None,
             clips_filter: crate::ui::clips::ClipsFilter::All,
+            teams: Vec::new(),
+            teams_active: None,
+            teams_member_filter: None,
+            teams_panel: crate::ui::teams::TeamsPanel::None,
+            team_name_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            join_code_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            teams_signed_in,
+            teams_busy: false,
+            teams_listed: false,
+            teams_error: None,
+            teams_presence_running: false,
+            teams_sharing: false,
+            teams_share_progress: 0.0,
+            teams_player: None,
+            teams_player_title: None,
+            teams_player_scrubbing: false,
             recording_start_time: None,
             recording_session_id: None,
             // Setup wizard
@@ -464,7 +604,6 @@ impl RekaptrWorkspace {
             setup_detected_encoders: setup_wizard::detect_available_encoders(),
             hotkey_listening: None,
             hotkey_focus_handle: cx.focus_handle(),
-            timeline_markers: Vec::new(),
             // Settings form state — video
             settings_form_encoder: config.global_video.encoder.clone(),
             settings_form_resolution: config.global_video.resolution.clone(),
@@ -718,6 +857,11 @@ impl RekaptrWorkspace {
         })
         .detach();
 
+        // Re-render (and thus re-filter the Sources list) whenever the search
+        // box changes — the idle poll loop above doesn't notify when no video is
+        // playing, so without this typing wouldn't update the filtered rows.
+        cx.observe(&workspace.sources_search_input, |_, _, cx| cx.notify()).detach();
+
         workspace
     }
 
@@ -728,34 +872,51 @@ impl RekaptrWorkspace {
         let actual_track_count = v.audio_tracks().len();
 
         let active_tracks = self.get_current_audio_tracks();
-        let mut enabled_aids = Vec::new();
-        for (i, t) in active_tracks.iter().enumerate() {
-            // ONLY attempt to mix tracks that actually exist in the current stream.
-            // If a user added a Mic track recently, older segments won't have it,
-            // and trying to access [aid2] would crash the filter chain.
-            if t.enabled && i < actual_track_count {
-                enabled_aids.push(i);
+        let any_solo = self.mixer_solo.iter().any(|&s| s);
+
+        // Walk enabled tracks in order. The recorded file has one audio stream
+        // per enabled-at-record-time track, in that order, so the mpv aid for the
+        // p-th enabled track is `p + 1`. Mute/solo are indexed the same way.
+        // Older segments may have fewer streams than configured tracks, so guard
+        // against referencing an aid that doesn't exist (it would crash the
+        // filter chain).
+        let mut aids: Vec<(usize, f64)> = Vec::new(); // (aid 1-based, volume 0..)
+        let mut pos = 0usize;
+        for t in active_tracks.iter() {
+            if !t.enabled {
+                continue;
             }
+            let p = pos;
+            pos += 1;
+            if p >= actual_track_count {
+                continue;
+            }
+            let muted = self.mixer_muted.get(p).copied().unwrap_or(false);
+            let soloed = self.mixer_solo.get(p).copied().unwrap_or(false);
+            let audible = if any_solo { soloed && !muted } else { !muted };
+            if !audible {
+                continue;
+            }
+            let vol = self.playback_volumes.get(p).copied().unwrap_or(100.0) / 100.0;
+            aids.push((p + 1, vol));
         }
 
         // Build the desired filter graph instead of applying it immediately.
-        let complex = if enabled_aids.is_empty() {
+        let complex = if aids.is_empty() {
             String::new()
-        } else if enabled_aids.len() == 1 {
-            let idx = enabled_aids[0];
-            let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
-            format!("[aid{}]volume=volume={}[ao]", idx + 1, vol)
+        } else if aids.len() == 1 {
+            let (aid, vol) = aids[0];
+            format!("[aid{}]volume=volume={}[ao]", aid, vol)
         } else {
             let mut complex = String::new();
-            for &idx in &enabled_aids {
-                let vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0) / 100.0;
-                complex.push_str(&format!("[aid{}]volume=volume={}[a{}];", idx + 1, vol, idx + 1));
+            for &(aid, vol) in &aids {
+                complex.push_str(&format!("[aid{}]volume=volume={}[a{}];", aid, vol, aid));
             }
-            for &idx in &enabled_aids {
-                complex.push_str(&format!("[a{}]", idx + 1));
+            for &(aid, _) in &aids {
+                complex.push_str(&format!("[a{}]", aid));
             }
             // Normalize=0 prevents volume dropping when mixing multiple tracks
-            complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", enabled_aids.len()));
+            complex.push_str(&format!("amix=inputs={}:normalize=0[ao]", aids.len()));
             complex
         };
 
@@ -839,7 +1000,25 @@ impl RekaptrWorkspace {
     pub fn set_active_view(&mut self, view: ActiveView, cx: &mut Context<Self>) {
         self.active_view = view;
         self.hotkey_listening = None;
-        
+
+        // Load the user's teams the first time the signed-in Teams tab opens.
+        if view == ActiveView::Teams
+            && self.teams_signed_in
+            && !self.teams_listed
+            && !self.teams_busy
+        {
+            self.reload_teams(cx);
+        }
+        if view == ActiveView::Teams && self.teams_signed_in {
+            self.start_presence_heartbeat(cx);
+        }
+        // Leaving Teams: tear down any open clip player so its audio/mpv stops.
+        if view != ActiveView::Teams {
+            self.teams_player = None;
+            self.teams_player_title = None;
+            self.teams_player_scrubbing = false;
+        }
+
         if view == ActiveView::Clips {
             self.refresh_clips(cx);
         } else {
@@ -995,7 +1174,6 @@ impl RekaptrWorkspace {
 
         if self.is_loading_video { return; }
         self.is_loading_video = true;
-        let is_same_source = self.selected_source.as_deref() == Some(source_name);
         let source_name_str = source_name.to_string();
 
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -1032,9 +1210,8 @@ impl RekaptrWorkspace {
                                 this.video_source = Some(video);
                                 // Fresh mpv instance — force the mix to re-apply.
                                 this.last_audio_mix_sig = None;
-                                if !is_same_source {
-                                    this.timeline_markers.clear();
-                                }
+                                // Markers are keyed per source in shared state, so
+                                // switching sources just renders the new source's set.
                                 this.clip_start = -1.0;
                                 this.clip_end = -1.0;
                                 this.clip_start_mark = None;
@@ -1146,39 +1323,127 @@ impl RekaptrWorkspace {
         log::info!("[MicProvider] Restarted with noise_suppression={}", config.mic_settings.noise_suppression);
     }
 
+    /// Dispatch a global hotkey / overlay command to the workspace. Shared by the
+    /// system-wide hotkey listener and the in-game overlay's action buttons.
+    pub fn handle_hotkey_action(
+        &mut self,
+        action: crate::hotkeys::HotkeyAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            crate::hotkeys::HotkeyAction::ToggleRecording => {
+                self.toggle_recording(window, cx);
+            }
+            crate::hotkeys::HotkeyAction::SaveClip => {
+                // A clip configured in the in-game overlay routes through here:
+                // run the shared export backend headlessly with its chosen options.
+                // The bare hotkey / desktop button opens the desktop dialog instead.
+                let overlay_req = self.app_state.overlay_clip_request.lock().take();
+                if let Some(req) = overlay_req {
+                    self.export_from_overlay(req, window, cx);
+                } else {
+                    self.save_clip(window, cx);
+                }
+            }
+            crate::hotkeys::HotkeyAction::ToggleMic => {
+                match self.toggle_recording_mic_mute() {
+                    Some(muted) => {
+                        let status = if muted { "muted" } else { "unmuted" };
+                        self.show_toast(
+                            "Microphone",
+                            Some(format!("Mic {}", status)),
+                            adabraka_ui::overlays::toast::ToastVariant::Default,
+                            window,
+                            cx,
+                        );
+                    }
+                    None => {
+                        self.show_toast(
+                            "Microphone",
+                            Some("No active recording mic to mute"),
+                            adabraka_ui::overlays::toast::ToastVariant::Warning,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }
+            crate::hotkeys::HotkeyAction::PushToTalk => {
+                log::debug!("[Hotkeys] Push-to-talk triggered (toggle mode)");
+                let _ = self.toggle_recording_mic_mute();
+                cx.notify();
+            }
+            crate::hotkeys::HotkeyAction::MarkerFlag => {
+                self.add_marker_with_kind(crate::state::MarkerKind::Flag, cx);
+            }
+            crate::hotkeys::HotkeyAction::MarkerKill => {
+                self.add_marker_with_kind(crate::state::MarkerKind::Kill, cx);
+            }
+            crate::hotkeys::HotkeyAction::MarkerDeath => {
+                self.add_marker_with_kind(crate::state::MarkerKind::Death, cx);
+            }
+            crate::hotkeys::HotkeyAction::MarkerHighlight => {
+                self.add_marker_with_kind(crate::state::MarkerKind::Highlight, cx);
+            }
+            crate::hotkeys::HotkeyAction::ToggleOverlay => {
+                crate::overlay::send(&self.app_state, crate::overlay::OverlayEvent::ToggleManual);
+            }
+        }
+    }
+
     pub fn add_marker_with_kind(&mut self, kind: crate::state::MarkerKind, cx: &mut Context<Self>) {
         if let Some(v) = &self.video_source {
             let time = v.position().as_secs_f64();
-            // Don't add duplicate markers within 0.5s of each other
-            if !self.timeline_markers.iter().any(|m| (m.time_secs - time).abs() < 0.5) {
-                self.timeline_markers.push(crate::state::TimelineMarker {
-                    time_secs: time,
-                    kind,
-                });
-                self.timeline_markers.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+            let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+            if self.app_state.add_marker(&source, time, kind) {
+                crate::overlay::send(&self.app_state, crate::overlay::OverlayEvent::Marker(kind));
                 cx.notify();
             }
         }
     }
 
     pub fn remove_marker(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.timeline_markers.len() {
-            self.timeline_markers.remove(index);
-            cx.notify();
-        }
+        let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
+        self.app_state.remove_marker(&source, index);
+        cx.notify();
     }
 
     pub fn ensure_track_vol_sliders(&mut self, track_count: usize, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+
+        // Master volume bar (created once) — drives mpv's overall `volume`.
+        if self.master_vol_slider.is_none() {
+            let vh = view.clone();
+            let master = cx.new(|cx| {
+                volume_slider::VolumeSlider::new(cx)
+                    .compact()
+                    .with_value(1.0)
+                    .on_change(move |value, _window, cx| {
+                        let _ = vh.update(cx, |this, _| {
+                            if let Some(v) = &this.video_source {
+                                let _ = v.read().mpv.set_property("volume", value as f64 * 100.0);
+                            }
+                        });
+                    })
+            });
+            self.master_vol_slider = Some(master);
+        }
+
         if self.track_vol_sliders.len() == track_count {
             return;
         }
-        let view = cx.entity().downgrade();
+        self.mixer_muted = vec![false; track_count];
+        self.mixer_solo = vec![false; track_count];
         self.track_vol_sliders.clear();
         for idx in 0..track_count {
             let vh = view.clone();
             let initial_vol = self.playback_volumes.get(idx).copied().unwrap_or(100.0);
             let slider = cx.new(|cx| {
                 volume_slider::VolumeSlider::new(cx)
+                    .compact()
+                    .fill_color(track_color(idx))
                     .with_value((initial_vol / 150.0) as f32)
                     .on_change(move |value, _window, cx| {
                         let _ = vh.update(cx, |this, cx| {
@@ -1198,6 +1463,30 @@ impl RekaptrWorkspace {
             });
             self.track_vol_sliders.push(slider);
         }
+    }
+
+    /// Toggle mute for an enabled mixer track (by its enabled-order index) and
+    /// re-apply the playback mix.
+    pub fn toggle_mixer_mute(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx >= self.mixer_muted.len() {
+            self.mixer_muted.resize(idx + 1, false);
+        }
+        self.mixer_muted[idx] = !self.mixer_muted[idx];
+        self.last_audio_mix_sig = None; // force re-apply
+        self.update_mpv_audio_mix();
+        cx.notify();
+    }
+
+    /// Toggle solo for an enabled mixer track (by its enabled-order index) and
+    /// re-apply the playback mix.
+    pub fn toggle_mixer_solo(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx >= self.mixer_solo.len() {
+            self.mixer_solo.resize(idx + 1, false);
+        }
+        self.mixer_solo[idx] = !self.mixer_solo[idx];
+        self.last_audio_mix_sig = None; // force re-apply
+        self.update_mpv_audio_mix();
+        cx.notify();
     }
 
     pub fn delete_session(&mut self, session_id: i32, window: &mut Window, cx: &mut Context<Self>) {
@@ -1244,6 +1533,7 @@ impl RekaptrWorkspace {
                         ActiveView::Dashboard => self.render_dashboard(window, cx).into_any_element(),
                         ActiveView::Settings => self.render_settings_view(window, cx).into_any_element(),
                         ActiveView::Clips => self.render_clips(window, cx).into_any_element(),
+                        ActiveView::Teams => self.render_teams(window, cx).into_any_element(),
                     })
             );
 

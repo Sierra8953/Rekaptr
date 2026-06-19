@@ -9,7 +9,12 @@ const SUCCESS: u32 = 0x22C55EFF;
 const SUCCESS_DIM: u32 = 0x22C55E40;
 
 impl RekaptrWorkspace {
-    pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Prepare export state (duration, audio-track snapshot + frozen stream
+    /// mapping, destination, cleared title) from the current clip marks and
+    /// selected source. Returns false (with a toast) if IN/OUT aren't both set.
+    /// Shared by the desktop dialog (`save_clip`) and the overlay export
+    /// (`export_from_overlay`).
+    pub fn setup_export(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let (in_mark, out_mark) = match (self.clip_start_mark.clone(), self.clip_end_mark.clone()) {
             (Some(i), Some(o)) => (i, o),
             _ => {
@@ -20,7 +25,7 @@ impl RekaptrWorkspace {
                     window,
                     cx,
                 );
-                return;
+                return false;
             }
         };
 
@@ -73,17 +78,59 @@ impl RekaptrWorkspace {
 
         self.export_title_input
             .update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
+        true
+    }
 
+    pub fn save_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.setup_export(window, cx) {
+            return;
+        }
         self.export_stage = ExportStage::Configure;
         self.export_result_path = None;
+        self.export_result_size_mb = None;
         self.show_export_modal = true;
         cx.notify();
+    }
+
+    /// Export a clip marked in the in-game overlay, applying the options chosen in
+    /// the overlay's own dialog and running the shared `perform_export` backend
+    /// headlessly (no desktop modal). Progress/result flow through the shared
+    /// `app_state.export` state and a `ClipSaved` event back to the overlay.
+    pub fn export_from_overlay(
+        &mut self,
+        req: crate::state::OverlayClipRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_source = Some(req.source);
+        self.clip_start_mark = Some(req.in_mark);
+        self.clip_end_mark = Some(req.out_mark);
+        if !self.setup_export(window, cx) {
+            return;
+        }
+        self.export_reencode = req.reencode;
+        self.export_encoder = req.encoder;
+        self.export_bitrate = req.bitrate;
+        self.export_container = req.container;
+        // Apply the overlay's per-track include choices on top of the frozen
+        // record-time stream mapping computed in setup_export.
+        for (i, enabled) in req.audio_enabled.iter().enumerate() {
+            if let Some(t) = self.export_audio_tracks.get_mut(i) {
+                t.enabled = *enabled;
+            }
+        }
+        if !req.title.trim().is_empty() {
+            self.export_title_input
+                .update(cx, |input, cx| input.set_value(SharedString::from(req.title), window, cx));
+        }
+        self.perform_export(window, cx);
     }
 
     fn close_export_modal(&mut self, cx: &mut Context<Self>) {
         self.show_export_modal = false;
         self.export_stage = ExportStage::Configure;
         self.export_result_path = None;
+        self.export_result_size_mb = None;
         cx.notify();
     }
 
@@ -176,31 +223,49 @@ impl RekaptrWorkspace {
         cx.notify();
 
         let app_state_for_progress = self.app_state.clone();
+        let app_state_for_ffmpeg = self.app_state.clone();
         let view_handle = cx.entity().downgrade();
 
+        // UI repaint ticker: the real progress value is written from the ffmpeg
+        // reader thread into `export.progress`; this just repaints the bar while
+        // an export is in flight.
         cx.spawn(move |_, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                for i in 1..=100 {
-                    let progress = i as f32 / 100.0;
-                    *app_state_for_progress.export.progress.lock() = progress;
+                while *app_state_for_progress.export.phase.lock() == crate::state::ExportPhase::Exporting {
                     let _ = view_handle.update(&mut cx, |_, cx| cx.notify());
-                    let _ = cx.background_executor().timer(std::time::Duration::from_millis(if export_reencode { 50 } else { 5 })).await;
-                    if *app_state_for_progress.export.phase.lock() != crate::state::ExportPhase::Exporting {
-                        break;
-                    }
+                    let _ = cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
                 }
             }
         }).detach();
 
+        let total_dur_secs = (out_offset - in_offset).max(0.001);
+
         let ffmpeg_task = cx.background_spawn(async move {
             use std::os::windows::process::CommandExt;
-            use std::process::Command;
+            use std::process::{Command, Stdio};
+
+            // Physical stream indices for the tracks the user kept enabled, using
+            // each track's frozen record-time mapping (None = no stream existed).
+            let enabled_streams: Vec<usize> = audio_tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    if t.enabled {
+                        track_stream_idx.get(i).copied().flatten()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
             let build_cmd = |hwaccel: bool| {
                 let mut cmd = Command::new(ffmpeg_path.clone());
                 cmd.creation_flags(0x08000000);
                 cmd.arg("-y");
+                // Emit machine-readable progress on stdout; ffmpeg's normal logs
+                // stay on stderr, so the two never collide.
+                cmd.arg("-progress").arg("pipe:1").arg("-nostats");
                 if hwaccel {
                     cmd.arg("-hwaccel").arg("cuda")
                        .arg("-hwaccel_output_format").arg("cuda");
@@ -212,13 +277,29 @@ impl RekaptrWorkspace {
                    .arg("-to").arg(format!("{:.3}", out_offset))
                    .arg("-map").arg("0:v:0");
 
-                // Map only tracks the user kept enabled, using each track's frozen
-                // physical stream index (None = no stream existed at record time).
-                for (i, track) in audio_tracks.iter().enumerate() {
-                    if track.enabled {
-                        if let Some(phys) = track_stream_idx.get(i).copied().flatten() {
-                            cmd.arg("-map").arg(format!("0:a:{}?", phys));
+                // Combine the enabled audio tracks into a single output track:
+                // one stream maps straight through; several are mixed with `amix`
+                // (normalize=0 preserves each source's level instead of dividing
+                // the volume by the input count).
+                match enabled_streams.as_slice() {
+                    [] => {}
+                    [phys] => {
+                        // Trailing `?` makes the map optional: if this track's
+                        // stream isn't actually present in the spanned segments
+                        // (e.g. an older clip recorded before the track existed),
+                        // ffmpeg drops it instead of aborting the whole export.
+                        cmd.arg("-map").arg(format!("0:a:{}?", phys));
+                    }
+                    streams => {
+                        let mut filter = String::new();
+                        for &phys in streams {
+                            filter.push_str(&format!("[0:a:{}]", phys));
                         }
+                        filter.push_str(&format!(
+                            "amix=inputs={}:normalize=0:duration=longest[aout]",
+                            streams.len()
+                        ));
+                        cmd.arg("-filter_complex").arg(filter).arg("-map").arg("[aout]");
                     }
                 }
 
@@ -243,16 +324,49 @@ impl RekaptrWorkspace {
                 cmd
             };
 
+            // Spawn ffmpeg, stream `-progress` from stdout to drive the real
+            // progress bar, and collect stderr for error reporting. Mirrors
+            // `Command::output()` semantics but with live progress.
+            let run = |mut cmd: Command| -> std::io::Result<std::process::Output> {
+                cmd.stdout(Stdio::piped());
+                cmd.stderr(Stdio::piped());
+                let mut child = cmd.spawn()?;
+
+                let reader = child.stdout.take().map(|stdout| {
+                    let progress_state = app_state_for_ffmpeg.clone();
+                    std::thread::spawn(move || {
+                        use std::io::{BufRead, BufReader};
+                        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                            // ffmpeg reports position as out_time_us (newer) or
+                            // out_time_ms (older builds emit microseconds here too).
+                            let micros = line.strip_prefix("out_time_us=")
+                                .or_else(|| line.strip_prefix("out_time_ms="))
+                                .and_then(|v| v.trim().parse::<i64>().ok());
+                            if let Some(us) = micros {
+                                let secs = us as f64 / 1_000_000.0;
+                                let p = (secs / total_dur_secs).clamp(0.0, 0.99) as f32;
+                                *progress_state.export.progress.lock() = p;
+                            }
+                        }
+                    })
+                });
+
+                let output = child.wait_with_output()?;
+                if let Some(t) = reader { let _ = t.join(); }
+                Ok(output)
+            };
+
             // Try with CUDA hardware decoding first, fall back to software
-            let mut cmd = build_cmd(true);
+            let cmd = build_cmd(true);
             log::info!("[Export] Running FFmpeg (hwaccel cuda): {:?}", cmd);
-            let clip_output = match cmd.output() {
+            let clip_output = match run(cmd) {
                 Ok(out) if out.status.success() => Ok(out),
                 _ => {
                     log::warn!("[Export] CUDA decode failed, retrying with software decoder");
-                    let mut cmd = build_cmd(false);
+                    *app_state_for_ffmpeg.export.progress.lock() = 0.0;
+                    let cmd = build_cmd(false);
                     log::info!("[Export] Running FFmpeg (software): {:?}", cmd);
-                    cmd.output()
+                    run(cmd)
                 }
             };
 
@@ -303,7 +417,19 @@ impl RekaptrWorkspace {
                                         this.clip_start_mark = None;
                                         this.clip_end_mark = None;
                                         this.export_result_path = Some(output_path.clone());
+                                        this.export_result_size_mb = std::fs::metadata(&output_path)
+                                            .ok()
+                                            .map(|m| m.len() as f32 / 1024.0 / 1024.0);
+                                        // Invalidate cached source stats so the
+                                        // dashboard's clip count refreshes.
+                                        this.app_state.source_stats.clear();
                                         this.export_stage = ExportStage::Done;
+                                        crate::overlay::send(
+                                            &this.app_state,
+                                            crate::overlay::OverlayEvent::ClipSaved {
+                                                title: source_name.clone(),
+                                            },
+                                        );
                                         this.show_toast(
                                             SharedString::from("Clip Saved"),
                                             Some(SharedString::from(format!("Exported to {:?}", output_path))),
@@ -718,7 +844,7 @@ impl RekaptrWorkspace {
         let theme = use_theme();
         let enabled = track.enabled;
         let icon = crate::ui::audio_track_icon(&track.source_type);
-        let name = track.name.clone();
+        let name = crate::ui::audio_track_display_name(track);
         let detail = track.device_name.clone();
         div()
             .id(SharedString::from(format!("exp-at-{}", idx)))
@@ -957,7 +1083,7 @@ impl RekaptrWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.tokens.muted_foreground)
-                            .child(format!("{} · {:.1} MB", fmt_duration(self.export_clip_duration as f32), self.estimated_size_mb())),
+                            .child(format!("{} · {:.1} MB", fmt_duration(self.export_clip_duration as f32), self.export_result_size_mb.unwrap_or_else(|| self.estimated_size_mb()))),
                     ),
             )
             .child(

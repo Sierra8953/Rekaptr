@@ -49,6 +49,11 @@ impl RekaptrWorkspace {
                     .child(hk(6, "Mark death", config.hotkeys.marker_death_vk, config.hotkeys.marker_death_mod))
                     .child(hk(7, "Mark highlight", config.hotkeys.marker_highlight_vk, config.hotkeys.marker_highlight_mod))
             ))
+            .child(settings_card(theme, "Overlay",
+                Some("Show or hide the in-game overlay on demand."),
+                VStack::new()
+                    .child(hk(8, "Toggle overlay", config.hotkeys.toggle_overlay_vk, config.hotkeys.toggle_overlay_mod))
+            ))
             .child(
                 HStack::new()
                     .justify_end()

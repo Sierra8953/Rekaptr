@@ -945,6 +945,7 @@ impl RekaptrWorkspace {
             audio_routing: Some(self.form_audio_tracks.clone()),
             record_focus_only: true,
             artwork_path: None,
+            overlay_enabled: None,
         };
 
         config.game_registry.insert(title.clone(), settings.clone());

@@ -89,6 +89,29 @@ pub struct ClipMark {
     pub offset_in_segment: f64,
 }
 
+/// A clip range marked in the in-game overlay plus the export options chosen in
+/// the overlay's own dialog. Handed to the workspace so the actual export runs
+/// through the shared `perform_export` backend — no duplicated ffmpeg logic.
+#[derive(Clone, Debug)]
+pub struct OverlayClipRequest {
+    pub source: String,
+    pub in_mark: ClipMark,
+    pub out_mark: ClipMark,
+    /// Re-encode (true) vs lossless stream copy (false).
+    pub reencode: bool,
+    /// Encoder id (e.g. "h264_nvenc"); used only when `reencode`.
+    pub encoder: String,
+    /// Target bitrate in kbps; used only when `reencode`.
+    pub bitrate: i32,
+    /// Output container extension ("mp4" / "mov" / "mkv").
+    pub container: String,
+    /// Clip title (empty → auto-generated filename).
+    pub title: String,
+    /// Per-track include flags, aligned with the source's audio tracks in order.
+    pub audio_enabled: Vec<bool>,
+}
+
+#[derive(Clone)]
 pub struct TimelineMarker {
     /// Absolute time in the video (seconds from start of playlist)
     pub time_secs: f64,
@@ -243,8 +266,14 @@ pub struct AppState {
     pub game_registry: Arc<DashMap<String, GameSettings>>,
     pub mic_provider: Arc<Mutex<Option<Arc<MicProvider>>>>,
     pub artwork_cache: Arc<DashMap<String, Option<String>>>,
-    /// Game logo cache (logo.png — transparent)
-    pub logo_cache: Arc<DashMap<String, Option<String>>>,
+    /// Square game-icon cache for the sources list (local Steam librarycache
+    /// path, or `None` while resolving / when unavailable).
+    pub icon_cache: Arc<DashMap<String, Option<String>>>,
+    /// Game portrait-cover cache (library_600x900 — clips-page folder posters)
+    pub cover_cache: Arc<DashMap<String, Option<String>>>,
+    /// Per-source on-disk stats (size / last activity / buffered duration) for
+    /// the sources-list columns, computed on a background thread.
+    pub source_stats: Arc<DashMap<String, crate::utils::SourceStats>>,
     pub d3d11_device: Arc<Mutex<Option<SendHandle>>>,
     pub virtual_audio_routers: Mutex<Vec<crate::virtual_audio_router::VirtualAudioRouter>>,
     /// Cached list of audio output devices (for system/loopback capture): (id, friendly_name)
@@ -252,6 +281,22 @@ pub struct AppState {
     /// Cached list of audio input devices (microphones): (id, friendly_name)
     pub audio_input_devices: Mutex<Vec<(String, String)>>,
     pub tray_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<TrayCommand>>>,
+    /// Channel to the in-game overlay event pump (`src/overlay.rs`). `None` until
+    /// the overlay window is created at startup.
+    pub overlay_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::overlay::OverlayEvent>>>,
+    /// Channel the in-game overlay's buttons use to drive workspace actions
+    /// (Save / Record / Mic / Markers), routed through the hotkey dispatch.
+    pub overlay_cmd_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::hotkeys::HotkeyAction>>>,
+    /// Cloud account/session for the Teams feature (Clerk OAuth). The one
+    /// networked surface; everything else is local. See `src/cloud`.
+    pub cloud_auth: Arc<crate::cloud::CloudAuth>,
+    /// Timeline markers keyed by source name, shared between the desktop timeline
+    /// and the in-game overlay so markers added in either surface appear in both.
+    /// Time is absolute seconds from the start of that source's playlist.
+    pub timeline_markers: Arc<DashMap<String, Vec<TimelineMarker>>>,
+    /// A clip range marked in the overlay, pending pickup by the workspace's
+    /// `SaveClip` handler so the overlay opens the same export dialog as the desktop.
+    pub overlay_clip_request: Mutex<Option<OverlayClipRequest>>,
 }
 
 impl AppState {
@@ -264,13 +309,50 @@ impl AppState {
             game_registry: Arc::new(DashMap::new()),
             mic_provider: Arc::new(Mutex::new(None)),
             artwork_cache: Arc::new(DashMap::new()),
-            logo_cache: Arc::new(DashMap::new()),
+            icon_cache: Arc::new(DashMap::new()),
+            cover_cache: Arc::new(DashMap::new()),
+            source_stats: Arc::new(DashMap::new()),
             d3d11_device: Arc::new(Mutex::new(None)),
             virtual_audio_routers: Mutex::new(Vec::new()),
             audio_output_devices: Mutex::new(vec![("Default".to_string(), "Default".to_string())]),
             audio_input_devices: Mutex::new(vec![("Default".to_string(), "Default".to_string())]),
             tray_tx: Mutex::new(None),
+            overlay_tx: Mutex::new(None),
+            overlay_cmd_tx: Mutex::new(None),
+            cloud_auth: Arc::new(crate::cloud::CloudAuth::new()),
+            timeline_markers: Arc::new(DashMap::new()),
+            overlay_clip_request: Mutex::new(None),
         }
+    }
+
+    /// Add a timeline marker for `source` at `time_secs`, de-duplicating markers
+    /// within 0.5s. Returns true if a marker was added. Shared by the desktop
+    /// timeline and the overlay.
+    pub fn add_marker(&self, source: &str, time_secs: f64, kind: MarkerKind) -> bool {
+        let mut list = self.timeline_markers.entry(source.to_string()).or_default();
+        if list.iter().any(|m| (m.time_secs - time_secs).abs() < 0.5) {
+            return false;
+        }
+        list.push(TimelineMarker { time_secs, kind });
+        list.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        true
+    }
+
+    /// Remove the marker at `index` (into the sorted list) for `source`.
+    pub fn remove_marker(&self, source: &str, index: usize) {
+        if let Some(mut list) = self.timeline_markers.get_mut(source) {
+            if index < list.len() {
+                list.remove(index);
+            }
+        }
+    }
+
+    /// Snapshot of the markers for `source`, sorted by time.
+    pub fn markers_for(&self, source: &str) -> Vec<TimelineMarker> {
+        self.timeline_markers
+            .get(source)
+            .map(|l| l.clone())
+            .unwrap_or_default()
     }
 
     /// Evict oldest entries from caches when they exceed the size limit.
@@ -281,6 +363,12 @@ impl AppState {
             let keys: Vec<String> = self.artwork_cache.iter().take(excess).map(|e| e.key().clone()).collect();
             for key in keys { self.artwork_cache.remove(&key); }
             log::debug!("[Cache] Evicted {} artwork cache entries", excess);
+        }
+        if self.cover_cache.len() > CACHE_MAX_ENTRIES {
+            let excess = self.cover_cache.len() - CACHE_MAX_ENTRIES;
+            let keys: Vec<String> = self.cover_cache.iter().take(excess).map(|e| e.key().clone()).collect();
+            for key in keys { self.cover_cache.remove(&key); }
+            log::debug!("[Cache] Evicted {} cover cache entries", excess);
         }
     }
 }

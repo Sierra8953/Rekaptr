@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.5
+
+### Fixed
+
+- Fixed the mic-mute and push-to-talk hotkeys not actually muting the microphone during a recording. They flipped a settings-form toggle that had no effect on the live capture, so the mic kept being recorded despite the "Mic muted" notification. They now mute the mic in the active recording, and report when there's no recording to mute.
+- Fixed the export progress bar being fake — it animated on a fixed timer regardless of what FFmpeg was doing, so a long re-encode would sit at 100% looking hung. It now tracks FFmpeg's real progress. The "Done" screen also shows the actual exported file size instead of an estimate.
+- Fixed retention and the storage size cap silently turning off if the recording-folder file watcher failed to start, which let the buffer grow without bound. The cleanup now falls back to periodic polling so the limits are always enforced.
+- Fixed the "Disk Space Low" warning spamming a new notification every 10 seconds while the drive stayed under 5 GB. It now warns once per time the drive drops below the threshold.
+- Fixed incorrect handling of "last N bytes" range requests in the local playback server, which returned the start of a segment instead of its end. Over-long range requests are also now clamped to the file's actual size.
+
+### Changed
+
+- Redesigned the dashboard into a "command center" layout: the video preview now sits beside a dedicated audio mixer panel (per-track volume and mute), with a full-width transport strip and a dense, column-aligned list of sources replacing the card gallery.
+- Removed the per-track audio waveform on the timeline. It can't be shown in the new compact timeline scrubber, and decoding every track's audio with FFmpeg purely to draw it was wasted work. The timeline keeps the playhead, clip in/out markers, user markers, zoom and scrubbing.
+- Removed the GOP size control from Settings and the add-source form. It had no effect on recordings (the keyframe interval is fixed at 2 seconds), so the control was misleading.
+
 ## v0.1.4
 
 ### Fixed

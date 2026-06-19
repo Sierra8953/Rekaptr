@@ -17,7 +17,15 @@ impl RekaptrWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_selection = !self.selected_clips.is_empty();
         let filtered = self.clips_filtered(cx);
-        let (hero_clip, groups) = self.clips_groups(&filtered);
+        let filtered_count = filtered.len();
+
+        // Card rows need a *definite* width for flex-grow / flex-wrap to resolve
+        // (the scroll container doesn't propagate one in this GPUI fork), so we
+        // derive the inner content width from the window: viewport minus the
+        // icon sidebar (72), the filter rail (240), the details panel when open
+        // (320), and this view's horizontal padding (px_8 = 64).
+        let details_w = if self.selected_clip_for_details.is_some() { 320.0 } else { 0.0 };
+        let content_w = (window.viewport_size().width.0 - 72.0 - 240.0 - details_w - 64.0).max(280.0);
 
         let mut root = div()
             .size_full()
@@ -31,14 +39,19 @@ impl RekaptrWorkspace {
                     .child(
                         VStack::new()
                             .flex_1()
+                            // Let this column shrink below its content's natural
+                            // width (flex items default to min-width:auto), so the
+                            // card rows reflow instead of clipping the window edge.
+                            .min_w_0()
                             .h_full()
-                            .child(self.render_clips_top_bar(filtered.len(), cx))
+                            .child(self.render_clips_top_bar(filtered_count, cx))
                             .child(
                                 div()
                                     .id("clips-scroll")
                                     .flex_1()
+                                    .min_w_0()
                                     .overflow_y_scroll()
-                                    .child(self.render_clips_body(hero_clip, groups, cx)),
+                                    .child(self.render_clips_body(filtered, content_w, cx)),
                             )
                             .when(has_selection, |this| {
                                 this.child(self.render_batch_actions_bar(cx))
@@ -107,33 +120,22 @@ impl RekaptrWorkspace {
         clips
     }
 
-    /// Split filtered clips into (hero, groups-by-game). Hero is the newest clip
-    /// when there's no specific filter. Groups preserve timestamp DESC order.
-    fn clips_groups(&self, clips: &[Clip]) -> (Option<Clip>, Vec<(String, Vec<Clip>)>) {
-        if clips.is_empty() {
-            return (None, Vec::new());
-        }
-
-        let hero = if matches!(self.clips_filter, ClipsFilter::All) {
-            Some(clips[0].clone())
-        } else {
-            None
-        };
-
-        // `clips` is already timestamp-DESC; track first-seen order in `order`
-        // while bucketing by title in a map, so grouping is O(n) not O(n²).
+    /// Per-game (title, clip-count) buckets for the "Games" folder posters,
+    /// derived from already-filtered clips. `clips` is timestamp-DESC, so the
+    /// first time we see a game is its most-recent clip — buckets stay in
+    /// most-recently-active order, O(n) via a first-seen index map.
+    fn clips_game_buckets(&self, clips: &[Clip]) -> Vec<(String, usize)> {
         let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut groups: Vec<(String, Vec<Clip>)> = Vec::new();
+        let mut games: Vec<(String, usize)> = Vec::new();
         for c in clips {
             if let Some(&i) = index.get(c.title.as_str()) {
-                groups[i].1.push(c.clone());
+                games[i].1 += 1;
             } else {
-                index.insert(c.title.as_str(), groups.len());
-                groups.push((c.title.clone(), vec![c.clone()]));
+                index.insert(c.title.as_str(), games.len());
+                games.push((c.title.clone(), 1));
             }
         }
-
-        (hero, groups)
+        games
     }
 
     fn render_clips_filter_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -338,12 +340,22 @@ impl RekaptrWorkspace {
 
     fn render_clips_body(
         &self,
-        hero: Option<Clip>,
-        groups: Vec<(String, Vec<Clip>)>,
+        filtered: Vec<Clip>,
+        content_w: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = use_theme();
-        if self.cached_clips.is_empty() && !self.is_loading_clips {
+        if filtered.is_empty() {
+            // Still loading: render nothing here (the spinner overlay covers it)
+            // so we never index into an empty `filtered` below.
+            if self.is_loading_clips {
+                return div().flex_1().into_any_element();
+            }
+            let msg = if self.cached_clips.is_empty() {
+                "No clips found"
+            } else {
+                "No clips match this filter"
+            };
             return div()
                 .flex_1()
                 .flex()
@@ -359,7 +371,7 @@ impl RekaptrWorkspace {
                                 .size(px(64.0))
                                 .color(theme.tokens.muted_foreground.opacity(0.5)),
                         )
-                        .child(div().text_xl().text_color(theme.tokens.muted_foreground).child("No clips found"))
+                        .child(div().text_xl().text_color(theme.tokens.muted_foreground).child(msg))
                         .child(
                             div()
                                 .text_sm()
@@ -370,22 +382,254 @@ impl RekaptrWorkspace {
                 .into_any_element();
         }
 
-        let view_handle = cx.entity().downgrade();
+        // Non-"All" filters (a drilled-into game, Favorites, Recent) show a flat
+        // responsive grid of every matching clip rather than the landing layout.
+        if !matches!(self.clips_filter, ClipsFilter::All) {
+            return self.render_clips_flat_grid(filtered, cx).into_any_element();
+        }
+
+        // "All" landing layout: hero (latest) → Most Recent (4) → Games (folders).
+        let hero = filtered[0].clone();
+        // The 4 newest after the hero, so the latest clip isn't shown twice.
+        let recent: Vec<Clip> = filtered.iter().skip(1).take(4).cloned().collect();
+        let games = self.clips_game_buckets(&filtered);
 
         VStack::new()
-            .gap_10()
-            .pb_10()
-            .when_some(hero, |this, clip| {
-                this.child(self.render_clips_hero(clip, cx))
+            .w_full()
+            .gap_4()
+            .pb_8()
+            .child(self.render_clips_hero(hero, content_w, cx))
+            .when(!recent.is_empty(), |this| {
+                this.child(self.render_clips_recent_row(recent, content_w, cx))
             })
-            .children(groups.into_iter().map(|(game, clips)| {
-                self.render_clips_group_row(game, clips, view_handle.clone(), cx)
-                    .into_any_element()
-            }))
+            .when(!games.is_empty(), |this| {
+                this.child(self.render_game_folders(games, cx))
+            })
             .into_any_element()
     }
 
-    fn render_clips_hero(&self, clip: Clip, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Flat responsive grid of clip cards — used for drilled-in / non-landing filters.
+    fn render_clips_flat_grid(&self, clips: Vec<Clip>, cx: &mut Context<Self>) -> impl IntoElement {
+        let view_handle = cx.entity().downgrade();
+        div().px_8().pt_8().child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap_3()
+                .children(clips.into_iter().map(|c| {
+                    let is_sel = self.selected_clips.contains(&c.path_str);
+                    let is_fav = self.favorite_clips.contains(&c.path_str);
+                    Self::render_clip_card_advanced(c, &view_handle, is_sel, is_fav, 280.0)
+                        .into_any_element()
+                })),
+        )
+    }
+
+    /// "Most Recent" row — the 4 newest clips across every game, playable
+    /// directly. Cards split the (definite) content width 4-up and shrink with
+    /// the window so they never wrap or clip at the default size.
+    fn render_clips_recent_row(&self, clips: Vec<Clip>, content_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let view_handle = cx.entity().downgrade();
+        // gap_3 = 12px between the 4 cards (3 gaps); a few px of slack keeps the
+        // 4th card from wrapping to a second line under float rounding.
+        let card_w = ((content_w - 44.0) / 4.0).max(120.0);
+        VStack::new()
+            .px_8()
+            .gap_2()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Most Recent"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_3()
+                    .children(clips.into_iter().map(|c| {
+                        let is_sel = self.selected_clips.contains(&c.path_str);
+                        let is_fav = self.favorite_clips.contains(&c.path_str);
+                        Self::render_clip_card_advanced(c, &view_handle, is_sel, is_fav, card_w)
+                            .into_any_element()
+                    })),
+            )
+    }
+
+    /// "Games" section — one portrait (2:3) cover-art folder per game; clicking
+    /// drills into that game's full clip grid. Columns reflow with the window.
+    fn render_game_folders(&self, games: Vec<(String, usize)>, cx: &mut Context<Self>) -> impl IntoElement {
+        VStack::new()
+            .px_8()
+            .gap_2()
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Games"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap_4()
+                    .children(
+                        games
+                            .into_iter()
+                            .map(|(game, count)| self.render_game_folder_card(game, count, cx)),
+                    ),
+            )
+    }
+
+    /// A single portrait game-folder poster. Lazily resolves the Steam library
+    /// cover (`library_600x900`) through `cover_cache`, mirroring the dashboard's
+    /// artwork-resolve pattern; falls back to a tinted placeholder until it loads.
+    fn render_game_folder_card(&self, game: String, count: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = use_theme();
+
+        // Cache lookup + lazy background resolve (off the UI thread).
+        let cached_cover = self.app_state.cover_cache.get(&game).and_then(|v| v.value().clone());
+        if !self.app_state.cover_cache.contains_key(&game) {
+            self.app_state.cover_cache.insert(game.clone(), None);
+            let app_state = self.app_state.clone();
+            let handle = cx.weak_entity();
+            let title = game.clone();
+            cx.spawn(move |_, cx: &mut AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let resolved = cx
+                        .background_executor()
+                        .spawn({
+                            let title = title.clone();
+                            async move { crate::utils::find_steam_cover(&title) }
+                        })
+                        .await;
+                    let Some(source) = resolved else { return };
+
+                    if !source.starts_with("http") {
+                        app_state.cover_cache.insert(title, Some(source.replace('\\', "/")));
+                        let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                        return;
+                    }
+
+                    if let Ok(resp) = reqwest::get(&source).await {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if bytes.len() > 5000 {
+                                let app_id = source.split('/').nth(5).unwrap_or("unknown");
+                                let cache_dir = crate::utils::get_storage_root().join("Cache").join("Artwork");
+                                let _ = std::fs::create_dir_all(&cache_dir);
+                                let local = cache_dir.join(format!("{}_cover.jpg", app_id));
+                                if std::fs::write(&local, &bytes).is_ok() {
+                                    let path = local.to_string_lossy().replace('\\', "/");
+                                    app_state.cover_cache.insert(title, Some(path));
+                                    let _ = handle.update(&mut cx, |_, cx| cx.notify());
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .detach();
+        }
+
+        let game_for_click = game.clone();
+        let label = game.clone();
+
+        div()
+            .id(SharedString::from(format!("game-folder-{}", game)))
+            .group("game-folder")
+            .w(px(170.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .rounded_xl()
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme.tokens.border)
+            .bg(theme.tokens.card)
+            .cursor_pointer()
+            .hover(|s| s.border_color(theme.tokens.primary).shadow_lg())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.clips_filter = ClipsFilter::Game(game_for_click.clone());
+                    cx.notify();
+                }),
+            )
+            // Portrait 2:3 cover area.
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(255.0))
+                    .bg(theme.tokens.muted)
+                    .when_some(cached_cover, |this, path| {
+                        this.child(
+                            img(path)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                    })
+                    // Folder/count chip over a bottom scrim.
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(72.0))
+                            .bg(gpui::linear_gradient(
+                                180.0,
+                                gpui::linear_color_stop(gpui::rgba(0x0a0a0a00), 0.0),
+                                gpui::linear_color_stop(gpui::rgba(0x0a0a0acc), 1.0),
+                            )),
+                    )
+                    .child(
+                        HStack::new()
+                            .absolute()
+                            .bottom_2()
+                            .right_2()
+                            .gap_1()
+                            .items_center()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(gpui::rgba(0x000000_99))
+                            .child(
+                                Icon::new(IconSource::Named("folder".to_string()))
+                                    .size(px(12.0))
+                                    .color(gpui::white()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(gpui::white())
+                                    .child(format!("{}", count)),
+                            ),
+                    ),
+            )
+            .child(
+                VStack::new()
+                    .px_3()
+                    .py_2()
+                    .gap_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.tokens.muted_foreground)
+                            .child(format!("{} clips", count)),
+                    ),
+            )
+    }
+
+    fn render_clips_hero(&self, clip: Clip, content_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let clip_path = clip.path_str.clone();
         let is_fav = self.favorite_clips.contains(&clip_path);
@@ -396,10 +640,10 @@ impl RekaptrWorkspace {
         let date = clip.date.clone();
         let duration = clip.duration.clone();
 
-        div().px_8().pt_8().child(
+        div().px_8().pt_6().child(
             div()
-                .w_full()
-                .h(px(320.0))
+                .w(px(content_w))
+                .h(px(240.0))
                 .rounded_xl()
                 .overflow_hidden()
                 .relative()
@@ -532,142 +776,6 @@ impl RekaptrWorkspace {
         )
     }
 
-    fn render_clips_group_row(
-        &self,
-        game: String,
-        clips: Vec<Clip>,
-        view_handle: WeakEntity<Self>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        const VISIBLE: usize = 4;
-        let count = clips.len();
-        let game_for_nav = game.clone();
-        let game_for_tile = game.clone();
-        let overflow = count.saturating_sub(VISIBLE);
-        let visible_clips: Vec<Clip> = clips.into_iter().take(VISIBLE).collect();
-
-        let fav_map: Vec<bool> = visible_clips
-            .iter()
-            .map(|c| self.favorite_clips.contains(&c.path_str))
-            .collect();
-        let sel_map: Vec<bool> = visible_clips
-            .iter()
-            .map(|c| self.selected_clips.contains(&c.path_str))
-            .collect();
-
-        let theme = use_theme();
-
-        VStack::new()
-            .px_8()
-            .gap_3()
-            .child(
-                HStack::new()
-                    .justify_between()
-                    .items_end()
-                    .child(
-                        HStack::new()
-                            .gap_3()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(game.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_full()
-                                    .bg(theme.tokens.muted)
-                                    .text_xs()
-                                    .text_color(theme.tokens.muted_foreground)
-                                    .child(format!("{} clips", count)),
-                            ),
-                    )
-                    .child(
-                        Button::new(
-                            SharedString::from(format!("clips-view-all-{}", game)),
-                            "View all",
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.clips_filter = ClipsFilter::Game(game_for_nav.clone());
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .child(
-                div().w_full().child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_3()
-                        .children(visible_clips.into_iter().enumerate().map(|(i, c)| {
-                            Self::render_clip_card_advanced(c, &view_handle, sel_map[i], fav_map[i])
-                                .into_any_element()
-                        }))
-                        .when(overflow > 0, |s| {
-                            s.child(self.render_clips_view_all_tile(game_for_tile, overflow, cx))
-                        }),
-                ),
-            )
-    }
-
-    fn render_clips_view_all_tile(
-        &self,
-        game: String,
-        overflow: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = use_theme();
-        let game_owned = game.clone();
-        div()
-            .id(SharedString::from(format!("clips-view-all-tile-{}", game)))
-            .w(px(280.0))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .bg(theme.tokens.card)
-            .rounded_xl()
-            .border_1()
-            .border_color(theme.tokens.border)
-            .cursor_pointer()
-            .hover(|s| s.border_color(theme.tokens.primary).bg(theme.tokens.muted))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.clips_filter = ClipsFilter::Game(game_owned.clone());
-                    cx.notify();
-                }),
-            )
-            .child(
-                VStack::new()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Icon::new(IconSource::Named("chevron-right".to_string()))
-                            .size(px(28.0))
-                            .color(theme.tokens.primary),
-                    )
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("+{} more", overflow)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.tokens.muted_foreground)
-                            .child("View all"),
-                    ),
-            )
-    }
-
     /// Open a clip in the mini player overlay. Shared by the hero and card play buttons.
     pub fn open_clip_preview(&mut self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) {
         let old = self.preview_video_source.as_ref().map(|v| v.render_image());
@@ -695,18 +803,22 @@ impl RekaptrWorkspace {
 }
 
 impl RekaptrWorkspace {
-    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool) -> impl IntoElement {
+    /// `width` is the card's explicit pixel width; the thumbnail height scales
+    /// to keep a 16:9 frame. Callers compute this from the available content
+    /// width so rows reflow with the window instead of overflowing it.
+    fn render_clip_card_advanced(clip: Clip, view_handle: &WeakEntity<Self>, is_selected: bool, is_favorited: bool, width: f32) -> impl IntoElement {
         let theme = use_theme();
         let view_handle_click = view_handle.clone();
         let view_handle_actions = view_handle.clone();
         let clip_for_mouse = clip.clone();
+        let thumb_h = width * 9.0 / 16.0;
 
         div()
             .group("clip-card")
             .relative()
             .flex()
             .flex_col()
-            .w(px(280.0))
+            .w(px(width))
             .bg(if is_selected { theme.tokens.primary.opacity(0.1) } else { theme.tokens.card })
             .border(if is_selected { px(2.0) } else { px(1.0) })
             .border_color(if is_selected { theme.tokens.primary } else { theme.tokens.border })
@@ -739,7 +851,7 @@ impl RekaptrWorkspace {
                 div()
                     .relative()
                     .w_full()
-                    .h(px(158.0))
+                    .h(px(thumb_h))
                     .rounded_t_xl()
                     .overflow_hidden()
                     .bg(rgb(0x000000))

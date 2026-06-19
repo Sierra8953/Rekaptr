@@ -18,6 +18,7 @@ impl RekaptrWorkspace {
             .gap_2()
             .child(self.render_nav_item("nav-dash", "layout-dashboard", ActiveView::Dashboard, active, cx))
             .child(self.render_nav_item("nav-clips", "video", ActiveView::Clips, active, cx))
+            .child(self.render_nav_item("nav-teams", "users", ActiveView::Teams, active, cx))
             .child(self.render_nav_item("nav-settings", "settings", ActiveView::Settings, active, cx))
             .child(Spacer::new())
             .child(

@@ -1,6 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod audio;
+mod cloud;
 mod config;
 mod db;
 mod engine;
@@ -9,6 +10,7 @@ mod game_detector;
 mod hotkeys;
 mod mic_dsp;
 mod migration;
+mod overlay;
 mod state;
 mod ui;
 mod updater;
@@ -620,6 +622,10 @@ async fn main() -> Result<()> {
             async move {
                 use sysinfo::Disks;
                 let mut disks = Disks::new_with_refreshed_list();
+                // One-shot latch so the "Disk Space Low" toast fires once per time the
+                // drive drops below the threshold, not every 10s poll. Re-armed once the
+                // drive recovers back above the warning level.
+                let mut low_warning_active = false;
                 loop {
                     cx.background_executor().timer(std::time::Duration::from_secs(10)).await;
                     disks.refresh_list();
@@ -629,53 +635,77 @@ async fn main() -> Result<()> {
                         let free_gb = disk.available_space() as f64 / 1024.0 / 1024.0 / 1024.0;
 
                         const LOW_DISK_WARNING_GB: f64 = 5.0;
-                        if free_gb < LOW_DISK_WARNING_GB {
-                            let workspace_handle = match workspace_handle_disk.lock() {
-                                Ok(h) => h.clone(),
-                                Err(_) => continue,
-                            };
-                            if let Some(workspace_weak) = workspace_handle {
-                                let _ = cx.update(|cx| {
-                                    if let Some(workspace_entity) = workspace_weak.upgrade() {
-                                        if let Some(any_window_handle) = cx.windows().first().cloned() {
-                                            let _ = any_window_handle.update(cx, |_, window: &mut Window, cx| {
-                                                workspace_entity.update(cx, |workspace, cx| {
-                                                    const CRITICAL_DISK_GB: f64 = 1.0;
-                                                    if free_gb < CRITICAL_DISK_GB {
-                                                        if workspace.app_state.recording.phase.lock().is_recording() {
-                                                            workspace.show_toast(
-                                                                "Disk Full",
-                                                                Some("Recording stopped to prevent data loss.".to_string()),
-                                                                adabraka_ui::overlays::toast::ToastVariant::Error,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                            workspace.toggle_recording(window, cx);
-                                                        }
-                                                    } else {
-                                                        // WARNING: Notify user
+                        const CRITICAL_DISK_GB: f64 = 1.0;
+
+                        if free_gb >= LOW_DISK_WARNING_GB {
+                            // Recovered: re-arm the one-shot warning for the next dip.
+                            low_warning_active = false;
+                            continue;
+                        }
+
+                        let is_critical = free_gb < CRITICAL_DISK_GB;
+                        // The critical path is self-limiting (it only acts while a
+                        // recording is live, then stops it), but the plain warning would
+                        // otherwise repeat every tick — gate it behind the latch.
+                        let show_warning = !is_critical && !low_warning_active;
+                        if !is_critical && !show_warning {
+                            continue;
+                        }
+                        if show_warning {
+                            low_warning_active = true;
+                        }
+
+                        let workspace_handle = match workspace_handle_disk.lock() {
+                            Ok(h) => h.clone(),
+                            Err(_) => continue,
+                        };
+                        if let Some(workspace_weak) = workspace_handle {
+                            let _ = cx.update(|cx| {
+                                if let Some(workspace_entity) = workspace_weak.upgrade() {
+                                    if let Some(any_window_handle) = cx.windows().first().cloned() {
+                                        let _ = any_window_handle.update(cx, |_, window: &mut Window, cx| {
+                                            workspace_entity.update(cx, |workspace, cx| {
+                                                if is_critical {
+                                                    if workspace.app_state.recording.phase.lock().is_recording() {
                                                         workspace.show_toast(
-                                                            "Disk Space Low",
-                                                            Some(format!("{:.1} GB remaining on recording drive", free_gb)),
-                                                            adabraka_ui::overlays::toast::ToastVariant::Default,
+                                                            "Disk Full",
+                                                            Some("Recording stopped to prevent data loss.".to_string()),
+                                                            adabraka_ui::overlays::toast::ToastVariant::Error,
                                                             window,
                                                             cx,
                                                         );
+                                                        workspace.toggle_recording(window, cx);
                                                     }
-                                                });
+                                                } else {
+                                                    // WARNING: Notify user (once per dip below threshold)
+                                                    workspace.show_toast(
+                                                        "Disk Space Low",
+                                                        Some(format!("{:.1} GB remaining on recording drive", free_gb)),
+                                                        adabraka_ui::overlays::toast::ToastVariant::Default,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
                                             });
-                                        }
+                                        });
                                     }
-                                });
-                            }
+                                }
+                            });
                         }
                     }
                 }
             }
         }).detach();
-        let bounds = Bounds::centered(None, size(px(1400.0), px(900.0)), cx);        let options = WindowOptions {
+        let bounds = Bounds::centered(None, size(px(1600.0), px(1000.0)), cx);        let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(800.0), px(600.0))),
+            // Native OS titlebar: `appears_transparent: false` keeps `hide_title_bar`
+            // off so Windows draws the standard caption (title, min/max/close, drag).
+            titlebar: Some(TitlebarOptions {
+                title: Some("Rekaptr".into()),
+                appears_transparent: false,
+                ..Default::default()
+            }),
             ..Default::default()
         };
 
@@ -708,10 +738,21 @@ async fn main() -> Result<()> {
             view
         }).ok();
 
+        // In-game overlay. Opened *after* the main window so the other background
+        // loops' `cx.windows().first()` keeps resolving to the workspace window.
+        crate::overlay::spawn(cx, app_state.clone());
+
         // Global Hotkey Listener
         {
             let hotkey_rx = crate::hotkeys::start_hotkey_listener();
             let workspace_handle_hotkey = workspace_handle.clone();
+
+            // Channel the in-game overlay's buttons use to drive workspace actions
+            // (Save / Record / Mic / Markers), routed through the same dispatch as
+            // the global hotkeys.
+            let (overlay_cmd_tx, mut overlay_cmd_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::hotkeys::HotkeyAction>();
+            *app_state.overlay_cmd_tx.lock() = Some(overlay_cmd_tx);
 
             cx.spawn(|cx: &mut AsyncApp| {
                 let cx = cx.clone();
@@ -720,72 +761,31 @@ async fn main() -> Result<()> {
                         // Check for hotkey events every 50ms
                         cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
 
-                        while let Ok(action) = hotkey_rx.try_recv() {
-                            let workspace_handle = match workspace_handle_hotkey.lock() {
-                                Ok(h) => h.clone(),
-                                Err(_) => continue,
-                            };
-                            if let Some(workspace_weak) = workspace_handle {
-                                let _ = cx.update(|cx| {
-                                    if let Some(workspace_entity) = workspace_weak.upgrade() {
-                                        if let Some(any_window) = cx.windows().first().cloned() {
-                                            let _ = any_window.update(cx, |_, window, cx| {
-                                                workspace_entity.update(cx, |workspace, cx| {
-                                                    match action {
-                                                        crate::hotkeys::HotkeyAction::ToggleRecording => {
-                                                            workspace.toggle_recording(window, cx);
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::SaveClip => {
-                                                            workspace.save_clip(window, cx);
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::ToggleMic => {
-                                                            // Toggle the first Mic track's enabled state
-                                                            for track in workspace.form_audio_tracks.iter_mut() {
-                                                                if track.source_type == "Mic" {
-                                                                    track.enabled = !track.enabled;
-                                                                    let status = if track.enabled { "unmuted" } else { "muted" };
-                                                                    workspace.show_toast(
-                                                                        "Microphone",
-                                                                        Some(format!("Mic {}", status)),
-                                                                        adabraka_ui::overlays::toast::ToastVariant::Default,
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                    break;
-                                                                }
-                                                            }
-                                                            cx.notify();
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::PushToTalk => {
-                                                            // Push-to-talk acts as a toggle until hold/release is implemented
-                                                            log::debug!("[Hotkeys] Push-to-talk triggered (toggle mode)");
-                                                            for track in workspace.form_audio_tracks.iter_mut() {
-                                                                if track.source_type == "Mic" {
-                                                                    track.enabled = !track.enabled;
-                                                                    break;
-                                                                }
-                                                            }
-                                                            cx.notify();
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::MarkerFlag => {
-                                                            workspace.add_marker_with_kind(crate::state::MarkerKind::Flag, cx);
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::MarkerKill => {
-                                                            workspace.add_marker_with_kind(crate::state::MarkerKind::Kill, cx);
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::MarkerDeath => {
-                                                            workspace.add_marker_with_kind(crate::state::MarkerKind::Death, cx);
-                                                        }
-                                                        crate::hotkeys::HotkeyAction::MarkerHighlight => {
-                                                            workspace.add_marker_with_kind(crate::state::MarkerKind::Highlight, cx);
-                                                        }
-                                                    }
-                                                });
+                        // Drain global hotkeys and overlay button commands; both
+                        // dispatch through workspace.handle_hotkey_action.
+                        let mut actions: Vec<crate::hotkeys::HotkeyAction> = Vec::new();
+                        while let Ok(action) = hotkey_rx.try_recv() { actions.push(action); }
+                        while let Ok(action) = overlay_cmd_rx.try_recv() { actions.push(action); }
+                        if actions.is_empty() { continue; }
+
+                        let workspace_handle = match workspace_handle_hotkey.lock() {
+                            Ok(h) => h.clone(),
+                            Err(_) => continue,
+                        };
+                        if let Some(workspace_weak) = workspace_handle {
+                            let _ = cx.update(|cx| {
+                                if let Some(workspace_entity) = workspace_weak.upgrade() {
+                                    if let Some(any_window) = cx.windows().first().cloned() {
+                                        let _ = any_window.update(cx, |_, window, cx| {
+                                            workspace_entity.update(cx, |workspace, cx| {
+                                                for action in actions {
+                                                    workspace.handle_hotkey_action(action, window, cx);
+                                                }
                                             });
-                                        }
+                                        });
                                     }
-                                });
-                            }
+                                }
+                            });
                         }
                     }
                 }
@@ -1047,11 +1047,27 @@ fn start_local_server(root: PathBuf) {
                                 if let Some(r) = range.to_lowercase().strip_prefix("range: bytes=") {
                                     let r_parts: Vec<&str> = r.trim().split('-').collect();
                                     if r_parts.len() == 2 {
-                                        if let Ok(s) = r_parts[0].parse::<u64>() { start = s; }
-                                        if !r_parts[1].is_empty() {
-                                            if let Ok(e) = r_parts[1].parse::<u64>() { end = e; }
+                                        let first = r_parts[0].trim();
+                                        let last = r_parts[1].trim();
+                                        if first.is_empty() {
+                                            // Suffix range "bytes=-N": the last N bytes of the file.
+                                            if let Ok(n) = last.parse::<u64>() {
+                                                start = file_len.saturating_sub(n);
+                                                end = file_len.saturating_sub(1);
+                                                is_partial = true;
+                                            }
+                                        } else if let Ok(s) = first.parse::<u64>() {
+                                            start = s;
+                                            // "bytes=N-" leaves end at file end; "bytes=N-M"
+                                            // clamps to the last byte so an over-long M can't
+                                            // make us promise more bytes than exist.
+                                            if !last.is_empty() {
+                                                if let Ok(e) = last.parse::<u64>() {
+                                                    end = e.min(file_len.saturating_sub(1));
+                                                }
+                                            }
+                                            is_partial = true;
                                         }
-                                        is_partial = true;
                                     }
                                 }
                             }

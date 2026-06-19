@@ -95,27 +95,27 @@ impl RekaptrWorkspace {
             .child(settings_card(theme, "Cleanup", None,
                 VStack::new()
                     .child(settings_row(theme, "Auto-delete old clips", Option::<String>::None,
-                        settings_toggle("toggle-autodel", self.settings_form_auto_delete_enabled, vh.clone(), |this, cx| {
-                            this.settings_form_auto_delete_enabled = !this.settings_form_auto_delete_enabled;
+                        settings_toggle("toggle-autodel", self.settings.auto_delete_enabled, vh.clone(), |this, cx| {
+                            this.settings.auto_delete_enabled = !this.settings.auto_delete_enabled;
                             let mut config = crate::config::AppConfig::load();
-                            config.auto_delete_clips_days = if this.settings_form_auto_delete_enabled {
-                                Some(this.settings_form_auto_delete_days)
+                            config.auto_delete_clips_days = if this.settings.auto_delete_enabled {
+                                Some(this.settings.auto_delete_days)
                             } else { None };
                             config.save();
                             cx.notify();
                         })
                     ))
-                    .when(self.settings_form_auto_delete_enabled, |this| {
+                    .when(self.settings.auto_delete_enabled, |this| {
                         this.child(settings_row(theme, "Retention (days)",
-                            Some(format!("{} days", self.settings_form_auto_delete_days)),
+                            Some(format!("{} days", self.settings.auto_delete_days)),
                             HStack::new().gap_2()
                                 .child(Button::new("days-dec", "-").size(ButtonSize::Sm).variant(ButtonVariant::Outline).on_click({
                                     let vh = vh.clone();
                                     move |_, _, cx| {
                                         let _ = vh.update(cx, |this, cx| {
-                                            this.settings_form_auto_delete_days = (this.settings_form_auto_delete_days - 1).max(1);
+                                            this.settings.auto_delete_days = (this.settings.auto_delete_days - 1).max(1);
                                             let mut config = crate::config::AppConfig::load();
-                                            config.auto_delete_clips_days = Some(this.settings_form_auto_delete_days);
+                                            config.auto_delete_clips_days = Some(this.settings.auto_delete_days);
                                             config.save();
                                             cx.notify();
                                         });
@@ -125,9 +125,9 @@ impl RekaptrWorkspace {
                                     let vh = vh.clone();
                                     move |_, _, cx| {
                                         let _ = vh.update(cx, |this, cx| {
-                                            this.settings_form_auto_delete_days = (this.settings_form_auto_delete_days + 1).min(365);
+                                            this.settings.auto_delete_days = (this.settings.auto_delete_days + 1).min(365);
                                             let mut config = crate::config::AppConfig::load();
-                                            config.auto_delete_clips_days = Some(this.settings_form_auto_delete_days);
+                                            config.auto_delete_clips_days = Some(this.settings.auto_delete_days);
                                             config.save();
                                             cx.notify();
                                         });

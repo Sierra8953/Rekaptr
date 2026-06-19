@@ -17,6 +17,210 @@ use gstreamer::prelude::*;
 use gstreamer;
 use std::sync::Arc;
 
+/// Global-settings form state, grouped out of the `RekaptrWorkspace` god-object:
+/// the editable mirror of `AppConfig` shown on the Settings tabs (video, mic,
+/// storage) plus the persisted dropdown/select widget entities and the mic
+/// monitor loopback pipeline.
+pub struct SettingsForm {
+    // Video tab
+    pub encoder: String,
+    pub resolution: String,
+    pub fps: i32,
+    pub rate_control: i32,
+    pub bitrate: i32,
+    pub cq: i32,
+    pub retention: i32,
+    pub preset: String,
+    pub gop: i32,
+    pub bframes: i32,
+    pub zero_latency: bool,
+    pub lookahead: bool,
+    pub lookahead_frames: i32,
+    pub spatial_aq: bool,
+    pub temporal_aq: bool,
+    pub show_advanced_video: bool,
+    // Audio / mic tab
+    pub mic_device: String,
+    pub mic_force_mono: bool,
+    pub mic_gain: f32,
+    pub mic_noise_suppression: bool,
+    pub mic_gate_enabled: bool,
+    pub mic_gate_threshold: f32,
+    pub mic_compressor_enabled: bool,
+    pub mic_compressor_threshold: f32,
+    pub mic_compressor_ratio: f32,
+    pub mic_limiter_enabled: bool,
+    pub mic_limiter_threshold: f32,
+    /// Mic monitor loopback pipeline (preview the processed mic in-app).
+    pub mic_monitor_pipeline: Option<gstreamer::Pipeline>,
+    // Storage tab
+    pub auto_delete_enabled: bool,
+    pub auto_delete_days: i32,
+    pub export_format: String,
+    // Persisted widget entities
+    pub dd_mic: Entity<adabraka_ui::components::dropdown::DropdownState>,
+    pub select_encoder: Entity<crate::ui::select::AppSelect>,
+    pub select_resolution: Entity<crate::ui::select::AppSelect>,
+    pub select_fps: Entity<crate::ui::select::AppSelect>,
+    pub select_preset: Entity<crate::ui::select::AppSelect>,
+}
+
+impl SettingsForm {
+    pub fn new(config: &crate::config::AppConfig, cx: &mut Context<RekaptrWorkspace>) -> Self {
+        use crate::ui::select;
+        Self {
+            encoder: config.global_video.encoder.clone(),
+            resolution: config.global_video.resolution.clone(),
+            fps: config.global_video.fps,
+            rate_control: config.global_video.rate_control_index,
+            bitrate: config.global_video.bitrate_kbps,
+            cq: config.global_video.cq_level,
+            retention: config.global_video.retention_minutes,
+            preset: config.global_video.preset.clone(),
+            gop: config.global_video.gop_size,
+            bframes: config.global_video.bframes,
+            zero_latency: config.global_video.zero_latency,
+            lookahead: config.global_video.lookahead,
+            lookahead_frames: config.global_video.lookahead_frames,
+            spatial_aq: config.global_video.spatial_aq,
+            temporal_aq: config.global_video.temporal_aq,
+            show_advanced_video: false,
+            mic_device: config.mic_settings.device_name.clone(),
+            mic_force_mono: config.mic_settings.force_mono,
+            mic_gain: config.mic_settings.gain_db,
+            mic_noise_suppression: config.mic_settings.noise_suppression,
+            mic_gate_enabled: config.mic_settings.noise_gate_enabled,
+            mic_gate_threshold: config.mic_settings.noise_gate_threshold,
+            mic_compressor_enabled: config.mic_settings.compressor_enabled,
+            mic_compressor_threshold: config.mic_settings.compressor_threshold,
+            mic_compressor_ratio: config.mic_settings.compressor_ratio,
+            mic_limiter_enabled: config.mic_settings.limiter_enabled,
+            mic_limiter_threshold: config.mic_settings.limiter_threshold,
+            mic_monitor_pipeline: None,
+            auto_delete_enabled: config.auto_delete_clips_days.is_some(),
+            auto_delete_days: config.auto_delete_clips_days.unwrap_or(30),
+            export_format: config.default_export_format.clone(),
+            dd_mic: cx.new(|cx| adabraka_ui::components::dropdown::DropdownState::new(cx)),
+            select_encoder: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("h264_nvenc", "H.264 (NVENC)"),
+                            ("hevc_nvenc", "HEVC (NVENC)"),
+                            ("av1_nvenc", "AV1 (NVENC)"),
+                            ("x264", "H.264 (x264)"),
+                        ])
+                        .selected_index(match config.global_video.encoder.as_str() {
+                            "h264_nvenc" => 0,
+                            "hevc_nvenc" => 1,
+                            "av1_nvenc" => 2,
+                            "x264" => 3,
+                            _ => 0,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings.encoder = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.encoder = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
+            select_resolution: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let res = &config.global_video.resolution;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("Original", "Original"),
+                            ("3840x2160", "3840x2160"),
+                            ("2560x1440", "2560x1440"),
+                            ("1920x1080", "1920x1080"),
+                            ("1280x720", "1280x720"),
+                        ])
+                        .selected_index(match res.as_str() {
+                            "3840x2160" => 1,
+                            "2560x1440" => 2,
+                            "1920x1080" => 3,
+                            "1280x720" => 4,
+                            _ => 0,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings.resolution = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.resolution = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
+            select_fps: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let fps = config.global_video.fps;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("30", "30 FPS"),
+                            ("60", "60 FPS"),
+                            ("120", "120 FPS"),
+                            ("144", "144 FPS"),
+                            ("165", "165 FPS"),
+                            ("240", "240 FPS"),
+                        ])
+                        .selected_index(match fps {
+                            30 => 0, 60 => 1, 120 => 2, 144 => 3, 165 => 4, 240 => 5, _ => 1,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                if let Ok(fps) = val.parse::<i32>() {
+                                    this.settings.fps = fps;
+                                    let mut c = crate::config::AppConfig::load();
+                                    c.global_video.fps = fps;
+                                    c.save();
+                                    cx.notify();
+                                }
+                            });
+                        })
+                })
+            },
+            select_preset: {
+                let vh = cx.entity().downgrade();
+                cx.new(|cx| {
+                    let preset = &config.global_video.preset;
+                    select::AppSelect::new(cx)
+                        .items(vec![
+                            ("p1", "P1 (Fastest)"),
+                            ("p2", "P2"),
+                            ("p3", "P3"),
+                            ("p4", "P4 (Balanced)"),
+                            ("p5", "P5"),
+                            ("p6", "P6"),
+                            ("p7", "P7 (Best Quality)"),
+                        ])
+                        .selected_index(match preset.as_str() {
+                            "p1" => 0, "p2" => 1, "p3" => 2, "p4" => 3,
+                            "p5" => 4, "p6" => 5, "p7" => 6, _ => 3,
+                        })
+                        .on_change(move |val, _, cx| {
+                            let _ = vh.update(cx, |this, cx| {
+                                this.settings.preset = val.to_string();
+                                let mut c = crate::config::AppConfig::load();
+                                c.global_video.preset = val.to_string();
+                                c.save();
+                                cx.notify();
+                            });
+                        })
+                })
+            },
+        }
+    }
+}
+
 /// Convert a gpui Keystroke to a Win32 VK code and modifier bitmask.
 fn keystroke_to_vk(keystroke: &Keystroke) -> Option<(u32, u32)> {
     let key_str = keystroke.key.as_str();
@@ -165,35 +369,35 @@ impl RekaptrWorkspace {
     }
 
     pub fn sync_settings_form_from_config(&mut self, config: &crate::config::AppConfig) {
-        self.settings_form_encoder = config.global_video.encoder.clone();
-        self.settings_form_resolution = config.global_video.resolution.clone();
-        self.settings_form_fps = config.global_video.fps;
-        self.settings_form_rate_control = config.global_video.rate_control_index;
-        self.settings_form_bitrate = config.global_video.bitrate_kbps;
-        self.settings_form_cq = config.global_video.cq_level;
-        self.settings_form_retention = config.global_video.retention_minutes;
-        self.settings_form_preset = config.global_video.preset.clone();
-        self.settings_form_gop = config.global_video.gop_size;
-        self.settings_form_bframes = config.global_video.bframes;
-        self.settings_form_zero_latency = config.global_video.zero_latency;
-        self.settings_form_lookahead = config.global_video.lookahead;
-        self.settings_form_lookahead_frames = config.global_video.lookahead_frames;
-        self.settings_form_spatial_aq = config.global_video.spatial_aq;
-        self.settings_form_temporal_aq = config.global_video.temporal_aq;
-        self.settings_form_mic_device = config.mic_settings.device_name.clone();
-        self.settings_form_mic_force_mono = config.mic_settings.force_mono;
-        self.settings_form_mic_gain = config.mic_settings.gain_db;
-        self.settings_form_mic_noise_suppression = config.mic_settings.noise_suppression;
-        self.settings_form_mic_gate_enabled = config.mic_settings.noise_gate_enabled;
-        self.settings_form_mic_gate_threshold = config.mic_settings.noise_gate_threshold;
-        self.settings_form_mic_compressor_enabled = config.mic_settings.compressor_enabled;
-        self.settings_form_mic_compressor_threshold = config.mic_settings.compressor_threshold;
-        self.settings_form_mic_compressor_ratio = config.mic_settings.compressor_ratio;
-        self.settings_form_mic_limiter_enabled = config.mic_settings.limiter_enabled;
-        self.settings_form_mic_limiter_threshold = config.mic_settings.limiter_threshold;
-        self.settings_form_auto_delete_enabled = config.auto_delete_clips_days.is_some();
-        self.settings_form_auto_delete_days = config.auto_delete_clips_days.unwrap_or(30);
-        self.settings_form_export_format = config.default_export_format.clone();
+        self.settings.encoder = config.global_video.encoder.clone();
+        self.settings.resolution = config.global_video.resolution.clone();
+        self.settings.fps = config.global_video.fps;
+        self.settings.rate_control = config.global_video.rate_control_index;
+        self.settings.bitrate = config.global_video.bitrate_kbps;
+        self.settings.cq = config.global_video.cq_level;
+        self.settings.retention = config.global_video.retention_minutes;
+        self.settings.preset = config.global_video.preset.clone();
+        self.settings.gop = config.global_video.gop_size;
+        self.settings.bframes = config.global_video.bframes;
+        self.settings.zero_latency = config.global_video.zero_latency;
+        self.settings.lookahead = config.global_video.lookahead;
+        self.settings.lookahead_frames = config.global_video.lookahead_frames;
+        self.settings.spatial_aq = config.global_video.spatial_aq;
+        self.settings.temporal_aq = config.global_video.temporal_aq;
+        self.settings.mic_device = config.mic_settings.device_name.clone();
+        self.settings.mic_force_mono = config.mic_settings.force_mono;
+        self.settings.mic_gain = config.mic_settings.gain_db;
+        self.settings.mic_noise_suppression = config.mic_settings.noise_suppression;
+        self.settings.mic_gate_enabled = config.mic_settings.noise_gate_enabled;
+        self.settings.mic_gate_threshold = config.mic_settings.noise_gate_threshold;
+        self.settings.mic_compressor_enabled = config.mic_settings.compressor_enabled;
+        self.settings.mic_compressor_threshold = config.mic_settings.compressor_threshold;
+        self.settings.mic_compressor_ratio = config.mic_settings.compressor_ratio;
+        self.settings.mic_limiter_enabled = config.mic_settings.limiter_enabled;
+        self.settings.mic_limiter_threshold = config.mic_settings.limiter_threshold;
+        self.settings.auto_delete_enabled = config.auto_delete_clips_days.is_some();
+        self.settings.auto_delete_days = config.auto_delete_clips_days.unwrap_or(30);
+        self.settings.export_format = config.default_export_format.clone();
     }
 
     pub fn render_advanced_settings_dialog(&self, source: &str, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -702,7 +906,7 @@ fn nav_rail_item(
                 this.settings_tab = tab;
                 this.hotkey_listening = None;
                 if tab != SettingsTab::Audio {
-                    if let Some(pipeline) = this.mic_monitor_pipeline.take() {
+                    if let Some(pipeline) = this.settings.mic_monitor_pipeline.take() {
                         let _ = pipeline.set_state(gstreamer::State::Null);
                         if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
                             provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);

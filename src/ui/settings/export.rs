@@ -25,7 +25,7 @@ impl RekaptrWorkspace {
                 .on_click(move |_, _, cx| {
                     let value = value_owned.clone();
                     let _ = vh.update(cx, |this, cx| {
-                        this.settings_form_export_format = value.clone();
+                        this.settings.export_format = value.clone();
                         let mut config = crate::config::AppConfig::load();
                         config.default_export_format = value;
                         config.save();

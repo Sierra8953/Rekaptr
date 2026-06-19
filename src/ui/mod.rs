@@ -123,48 +123,8 @@ pub struct RekaptrWorkspace {
     /// 4=marker flag, 5=marker kill, 6=marker death, 7=marker highlight
     pub hotkey_listening: Option<usize>,
     pub hotkey_focus_handle: FocusHandle,
-    // Settings form state — video tab
-    pub settings_form_encoder: String,
-    pub settings_form_resolution: String,
-    pub settings_form_fps: i32,
-    pub settings_form_rate_control: i32,
-    pub settings_form_bitrate: i32,
-    pub settings_form_cq: i32,
-    pub settings_form_retention: i32,
-    pub settings_form_preset: String,
-    pub settings_form_gop: i32,
-    pub settings_form_bframes: i32,
-    pub settings_form_zero_latency: bool,
-    pub settings_form_lookahead: bool,
-    pub settings_form_lookahead_frames: i32,
-    pub settings_form_spatial_aq: bool,
-    pub settings_form_temporal_aq: bool,
-    pub settings_show_advanced_video: bool,
-    // Settings form state — audio/mic tab
-    pub settings_form_mic_device: String,
-    pub settings_form_mic_force_mono: bool,
-    pub settings_form_mic_gain: f32,
-    pub settings_form_mic_noise_suppression: bool,
-    pub settings_form_mic_gate_enabled: bool,
-    pub settings_form_mic_gate_threshold: f32,
-    pub settings_form_mic_compressor_enabled: bool,
-    pub settings_form_mic_compressor_threshold: f32,
-    pub settings_form_mic_compressor_ratio: f32,
-    pub settings_form_mic_limiter_enabled: bool,
-    pub settings_form_mic_limiter_threshold: f32,
-    // Mic monitor loopback
-    pub mic_monitor_pipeline: Option<gst::Pipeline>,
-    // Settings form state — storage tab
-    pub settings_form_auto_delete_enabled: bool,
-    pub settings_form_auto_delete_days: i32,
-    pub settings_form_export_format: String,
-    // Dropdown states (persisted across renders)
-    pub dd_mic: Entity<DropdownState>,
-    // AppSelect entities for settings
-    pub select_encoder: Entity<select::AppSelect>,
-    pub select_resolution: Entity<select::AppSelect>,
-    pub select_fps: Entity<select::AppSelect>,
-    pub select_preset: Entity<select::AppSelect>,
+    /// Global-settings form state, grouped (see [`crate::ui::settings::SettingsForm`]).
+    pub settings: crate::ui::settings::SettingsForm,
     pub update_state: crate::updater::UpdateState,
     pub update_has_receipt: bool,
     _quit_subscription: Option<Subscription>,
@@ -490,158 +450,7 @@ impl RekaptrWorkspace {
             setup_detected_encoders: setup_wizard::detect_available_encoders(),
             hotkey_listening: None,
             hotkey_focus_handle: cx.focus_handle(),
-            // Settings form state — video
-            settings_form_encoder: config.global_video.encoder.clone(),
-            settings_form_resolution: config.global_video.resolution.clone(),
-            settings_form_fps: config.global_video.fps,
-            settings_form_rate_control: config.global_video.rate_control_index,
-            settings_form_bitrate: config.global_video.bitrate_kbps,
-            settings_form_cq: config.global_video.cq_level,
-            settings_form_retention: config.global_video.retention_minutes,
-            settings_form_preset: config.global_video.preset.clone(),
-            settings_form_gop: config.global_video.gop_size,
-            settings_form_bframes: config.global_video.bframes,
-            settings_form_zero_latency: config.global_video.zero_latency,
-            settings_form_lookahead: config.global_video.lookahead,
-            settings_form_lookahead_frames: config.global_video.lookahead_frames,
-            settings_form_spatial_aq: config.global_video.spatial_aq,
-            settings_form_temporal_aq: config.global_video.temporal_aq,
-            settings_show_advanced_video: false,
-            // Settings form state — mic
-            settings_form_mic_device: config.mic_settings.device_name.clone(),
-            settings_form_mic_force_mono: config.mic_settings.force_mono,
-            settings_form_mic_gain: config.mic_settings.gain_db,
-            settings_form_mic_noise_suppression: config.mic_settings.noise_suppression,
-            settings_form_mic_gate_enabled: config.mic_settings.noise_gate_enabled,
-            settings_form_mic_gate_threshold: config.mic_settings.noise_gate_threshold,
-            settings_form_mic_compressor_enabled: config.mic_settings.compressor_enabled,
-            settings_form_mic_compressor_threshold: config.mic_settings.compressor_threshold,
-            settings_form_mic_compressor_ratio: config.mic_settings.compressor_ratio,
-            settings_form_mic_limiter_enabled: config.mic_settings.limiter_enabled,
-            settings_form_mic_limiter_threshold: config.mic_settings.limiter_threshold,
-            mic_monitor_pipeline: None,
-            // Settings form state — storage
-            settings_form_auto_delete_enabled: config.auto_delete_clips_days.is_some(),
-            settings_form_auto_delete_days: config.auto_delete_clips_days.unwrap_or(30),
-            settings_form_export_format: config.default_export_format.clone(),
-            // Dropdown states
-            dd_mic: cx.new(|cx| DropdownState::new(cx)),
-            select_encoder: {
-                let vh = cx.entity().downgrade();
-                cx.new(|cx| {
-                    select::AppSelect::new(cx)
-                        .items(vec![
-                            ("h264_nvenc", "H.264 (NVENC)"),
-                            ("hevc_nvenc", "HEVC (NVENC)"),
-                            ("av1_nvenc", "AV1 (NVENC)"),
-                            ("x264", "H.264 (x264)"),
-                        ])
-                        .selected_index(match config.global_video.encoder.as_str() {
-                            "h264_nvenc" => 0,
-                            "hevc_nvenc" => 1,
-                            "av1_nvenc" => 2,
-                            "x264" => 3,
-                            _ => 0,
-                        })
-                        .on_change(move |val, _, cx| {
-                            let _ = vh.update(cx, |this, cx| {
-                                this.settings_form_encoder = val.to_string();
-                                let mut c = crate::config::AppConfig::load();
-                                c.global_video.encoder = val.to_string();
-                                c.save();
-                                cx.notify();
-                            });
-                        })
-                })
-            },
-            select_resolution: {
-                let vh = cx.entity().downgrade();
-                cx.new(|cx| {
-                    let res = &config.global_video.resolution;
-                    select::AppSelect::new(cx)
-                        .items(vec![
-                            ("Original", "Original"),
-                            ("3840x2160", "3840x2160"),
-                            ("2560x1440", "2560x1440"),
-                            ("1920x1080", "1920x1080"),
-                            ("1280x720", "1280x720"),
-                        ])
-                        .selected_index(match res.as_str() {
-                            "3840x2160" => 1,
-                            "2560x1440" => 2,
-                            "1920x1080" => 3,
-                            "1280x720" => 4,
-                            _ => 0,
-                        })
-                        .on_change(move |val, _, cx| {
-                            let _ = vh.update(cx, |this, cx| {
-                                this.settings_form_resolution = val.to_string();
-                                let mut c = crate::config::AppConfig::load();
-                                c.global_video.resolution = val.to_string();
-                                c.save();
-                                cx.notify();
-                            });
-                        })
-                })
-            },
-            select_fps: {
-                let vh = cx.entity().downgrade();
-                cx.new(|cx| {
-                    let fps = config.global_video.fps;
-                    select::AppSelect::new(cx)
-                        .items(vec![
-                            ("30", "30 FPS"),
-                            ("60", "60 FPS"),
-                            ("120", "120 FPS"),
-                            ("144", "144 FPS"),
-                            ("165", "165 FPS"),
-                            ("240", "240 FPS"),
-                        ])
-                        .selected_index(match fps {
-                            30 => 0, 60 => 1, 120 => 2, 144 => 3, 165 => 4, 240 => 5, _ => 1,
-                        })
-                        .on_change(move |val, _, cx| {
-                            let _ = vh.update(cx, |this, cx| {
-                                if let Ok(fps) = val.parse::<i32>() {
-                                    this.settings_form_fps = fps;
-                                    let mut c = crate::config::AppConfig::load();
-                                    c.global_video.fps = fps;
-                                    c.save();
-                                    cx.notify();
-                                }
-                            });
-                        })
-                })
-            },
-            select_preset: {
-                let vh = cx.entity().downgrade();
-                cx.new(|cx| {
-                    let preset = &config.global_video.preset;
-                    select::AppSelect::new(cx)
-                        .items(vec![
-                            ("p1", "P1 (Fastest)"),
-                            ("p2", "P2"),
-                            ("p3", "P3"),
-                            ("p4", "P4 (Balanced)"),
-                            ("p5", "P5"),
-                            ("p6", "P6"),
-                            ("p7", "P7 (Best Quality)"),
-                        ])
-                        .selected_index(match preset.as_str() {
-                            "p1" => 0, "p2" => 1, "p3" => 2, "p4" => 3,
-                            "p5" => 4, "p6" => 5, "p7" => 6, _ => 3,
-                        })
-                        .on_change(move |val, _, cx| {
-                            let _ = vh.update(cx, |this, cx| {
-                                this.settings_form_preset = val.to_string();
-                                let mut c = crate::config::AppConfig::load();
-                                c.global_video.preset = val.to_string();
-                                c.save();
-                                cx.notify();
-                            });
-                        })
-                })
-            },
+            settings: crate::ui::settings::SettingsForm::new(&config, cx),
             update_state: crate::updater::UpdateState::Idle,
             update_has_receipt: crate::updater::has_install_receipt(),
             _quit_subscription: None,
@@ -652,7 +461,7 @@ impl RekaptrWorkspace {
             log::info!("[Shutdown] Graceful shutdown initiated...");
 
             // 0. Stop mic monitor if active
-            if let Some(pipeline) = this.mic_monitor_pipeline.take() {
+            if let Some(pipeline) = this.settings.mic_monitor_pipeline.take() {
                 let _ = pipeline.set_state(gstreamer::State::Null);
                 if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
                     provider.subscribers.remove(&0xFFFF_FFFF_FFFF_FFFFu64);

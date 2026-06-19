@@ -13,7 +13,7 @@ impl RekaptrWorkspace {
         }
         let devices = devices_raw;
 
-        let is_monitoring = self.mic_monitor_pipeline.is_some();
+        let is_monitoring = self.settings.mic_monitor_pipeline.is_some();
 
         VStack::new()
             .gap_6()
@@ -24,10 +24,10 @@ impl RekaptrWorkspace {
                             {
                                 // Resolve the stored device ID to a friendly name for display
                                 let display_name = devices.iter()
-                                    .find(|(id, _)| *id == self.settings_form_mic_device)
+                                    .find(|(id, _)| *id == self.settings.mic_device)
                                     .map(|(_, label)| label.clone())
-                                    .unwrap_or_else(|| self.settings_form_mic_device.clone());
-                                adabraka_ui::components::dropdown::Dropdown::new(self.dd_mic.clone(),
+                                    .unwrap_or_else(|| self.settings.mic_device.clone());
+                                adabraka_ui::components::dropdown::Dropdown::new(self.settings.dd_mic.clone(),
                                     Button::new("trigger-mic", display_name).size(ButtonSize::Sm).variant(ButtonVariant::Outline))
                                     .items(devices.into_iter().map(|(id, label)| {
                                         let vh = vh.clone();
@@ -35,7 +35,7 @@ impl RekaptrWorkspace {
                                         DropdownItem::new(id, label)
                                             .on_click(move |_, cx| {
                                                 let _ = vh.update(cx, |this, cx| {
-                                                    this.settings_form_mic_device = dev_id.clone();
+                                                    this.settings.mic_device = dev_id.clone();
                                                     let mut config = crate::config::AppConfig::load();
                                                     config.mic_settings.device_name = dev_id.clone();
                                                     config.save();
@@ -46,18 +46,18 @@ impl RekaptrWorkspace {
                             }
                         ))
                         .child(settings_row(theme, "Force Mono", Option::<String>::None,
-                            settings_toggle("toggle-mono", self.settings_form_mic_force_mono, vh.clone(), |this, cx| {
-                                this.settings_form_mic_force_mono = !this.settings_form_mic_force_mono;
+                            settings_toggle("toggle-mono", self.settings.mic_force_mono, vh.clone(), |this, cx| {
+                                this.settings.mic_force_mono = !this.settings.mic_force_mono;
                                 let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.force_mono = this.settings_form_mic_force_mono;
+                                config.mic_settings.force_mono = this.settings.mic_force_mono;
                                 config.save();
                                 this.notify_mic_dsp_changed();
                                 cx.notify();
                             })
                         ))
-                        .child(settings_row(theme, "Gain (dB)", Some(format!("{:.1} dB", self.settings_form_mic_gain)),
-                            stepper_f32("gain", self.settings_form_mic_gain, -20.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
-                                this.settings_form_mic_gain = val;
+                        .child(settings_row(theme, "Gain (dB)", Some(format!("{:.1} dB", self.settings.mic_gain)),
+                            stepper_f32("gain", self.settings.mic_gain, -20.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
+                                this.settings.mic_gain = val;
                                 let mut config = crate::config::AppConfig::load();
                                 config.mic_settings.gain_db = val;
                                 config.save();
@@ -73,7 +73,7 @@ impl RekaptrWorkspace {
                                     let vh = vh.clone();
                                     move |_, _, cx| {
                                         let _ = vh.update(cx, |this, cx| {
-                                            if let Some(pipeline) = this.mic_monitor_pipeline.take() {
+                                            if let Some(pipeline) = this.settings.mic_monitor_pipeline.take() {
                                                 let _ = pipeline.set_state(gstreamer::State::Null);
                                                 // Unsubscribe from mic provider
                                                 if let Some(provider) = this.app_state.mic_provider.lock().as_ref() {
@@ -97,7 +97,7 @@ impl RekaptrWorkspace {
                                                                 let monitor_id = 0xFFFF_FFFF_FFFF_FFFFu64; // Reserved ID for monitor
                                                                 provider.subscribers.insert(monitor_id, appsrc);
                                                                 let _ = pipeline.set_state(gstreamer::State::Playing);
-                                                                this.mic_monitor_pipeline = Some(pipeline);
+                                                                this.settings.mic_monitor_pipeline = Some(pipeline);
                                                                 log::info!("[MicMonitor] Pipeline started (receiving from mic provider)");
                                                             }
                                                         } else {
@@ -119,10 +119,10 @@ impl RekaptrWorkspace {
             .child(settings_card(theme, "Processing & FX", None,
                     VStack::new()
                         .child(settings_row(theme, "Noise Suppression (RNNoise)", Some("Requires mic restart"),
-                            settings_toggle("toggle-ns", self.settings_form_mic_noise_suppression, vh.clone(), |this, cx| {
-                                this.settings_form_mic_noise_suppression = !this.settings_form_mic_noise_suppression;
+                            settings_toggle("toggle-ns", self.settings.mic_noise_suppression, vh.clone(), |this, cx| {
+                                this.settings.mic_noise_suppression = !this.settings.mic_noise_suppression;
                                 let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.noise_suppression = this.settings_form_mic_noise_suppression;
+                                config.mic_settings.noise_suppression = this.settings.mic_noise_suppression;
                                 config.save();
                                 // Restart the mic provider since audiornnoise can only be
                                 // added/removed by rebuilding the GStreamer pipeline.
@@ -131,19 +131,19 @@ impl RekaptrWorkspace {
                             })
                         ))
                         .child(settings_row(theme, "Noise Gate", Option::<String>::None,
-                            settings_toggle("toggle-gate", self.settings_form_mic_gate_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_gate_enabled = !this.settings_form_mic_gate_enabled;
+                            settings_toggle("toggle-gate", self.settings.mic_gate_enabled, vh.clone(), |this, cx| {
+                                this.settings.mic_gate_enabled = !this.settings.mic_gate_enabled;
                                 let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.noise_gate_enabled = this.settings_form_mic_gate_enabled;
+                                config.mic_settings.noise_gate_enabled = this.settings.mic_gate_enabled;
                                 config.save();
                                 this.notify_mic_dsp_changed();
                                 cx.notify();
                             })
                         ))
-                        .when(self.settings_form_mic_gate_enabled, |this| {
-                            this.child(settings_row(theme, "Gate Threshold", Some(format!("{:.0} dB", self.settings_form_mic_gate_threshold)),
-                                stepper_f32("gt", self.settings_form_mic_gate_threshold, -80.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
-                                    this.settings_form_mic_gate_threshold = val;
+                        .when(self.settings.mic_gate_enabled, |this| {
+                            this.child(settings_row(theme, "Gate Threshold", Some(format!("{:.0} dB", self.settings.mic_gate_threshold)),
+                                stepper_f32("gt", self.settings.mic_gate_threshold, -80.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
+                                    this.settings.mic_gate_threshold = val;
                                     let mut config = crate::config::AppConfig::load();
                                     config.mic_settings.noise_gate_threshold = val;
                                     config.save();
@@ -157,20 +157,20 @@ impl RekaptrWorkspace {
             .child(settings_card(theme, "Compressor", None,
                     VStack::new()
                         .child(settings_row(theme, "Enable Compressor", Option::<String>::None,
-                            settings_toggle("toggle-comp", self.settings_form_mic_compressor_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_compressor_enabled = !this.settings_form_mic_compressor_enabled;
+                            settings_toggle("toggle-comp", self.settings.mic_compressor_enabled, vh.clone(), |this, cx| {
+                                this.settings.mic_compressor_enabled = !this.settings.mic_compressor_enabled;
                                 let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.compressor_enabled = this.settings_form_mic_compressor_enabled;
+                                config.mic_settings.compressor_enabled = this.settings.mic_compressor_enabled;
                                 config.save();
                                 this.notify_mic_dsp_changed();
                                 cx.notify();
                             })
                         ))
-                        .when(self.settings_form_mic_compressor_enabled, |this| {
+                        .when(self.settings.mic_compressor_enabled, |this| {
                             this
-                                .child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings_form_mic_compressor_threshold)),
-                                    stepper_f32("ct", self.settings_form_mic_compressor_threshold, -60.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
-                                        this.settings_form_mic_compressor_threshold = val;
+                                .child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings.mic_compressor_threshold)),
+                                    stepper_f32("ct", self.settings.mic_compressor_threshold, -60.0, 0.0, 1.0, vh.clone(), |this, val, cx| {
+                                        this.settings.mic_compressor_threshold = val;
                                         let mut config = crate::config::AppConfig::load();
                                         config.mic_settings.compressor_threshold = val;
                                         config.save();
@@ -178,9 +178,9 @@ impl RekaptrWorkspace {
                                         cx.notify();
                                     })
                                 ))
-                                .child(settings_row(theme, "Ratio", Some(format!("{:.1}:1", self.settings_form_mic_compressor_ratio)),
-                                    stepper_f32("cr", self.settings_form_mic_compressor_ratio, 1.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
-                                        this.settings_form_mic_compressor_ratio = val;
+                                .child(settings_row(theme, "Ratio", Some(format!("{:.1}:1", self.settings.mic_compressor_ratio)),
+                                    stepper_f32("cr", self.settings.mic_compressor_ratio, 1.0, 20.0, 0.5, vh.clone(), |this, val, cx| {
+                                        this.settings.mic_compressor_ratio = val;
                                         let mut config = crate::config::AppConfig::load();
                                         config.mic_settings.compressor_ratio = val;
                                         config.save();
@@ -194,19 +194,19 @@ impl RekaptrWorkspace {
             .child(settings_card(theme, "Limiter", None,
                     VStack::new()
                         .child(settings_row(theme, "Enable Limiter", Option::<String>::None,
-                            settings_toggle("toggle-lim", self.settings_form_mic_limiter_enabled, vh.clone(), |this, cx| {
-                                this.settings_form_mic_limiter_enabled = !this.settings_form_mic_limiter_enabled;
+                            settings_toggle("toggle-lim", self.settings.mic_limiter_enabled, vh.clone(), |this, cx| {
+                                this.settings.mic_limiter_enabled = !this.settings.mic_limiter_enabled;
                                 let mut config = crate::config::AppConfig::load();
-                                config.mic_settings.limiter_enabled = this.settings_form_mic_limiter_enabled;
+                                config.mic_settings.limiter_enabled = this.settings.mic_limiter_enabled;
                                 config.save();
                                 this.notify_mic_dsp_changed();
                                 cx.notify();
                             })
                         ))
-                        .when(self.settings_form_mic_limiter_enabled, |this| {
-                            this.child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings_form_mic_limiter_threshold)),
-                                stepper_f32("lt", self.settings_form_mic_limiter_threshold, -30.0, 0.0, 0.5, vh.clone(), |this, val, cx| {
-                                    this.settings_form_mic_limiter_threshold = val;
+                        .when(self.settings.mic_limiter_enabled, |this| {
+                            this.child(settings_row(theme, "Threshold", Some(format!("{:.0} dB", self.settings.mic_limiter_threshold)),
+                                stepper_f32("lt", self.settings.mic_limiter_threshold, -30.0, 0.0, 0.5, vh.clone(), |this, val, cx| {
+                                    this.settings.mic_limiter_threshold = val;
                                     let mut config = crate::config::AppConfig::load();
                                     config.mic_settings.limiter_threshold = val;
                                     config.save();

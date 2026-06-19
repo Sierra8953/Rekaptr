@@ -28,20 +28,14 @@ pub struct RekaptrWorkspace {
     pub settings_tab: SettingsTab,
     pub app_state: Arc<AppState>,
     pub video_source: Option<Video>,
-    pub preview_video_source: Option<Video>,
     pub selected_source: Option<String>,
     pub show_add_source_modal: bool,
     pub advanced_settings_source: Option<String>,
     pub session_to_delete: Option<i32>,
     pub clip_to_delete: Option<crate::state::Clip>,
     pub clip_to_preview: Option<crate::state::Clip>,
-    pub last_preview_mouse_move: std::time::Instant,
-    pub show_preview_controls: bool,
-    pub is_scrubbing_preview: bool,
-    pub preview_scrubbing_progress: f32,
-    pub preview_audio_enabled: Vec<bool>,
-    pub preview_volume: f64,
-    pub preview_vol_slider: Entity<volume_slider::VolumeSlider>,
+    /// Clips-page mini-player state, grouped (see [`crate::ui::clips::ClipPreviewState`]).
+    pub clip_preview: crate::ui::clips::ClipPreviewState,
     pub clip_popover: Option<(Point<Pixels>, crate::state::Clip)>,
     pub clip_table: Entity<DataTable<crate::state::Clip>>,
     pub clip_start: f64,
@@ -415,35 +409,13 @@ impl RekaptrWorkspace {
             settings_tab: SettingsTab::General,
             app_state,
             video_source: None,
-            preview_video_source: None,
             selected_source: None,
             show_add_source_modal: false,
             advanced_settings_source: None,
             session_to_delete: None,
             clip_to_delete: None,
             clip_to_preview: None,
-            last_preview_mouse_move: std::time::Instant::now(),
-            show_preview_controls: true,
-            is_scrubbing_preview: false,
-            preview_audio_enabled: Vec::new(),
-            preview_volume: 100.0,
-            preview_vol_slider: {
-                let vh = cx.entity().downgrade();
-                cx.new(|cx| {
-                    volume_slider::VolumeSlider::new(cx)
-                        .with_value(100.0 / 150.0)
-                        .on_change(move |value, _window, cx| {
-                            let _ = vh.update(cx, |this, cx| {
-                                this.preview_volume = (value * 150.0) as f64;
-                                if let Some(v) = &this.preview_video_source {
-                                    v.set_volume(this.preview_volume);
-                                }
-                                cx.notify();
-                            });
-                        })
-                })
-            },
-            preview_scrubbing_progress: 0.0,
+            clip_preview: crate::ui::clips::ClipPreviewState::new(cx),
             clip_popover: None,
             clip_table,
             clip_start: -1.0,
@@ -726,7 +698,7 @@ impl RekaptrWorkspace {
 
             // 4. Stop video players
             this.video_source = None;
-            this.preview_video_source = None;
+            this.clip_preview.player = None;
 
             log::info!("[Shutdown] Graceful shutdown complete.");
             async {}
@@ -846,8 +818,8 @@ impl RekaptrWorkspace {
     }
 
     pub fn update_preview_audio_mix(&self) {
-        if let Some(v) = &self.preview_video_source {
-            let enabled_ids: Vec<usize> = self.preview_audio_enabled.iter()
+        if let Some(v) = &self.clip_preview.player {
+            let enabled_ids: Vec<usize> = self.clip_preview.audio_enabled.iter()
                 .enumerate()
                 .filter(|(_, &on)| on)
                 .map(|(i, _)| i)
@@ -876,11 +848,11 @@ impl RekaptrWorkspace {
     }
 
     pub fn init_preview_audio_tracks(&mut self) {
-        if let Some(v) = &self.preview_video_source {
+        if let Some(v) = &self.clip_preview.player {
             let tracks = v.audio_tracks();
             let count = tracks.len();
-            if self.preview_audio_enabled.len() != count {
-                self.preview_audio_enabled = vec![true; count];
+            if self.clip_preview.audio_enabled.len() != count {
+                self.clip_preview.audio_enabled = vec![true; count];
             }
         }
     }

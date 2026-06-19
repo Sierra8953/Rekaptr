@@ -5,6 +5,50 @@ use crate::state::Clip;
 use adabraka_ui::display::data_table::ColumnDef;
 use adabraka_ui::components::input::Input;
 
+/// Clips-page mini-player state, grouped out of the `RekaptrWorkspace`
+/// god-object: the libmpv `Video` streaming the selected clip plus its hover
+/// controls / scrub / volume UI.
+pub struct ClipPreviewState {
+    /// The clip currently loaded in the mini-player (`None` = closed).
+    pub player: Option<crate::video_player::Video>,
+    pub last_mouse_move: std::time::Instant,
+    pub show_controls: bool,
+    pub scrubbing: bool,
+    pub scrub_progress: f32,
+    pub vol_slider: Entity<crate::ui::volume_slider::VolumeSlider>,
+    pub volume: f64,
+    pub audio_enabled: Vec<bool>,
+}
+
+impl ClipPreviewState {
+    pub fn new(cx: &mut Context<RekaptrWorkspace>) -> Self {
+        let vh = cx.entity().downgrade();
+        let vol_slider = cx.new(|cx| {
+            crate::ui::volume_slider::VolumeSlider::new(cx)
+                .with_value(100.0 / 150.0)
+                .on_change(move |value, _window, cx| {
+                    let _ = vh.update(cx, |this, cx| {
+                        this.clip_preview.volume = (value * 150.0) as f64;
+                        if let Some(v) = &this.clip_preview.player {
+                            v.set_volume(this.clip_preview.volume);
+                        }
+                        cx.notify();
+                    });
+                })
+        });
+        Self {
+            player: None,
+            last_mouse_move: std::time::Instant::now(),
+            show_controls: true,
+            scrubbing: false,
+            scrub_progress: 0.0,
+            vol_slider,
+            volume: 100.0,
+            audio_enabled: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum ClipsFilter {
     All,
@@ -778,10 +822,10 @@ impl RekaptrWorkspace {
 
     /// Open a clip in the mini player overlay. Shared by the hero and card play buttons.
     pub fn open_clip_preview(&mut self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) {
-        let old = self.preview_video_source.as_ref().map(|v| v.render_image());
+        let old = self.clip_preview.player.as_ref().map(|v| v.render_image());
         self.clip_to_preview = Some(clip.clone());
-        self.last_preview_mouse_move = std::time::Instant::now();
-        self.show_preview_controls = true;
+        self.clip_preview.last_mouse_move = std::time::Instant::now();
+        self.clip_preview.show_controls = true;
         let url = clip.path.to_string_lossy().to_string();
         let d3d_device_ptr = self.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
         if let Ok(video) = crate::video_player::Video::new_with_options(
@@ -792,7 +836,7 @@ impl RekaptrWorkspace {
             },
             d3d_device_ptr,
         ) {
-            self.preview_video_source = Some(video);
+            self.clip_preview.player = Some(video);
             self.init_preview_audio_tracks();
         }
         if let Some(ri) = old {
@@ -896,10 +940,10 @@ impl RekaptrWorkspace {
                                         move |_, window, cx| {
                                             cx.stop_propagation();
                                             let old_ri = view_handle.update(cx, |this, cx| {
-                                                let old = this.preview_video_source.as_ref().map(|v| v.render_image());
+                                                let old = this.clip_preview.player.as_ref().map(|v| v.render_image());
                                                 this.clip_to_preview = Some(clip.clone());
-                                                this.last_preview_mouse_move = std::time::Instant::now();
-                                                this.show_preview_controls = true;
+                                                this.clip_preview.last_mouse_move = std::time::Instant::now();
+                                                this.clip_preview.show_controls = true;
                                                 let url = clip.path.to_string_lossy().to_string();
                                                 let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
                                                 if let Ok(video) = crate::video_player::Video::new_with_options(
@@ -907,7 +951,7 @@ impl RekaptrWorkspace {
                                                     crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
                                                     d3d_device_ptr,
                                                 ) {
-                                                    this.preview_video_source = Some(video);
+                                                    this.clip_preview.player = Some(video);
                                                     this.init_preview_audio_tracks();
                                                 }
                                                 cx.notify();
@@ -963,20 +1007,20 @@ impl RekaptrWorkspace {
     fn render_mini_player(&self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
 
-        let (pos, dur) = if let Some(v) = &self.preview_video_source {
+        let (pos, dur) = if let Some(v) = &self.clip_preview.player {
             (v.position().as_secs_f64(), v.duration().as_secs_f64().max(1.0))
         } else {
             (0.0, 1.0)
         };
         
-        let display_pos = if self.is_scrubbing_preview {
-            self.preview_scrubbing_progress as f64 * dur
+        let display_pos = if self.clip_preview.scrubbing {
+            self.clip_preview.scrub_progress as f64 * dur
         } else {
             pos
         };
         
         let progress = (display_pos / dur) as f32;
-        let controls_visible = self.show_preview_controls;
+        let controls_visible = self.clip_preview.show_controls;
 
         let show_hours = dur >= 3600.0;
         let format_time = move |s: f64| {
@@ -1008,27 +1052,27 @@ impl RekaptrWorkspace {
             .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.clip_to_preview = None;
-                if let Some(old) = this.preview_video_source.take() {
+                if let Some(old) = this.clip_preview.player.take() {
                     window.drop_image(old.render_image()).ok();
                 }
-                this.is_scrubbing_preview = false;
-                this.preview_audio_enabled.clear();
+                this.clip_preview.scrubbing = false;
+                this.clip_preview.audio_enabled.clear();
                 cx.notify();
             }))
             .child(
                 div()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        this.last_preview_mouse_move = std::time::Instant::now();
-                        if !this.show_preview_controls {
-                            this.show_preview_controls = true;
+                        this.clip_preview.last_mouse_move = std::time::Instant::now();
+                        if !this.clip_preview.show_controls {
+                            this.clip_preview.show_controls = true;
                         }
                         
-                        if this.is_scrubbing_preview {
+                        if this.clip_preview.scrubbing {
                             let relative_x = event.position.x.0 - left_offset;
                             let p = (relative_x as f32 / player_width).clamp(0.0, 1.0);
-                            this.preview_scrubbing_progress = p;
-                            if let Some(v) = &this.preview_video_source {
+                            this.clip_preview.scrub_progress = p;
+                            if let Some(v) = &this.clip_preview.player {
                                 let target = p as f64 * dur;
                                 let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
                             }
@@ -1048,7 +1092,7 @@ impl RekaptrWorkspace {
                         div()
                             .size_full()
                             .bg(gpui::black())
-                            .when_some(self.preview_video_source.as_ref(), |this, v| {
+                            .when_some(self.clip_preview.player.as_ref(), |this, v| {
                                 this.child(crate::video_player::video(v.clone()))
                             })
                     )
@@ -1070,10 +1114,10 @@ impl RekaptrWorkspace {
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                         this.clip_to_preview = None;
-                                        if let Some(old) = this.preview_video_source.take() {
+                                        if let Some(old) = this.clip_preview.player.take() {
                                             window.drop_image(old.render_image()).ok();
                                         }
-                                        this.preview_audio_enabled.clear();
+                                        this.clip_preview.audio_enabled.clear();
                                         cx.notify();
                                     }))
                                     .child(Icon::new("x").size(px(28.0)).color(gpui::white()))
@@ -1097,18 +1141,18 @@ impl RekaptrWorkspace {
                                     .relative()
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                        this.is_scrubbing_preview = true;
+                                        this.clip_preview.scrubbing = true;
                                         let relative_x = event.position.x.0 - left_offset;
                                         let p = (relative_x as f32 / player_width).clamp(0.0, 1.0);
-                                        this.preview_scrubbing_progress = p;
-                                        if let Some(v) = &this.preview_video_source {
+                                        this.clip_preview.scrub_progress = p;
+                                        if let Some(v) = &this.clip_preview.player {
                                             let target = p as f64 * dur;
                                             let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
                                         }
                                         cx.notify();
                                     }))
                                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.is_scrubbing_preview = false;
+                                        this.clip_preview.scrubbing = false;
                                         cx.notify();
                                     }))
                                     .child(
@@ -1146,7 +1190,7 @@ impl RekaptrWorkspace {
                                                     .cursor_pointer()
                                                     .hover(|s| s.opacity(0.7))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
+                                                        if let Some(v) = &this.clip_preview.player {
                                                             let target = (v.position().as_secs_f64() - 5.0).max(0.0);
                                                             let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
                                                             cx.notify();
@@ -1155,7 +1199,7 @@ impl RekaptrWorkspace {
                                                     .child(Icon::new("rotate-ccw").size(px(22.0)).color(gpui::white()))
                                             )
                                             .child({
-                                                let is_paused = self.preview_video_source.as_ref().map_or(true, |v| v.paused());
+                                                let is_paused = self.clip_preview.player.as_ref().map_or(true, |v| v.paused());
                                                 div()
                                                     .id("preview-play-pause")
                                                     .cursor_pointer()
@@ -1168,7 +1212,7 @@ impl RekaptrWorkspace {
                                                     .bg(theme.tokens.primary)
                                                     .hover(|s| s.bg(gpui::hsla(258.0/360.0, 0.90, 0.56, 1.0)))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
+                                                        if let Some(v) = &this.clip_preview.player {
                                                             if v.position() >= v.duration().saturating_sub(std::time::Duration::from_millis(500)) {
                                                                 let _ = v.seek(std::time::Duration::ZERO, false);
                                                                 v.set_paused(false);
@@ -1186,7 +1230,7 @@ impl RekaptrWorkspace {
                                                     .cursor_pointer()
                                                     .hover(|s| s.opacity(0.7))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                        if let Some(v) = &this.preview_video_source {
+                                                        if let Some(v) = &this.clip_preview.player {
                                                             let duration = v.duration().as_secs_f64();
                                                             let target = (v.position().as_secs_f64() + 5.0).min(duration);
                                                             let _ = v.seek(std::time::Duration::from_secs_f64(target), false);
@@ -1203,10 +1247,10 @@ impl RekaptrWorkspace {
                                             .w(px(200.0))
                                             .justify_end()
                                             .items_center()
-                                            .child(self.preview_vol_slider.clone())
+                                            .child(self.clip_preview.vol_slider.clone())
                                             // Audio track toggles
-                                            .when(self.preview_video_source.as_ref().map_or(false, |v| v.audio_tracks().len() > 1), |this| {
-                                                let audio_tracks = self.preview_video_source.as_ref()
+                                            .when(self.clip_preview.player.as_ref().map_or(false, |v| v.audio_tracks().len() > 1), |this| {
+                                                let audio_tracks = self.clip_preview.player.as_ref()
                                                     .map(|v| v.audio_tracks())
                                                     .unwrap_or_default();
                                                 this
@@ -1217,7 +1261,7 @@ impl RekaptrWorkspace {
                                                             .bg(gpui::hsla(0.0, 0.0, 1.0, 0.2))
                                                     )
                                                     .children(audio_tracks.into_iter().enumerate().map(|(idx, (_id, label))| {
-                                                        let enabled = self.preview_audio_enabled.get(idx).copied().unwrap_or(true);
+                                                        let enabled = self.clip_preview.audio_enabled.get(idx).copied().unwrap_or(true);
                                                         let short_label = if label.len() > 14 {
                                                             format!("{}...", &label[..12])
                                                         } else {
@@ -1243,7 +1287,7 @@ impl RekaptrWorkspace {
                                                             })
                                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                                 this.init_preview_audio_tracks();
-                                                                if let Some(v) = this.preview_audio_enabled.get_mut(idx) {
+                                                                if let Some(v) = this.clip_preview.audio_enabled.get_mut(idx) {
                                                                     *v = !*v;
                                                                 }
                                                                 this.update_preview_audio_mix();
@@ -1368,12 +1412,12 @@ impl RekaptrWorkspace {
                                     .on_click(cx.listener({
                                         let clip = clip.clone();
                                         move |this, _, window, cx| {
-                                            if let Some(old) = this.preview_video_source.take() {
+                                            if let Some(old) = this.clip_preview.player.take() {
                                                 window.drop_image(old.render_image()).ok();
                                             }
                                             this.clip_to_preview = Some(clip.clone());
-                                            this.last_preview_mouse_move = std::time::Instant::now();
-                                            this.show_preview_controls = true;
+                                            this.clip_preview.last_mouse_move = std::time::Instant::now();
+                                            this.clip_preview.show_controls = true;
                                             let url = clip.path.to_string_lossy().to_string();
                                             let d3d_device_ptr = this.app_state.d3d11_device.lock().as_ref().map(|h| h.0.0);
                                             if let Ok(video) = crate::video_player::Video::new_with_options(
@@ -1381,7 +1425,7 @@ impl RekaptrWorkspace {
                                                 crate::video_player::VideoOptions { source_name: Some("preview".to_string()), ..Default::default() },
                                                 d3d_device_ptr,
                                             ) {
-                                                this.preview_video_source = Some(video);
+                                                this.clip_preview.player = Some(video);
                                                 this.init_preview_audio_tracks();
                                             }
                                             cx.notify();

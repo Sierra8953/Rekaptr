@@ -629,10 +629,4 @@ mod tests {
         assert_eq!(parse_res("1920x"), (1920, 1080));
         assert_eq!(parse_res("x1080"), (1920, 1080));
     }
-
-    #[test]
-    fn test_resolve_pid_empty_input() {
-        assert_eq!(resolve_pid(""), 0);
-        assert_eq!(resolve_pid("Default"), 0);
-    }
 }

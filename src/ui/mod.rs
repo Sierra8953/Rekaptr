@@ -55,26 +55,8 @@ pub struct RekaptrWorkspace {
     /// click/drag can be mapped to a playback position.
     pub preview_bar_bounds: Bounds<Pixels>,
     pub toast_manager: Entity<adabraka_ui::overlays::toast::ToastManager>,
-    pub show_export_modal: bool,
-    pub export_stage: crate::state::ExportStage,
-    pub export_reencode: bool,
-    pub export_encoder: String,
-    pub export_bitrate: i32,
-    pub export_preset: String,
-    pub export_title_input: Entity<adabraka_ui::components::input_state::InputState>,
-    pub export_container: String,
-    pub export_audio_tracks: Vec<AudioRouting>,
-    /// Physical audio-stream index in the recorded file for each entry in
-    /// `export_audio_tracks`, or `None` if that track had no stream at record
-    /// time. Frozen when the export dialog opens so the dialog's include
-    /// toggles don't shift the ffmpeg `-map 0:a:N` indices.
-    pub export_track_stream_idx: Vec<Option<usize>>,
-    pub export_destination: std::path::PathBuf,
-    pub export_clip_duration: f64,
-    pub export_result_path: Option<std::path::PathBuf>,
-    /// Actual size (MB) of the exported file, read from disk after a successful
-    /// export. Falls back to the estimate on the Done screen when unset.
-    pub export_result_size_mb: Option<f32>,
+    /// Clip-export dialog state, grouped (see [`crate::ui::export::ExportForm`]).
+    pub export: crate::ui::export::ExportForm,
     // Add Source Form State
     pub form_title: String,
     pub form_hwnd: Option<u64>,
@@ -482,20 +464,7 @@ impl RekaptrWorkspace {
             scrubbing_progress: 0.0,
             preview_bar_bounds: Bounds::default(),
             toast_manager,
-            show_export_modal: false,
-            export_stage: crate::state::ExportStage::Configure,
-            export_reencode: false,
-            export_encoder: "h264_nvenc".to_string(),
-            export_bitrate: 50000,
-            export_preset: "p4".to_string(),
-            export_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            export_container: "mp4".to_string(),
-            export_audio_tracks: Vec::new(),
-            export_track_stream_idx: Vec::new(),
-            export_destination: std::path::PathBuf::new(),
-            export_clip_duration: 0.0,
-            export_result_path: None,
-            export_result_size_mb: None,
+            export: crate::ui::export::ExportForm::new(cx),
             form_title: "New Source".to_string(),
             form_hwnd: None,
             form_active_tab: 0,
@@ -1509,7 +1478,7 @@ impl RekaptrWorkspace {
             root = root.child(self.render_advanced_settings_dialog(&source, window, cx));
         }
 
-        if self.show_export_modal {
+        if self.export.modal_open {
             root = root.child(self.render_export_modal(window, cx));
         }
 

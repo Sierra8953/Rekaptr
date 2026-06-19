@@ -1413,7 +1413,7 @@ impl RekaptrWorkspace {
         };
         let team_id = team.id.clone();
         let auth = self.app_state.cloud_auth.clone();
-        let start_dir = self.export_destination.clone();
+        let start_dir = self.export.destination.clone();
         self.teams.error = None;
         cx.notify();
 

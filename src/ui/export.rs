@@ -8,6 +8,54 @@ use gpui::*;
 const SUCCESS: u32 = 0x22C55EFF;
 const SUCCESS_DIM: u32 = 0x22C55E40;
 
+/// Clip-export dialog state, grouped out of the `RekaptrWorkspace` god-object.
+/// (Named `ExportForm` to avoid colliding with [`crate::state::ExportState`],
+/// which is the shared cross-thread export progress/phase on `AppState`.)
+pub struct ExportForm {
+    /// Whether the export modal is open.
+    pub modal_open: bool,
+    pub stage: ExportStage,
+    pub reencode: bool,
+    pub encoder: String,
+    pub bitrate: i32,
+    pub preset: String,
+    pub title_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub container: String,
+    pub audio_tracks: Vec<crate::config::AudioRouting>,
+    /// Physical audio-stream index in the recorded file for each entry in
+    /// `audio_tracks`, or `None` if that track had no stream at record time.
+    /// Frozen when the dialog opens so the include toggles don't shift the
+    /// ffmpeg `-map 0:a:N` indices.
+    pub track_stream_idx: Vec<Option<usize>>,
+    pub destination: std::path::PathBuf,
+    pub clip_duration: f64,
+    pub result_path: Option<std::path::PathBuf>,
+    /// Actual size (MB) of the exported file, read from disk after a successful
+    /// export. Falls back to the estimate on the Done screen when unset.
+    pub result_size_mb: Option<f32>,
+}
+
+impl ExportForm {
+    pub fn new(cx: &mut Context<RekaptrWorkspace>) -> Self {
+        Self {
+            modal_open: false,
+            stage: ExportStage::Configure,
+            reencode: false,
+            encoder: "h264_nvenc".to_string(),
+            bitrate: 50000,
+            preset: "p4".to_string(),
+            title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            container: "mp4".to_string(),
+            audio_tracks: Vec::new(),
+            track_stream_idx: Vec::new(),
+            destination: std::path::PathBuf::new(),
+            clip_duration: 0.0,
+            result_path: None,
+            result_size_mb: None,
+        }
+    }
+}
+
 impl RekaptrWorkspace {
     /// Prepare export state (duration, audio-track snapshot + frozen stream
     /// mapping, destination, cleared title) from the current clip marks and
@@ -34,13 +82,13 @@ impl RekaptrWorkspace {
             .clone()
             .unwrap_or_else(|| "monitor".to_string());
 
-        self.export_clip_duration =
+        self.export.clip_duration =
             crate::utils::clip_duration_from_marks(&source_name, &in_mark, &out_mark).unwrap_or(0.0);
 
         // Snapshot the audio tracks for this source so the dialog can toggle them
         // independently. The order must match what perform_export maps to ffmpeg.
         let config = AppConfig::load();
-        self.export_audio_tracks = if source_name == "monitor" {
+        self.export.audio_tracks = if source_name == "monitor" {
             config.global_audio_tracks.clone()
         } else {
             config
@@ -55,9 +103,9 @@ impl RekaptrWorkspace {
         // stream for tracks that were enabled (see engine::generate_pipeline_string),
         // so streams are densely packed in enabled order. Capture that mapping now,
         // before the user can toggle tracks in the dialog.
-        self.export_track_stream_idx = {
+        self.export.track_stream_idx = {
             let mut phys = 0usize;
-            self.export_audio_tracks
+            self.export.audio_tracks
                 .iter()
                 .map(|t| {
                     if t.enabled {
@@ -72,11 +120,11 @@ impl RekaptrWorkspace {
         };
 
         let safe_title = crate::utils::clean_title(&source_name);
-        self.export_destination = crate::utils::get_storage_root()
+        self.export.destination = crate::utils::get_storage_root()
             .join("Clips")
             .join(&safe_title);
 
-        self.export_title_input
+        self.export.title_input
             .update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
         true
     }
@@ -85,10 +133,10 @@ impl RekaptrWorkspace {
         if !self.setup_export(window, cx) {
             return;
         }
-        self.export_stage = ExportStage::Configure;
-        self.export_result_path = None;
-        self.export_result_size_mb = None;
-        self.show_export_modal = true;
+        self.export.stage = ExportStage::Configure;
+        self.export.result_path = None;
+        self.export.result_size_mb = None;
+        self.export.modal_open = true;
         cx.notify();
     }
 
@@ -108,29 +156,29 @@ impl RekaptrWorkspace {
         if !self.setup_export(window, cx) {
             return;
         }
-        self.export_reencode = req.reencode;
-        self.export_encoder = req.encoder;
-        self.export_bitrate = req.bitrate;
-        self.export_container = req.container;
+        self.export.reencode = req.reencode;
+        self.export.encoder = req.encoder;
+        self.export.bitrate = req.bitrate;
+        self.export.container = req.container;
         // Apply the overlay's per-track include choices on top of the frozen
         // record-time stream mapping computed in setup_export.
         for (i, enabled) in req.audio_enabled.iter().enumerate() {
-            if let Some(t) = self.export_audio_tracks.get_mut(i) {
+            if let Some(t) = self.export.audio_tracks.get_mut(i) {
                 t.enabled = *enabled;
             }
         }
         if !req.title.trim().is_empty() {
-            self.export_title_input
+            self.export.title_input
                 .update(cx, |input, cx| input.set_value(SharedString::from(req.title), window, cx));
         }
         self.perform_export(window, cx);
     }
 
     fn close_export_modal(&mut self, cx: &mut Context<Self>) {
-        self.show_export_modal = false;
-        self.export_stage = ExportStage::Configure;
-        self.export_result_path = None;
-        self.export_result_size_mb = None;
+        self.export.modal_open = false;
+        self.export.stage = ExportStage::Configure;
+        self.export.result_path = None;
+        self.export.result_size_mb = None;
         cx.notify();
     }
 
@@ -179,7 +227,7 @@ impl RekaptrWorkspace {
             concat_path.display(), in_offset, out_offset
         );
 
-        let clips_dir = self.export_destination.clone();
+        let clips_dir = self.export.destination.clone();
         let _ = std::fs::create_dir_all(&clips_dir);
 
         let timestamp = std::time::SystemTime::now()
@@ -187,13 +235,13 @@ impl RekaptrWorkspace {
             .unwrap_or_default()
             .as_secs();
 
-        let title_text = self.export_title_input.read(cx).content().trim().to_string();
+        let title_text = self.export.title_input.read(cx).content().trim().to_string();
         let file_stem = if title_text.is_empty() {
             format!("clip_{}_{}", safe_title, timestamp)
         } else {
             crate::utils::clean_title(&title_text)
         };
-        let container = self.export_container.clone();
+        let container = self.export.container.clone();
         let output_path = clips_dir.join(format!("{}.{}", file_stem, container));
 
         let ffmpeg_path = crate::utils::get_ffmpeg_path();
@@ -212,14 +260,14 @@ impl RekaptrWorkspace {
         *self.app_state.export.phase.lock() = crate::state::ExportPhase::Exporting;
         *self.app_state.export.progress.lock() = 0.0;
 
-        let encoder = self.export_encoder.clone();
-        let bitrate = self.export_bitrate;
-        let preset = self.export_preset.clone();
-        let export_reencode = self.export_reencode;
-        let audio_tracks = self.export_audio_tracks.clone();
-        let track_stream_idx = self.export_track_stream_idx.clone();
+        let encoder = self.export.encoder.clone();
+        let bitrate = self.export.bitrate;
+        let preset = self.export.preset.clone();
+        let export_reencode = self.export.reencode;
+        let audio_tracks = self.export.audio_tracks.clone();
+        let track_stream_idx = self.export.track_stream_idx.clone();
 
-        self.export_stage = ExportStage::Exporting;
+        self.export.stage = ExportStage::Exporting;
         cx.notify();
 
         let app_state_for_progress = self.app_state.clone();
@@ -416,14 +464,14 @@ impl RekaptrWorkspace {
                                         this.clip_end = -1.0;
                                         this.clip_start_mark = None;
                                         this.clip_end_mark = None;
-                                        this.export_result_path = Some(output_path.clone());
-                                        this.export_result_size_mb = std::fs::metadata(&output_path)
+                                        this.export.result_path = Some(output_path.clone());
+                                        this.export.result_size_mb = std::fs::metadata(&output_path)
                                             .ok()
                                             .map(|m| m.len() as f32 / 1024.0 / 1024.0);
                                         // Invalidate cached source stats so the
                                         // dashboard's clip count refreshes.
                                         this.app_state.source_stats.clear();
-                                        this.export_stage = ExportStage::Done;
+                                        this.export.stage = ExportStage::Done;
                                         crate::overlay::send(
                                             &this.app_state,
                                             crate::overlay::OverlayEvent::ClipSaved {
@@ -444,7 +492,7 @@ impl RekaptrWorkspace {
                                             .find(|l| !l.trim().is_empty())
                                             .unwrap_or("FFmpeg returned an error.")
                                             .to_string();
-                                        this.export_stage = ExportStage::Configure;
+                                        this.export.stage = ExportStage::Configure;
                                         this.show_toast(
                                             SharedString::from("Export Failed"),
                                             Some(SharedString::from(err_summary)),
@@ -456,7 +504,7 @@ impl RekaptrWorkspace {
                                 }
                                 Err(e) => {
                                     log::error!("[Export] Failed to run FFmpeg: {}", e);
-                                    this.export_stage = ExportStage::Configure;
+                                    this.export.stage = ExportStage::Configure;
                                     this.show_toast(
                                         SharedString::from("FFmpeg Error"),
                                         Some(SharedString::from("Could not locate or run ffmpeg.exe")),
@@ -500,7 +548,7 @@ impl RekaptrWorkspace {
                     .flex()
                     .flex_col()
                     .child(self.render_export_header(&theme, cx))
-                    .child(match self.export_stage {
+                    .child(match self.export.stage {
                         ExportStage::Configure => self.render_export_configure(cx).into_any_element(),
                         ExportStage::Exporting => self.render_export_progress(cx).into_any_element(),
                         ExportStage::Done => self.render_export_done(cx).into_any_element(),
@@ -509,7 +557,7 @@ impl RekaptrWorkspace {
     }
 
     fn render_export_header(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let (label, icon) = match self.export_stage {
+        let (label, icon) = match self.export.stage {
             ExportStage::Configure => ("Export clip", "scissors"),
             ExportStage::Exporting => ("Exporting…", "download"),
             ExportStage::Done => ("Clip exported", "check"),
@@ -567,7 +615,7 @@ impl RekaptrWorkspace {
                             .gap_6()
                             .child(self.render_export_preview())
                             .child(self.render_export_mode_cards(cx))
-                            .when(self.export_reencode, |this| {
+                            .when(self.export.reencode, |this| {
                                 this.child(self.render_export_reencode_panel(cx))
                             })
                             .child(self.render_export_audio_panel(cx))
@@ -618,7 +666,7 @@ impl RekaptrWorkspace {
                             .text_xs()
                             .text_color(gpui::rgba(0xFAFAFAFF))
                             .font_weight(FontWeight::MEDIUM)
-                            .child(fmt_duration(self.export_clip_duration as f32)),
+                            .child(fmt_duration(self.export.clip_duration as f32)),
                     ),
             )
             .child(
@@ -626,13 +674,13 @@ impl RekaptrWorkspace {
                     .flex_1()
                     .gap_2()
                     .child(section_label("CLIP TITLE", &theme))
-                    .child(Input::new(&self.export_title_input).placeholder("Clutch 1v4 on Mirage"))
+                    .child(Input::new(&self.export.title_input).placeholder("Clutch 1v4 on Mirage"))
                     .child(
                         HStack::new()
                             .pt_2()
                             .gap_6()
                             .child(kv("Source", &source, &theme))
-                            .child(kv("Duration", &fmt_duration(self.export_clip_duration as f32), &theme))
+                            .child(kv("Duration", &fmt_duration(self.export.clip_duration as f32), &theme))
                             .child(kv("Estimated size", &format!("{:.1} MB", est), &theme)),
                     ),
             )
@@ -648,22 +696,22 @@ impl RekaptrWorkspace {
                     .gap_2()
                     .child(
                         Button::new("exp-mode-instant", "Instant copy")
-                            .variant(if !self.export_reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .variant(if !self.export.reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
                             .size(ButtonSize::Sm)
-                            .on_click(cx.listener(|this, _, _, cx| { this.export_reencode = false; cx.notify(); })),
+                            .on_click(cx.listener(|this, _, _, cx| { this.export.reencode = false; cx.notify(); })),
                     )
                     .child(
                         Button::new("exp-mode-reencode", "Re-encode")
-                            .variant(if self.export_reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .variant(if self.export.reencode { ButtonVariant::Default } else { ButtonVariant::Outline })
                             .size(ButtonSize::Sm)
-                            .on_click(cx.listener(|this, _, _, cx| { this.export_reencode = true; cx.notify(); })),
+                            .on_click(cx.listener(|this, _, _, cx| { this.export.reencode = true; cx.notify(); })),
                     ),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(theme.tokens.muted_foreground)
-                    .child(if self.export_reencode {
+                    .child(if self.export.reencode {
                         "Re-encodes the clip. Choose codec, quality and container."
                     } else {
                         "Lossless stream copy. Saves in under a second."
@@ -695,7 +743,7 @@ impl RekaptrWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.tokens.muted_foreground)
-                            .child(encoder_detail(&self.export_encoder)),
+                            .child(encoder_detail(&self.export.encoder)),
                     ),
             )
             .child(
@@ -714,7 +762,7 @@ impl RekaptrWorkspace {
                                         Button::new("exp-bit-dec", "-")
                                             .variant(ButtonVariant::Outline)
                                             .size(ButtonSize::Sm)
-                                            .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate - 1000).max(1000); cx.notify(); })),
+                                            .on_click(cx.listener(|this, _, _, cx| { this.export.bitrate = (this.export.bitrate - 1000).max(1000); cx.notify(); })),
                                     )
                                     .child(
                                         div()
@@ -722,13 +770,13 @@ impl RekaptrWorkspace {
                                             .text_center()
                                             .text_xs()
                                             .text_color(theme.tokens.muted_foreground)
-                                            .child(format!("{} kbps", self.export_bitrate)),
+                                            .child(format!("{} kbps", self.export.bitrate)),
                                     )
                                     .child(
                                         Button::new("exp-bit-inc", "+")
                                             .variant(ButtonVariant::Outline)
                                             .size(ButtonSize::Sm)
-                                            .on_click(cx.listener(|this, _, _, cx| { this.export_bitrate = (this.export_bitrate + 1000).min(100000); cx.notify(); })),
+                                            .on_click(cx.listener(|this, _, _, cx| { this.export.bitrate = (this.export.bitrate + 1000).min(100000); cx.notify(); })),
                                     ),
                             ),
                     )
@@ -756,7 +804,7 @@ impl RekaptrWorkspace {
 
     fn enc_chip(&self, label: &'static str, value: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let active = self.export_encoder == value;
+        let active = self.export.encoder == value;
         div()
             .id(SharedString::from(format!("exp-enc-{}", value)))
             .px_4()
@@ -770,7 +818,7 @@ impl RekaptrWorkspace {
             .text_sm()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                this.export_encoder = value.to_string();
+                this.export.encoder = value.to_string();
                 cx.notify();
             }))
             .child(label)
@@ -778,7 +826,7 @@ impl RekaptrWorkspace {
 
     fn qty_chip(&self, label: &'static str, bitrate: i32, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let active = self.export_bitrate == bitrate;
+        let active = self.export.bitrate == bitrate;
         div()
             .id(SharedString::from(format!("exp-q-{}", bitrate)))
             .flex_1()
@@ -794,7 +842,7 @@ impl RekaptrWorkspace {
             .text_sm()
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                this.export_bitrate = bitrate;
+                this.export.bitrate = bitrate;
                 cx.notify();
             }))
             .child(label)
@@ -802,7 +850,7 @@ impl RekaptrWorkspace {
 
     fn container_chip(&self, ext: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let active = self.export_container == ext;
+        let active = self.export.container == ext;
         div()
             .id(SharedString::from(format!("exp-ct-{}", ext)))
             .px_3()
@@ -816,7 +864,7 @@ impl RekaptrWorkspace {
             .border_color(if active { theme.tokens.primary } else { theme.tokens.border })
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                this.export_container = ext.to_string();
+                this.export.container = ext.to_string();
                 cx.notify();
             }))
             .child(ext.to_uppercase())
@@ -824,14 +872,14 @@ impl RekaptrWorkspace {
 
     fn render_export_audio_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        if self.export_audio_tracks.is_empty() {
+        if self.export.audio_tracks.is_empty() {
             return VStack::new()
                 .gap_2()
                 .child(section_label("AUDIO TRACKS", &theme))
                 .child(div().text_xs().text_color(theme.tokens.muted_foreground).child("No audio tracks configured for this source."));
         }
         let mut row = HStack::new().gap_6().flex_wrap();
-        for (idx, track) in self.export_audio_tracks.iter().enumerate() {
+        for (idx, track) in self.export.audio_tracks.iter().enumerate() {
             row = row.child(self.audio_toggle(idx, track, cx));
         }
         VStack::new()
@@ -860,7 +908,7 @@ impl RekaptrWorkspace {
                 enabled,
                 true,
                 move |this| {
-                    if let Some(t) = this.export_audio_tracks.get_mut(idx) {
+                    if let Some(t) = this.export.audio_tracks.get_mut(idx) {
                         t.enabled = !t.enabled;
                     }
                 },
@@ -882,7 +930,7 @@ impl RekaptrWorkspace {
 
     fn render_export_destination(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let dest = self.export_destination.to_string_lossy().to_string();
+        let dest = self.export.destination.to_string_lossy().to_string();
         VStack::new()
             .gap_2()
             .child(section_label("DESTINATION", &theme))
@@ -922,7 +970,7 @@ impl RekaptrWorkspace {
                 {
                     let p = path.path().to_path_buf();
                     let _ = view.update(&mut cx, |this, cx| {
-                        this.export_destination = p;
+                        this.export.destination = p;
                         cx.notify();
                     });
                 }
@@ -954,7 +1002,7 @@ impl RekaptrWorkspace {
                             .text_color(theme.tokens.muted_foreground)
                             .child(format!(
                                 "{} · {:.1} MB estimated",
-                                fmt_duration(self.export_clip_duration as f32),
+                                fmt_duration(self.export.clip_duration as f32),
                                 self.estimated_size_mb(),
                             )),
                     ),
@@ -1008,7 +1056,7 @@ impl RekaptrWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.tokens.muted_foreground)
-                            .child(if self.export_reencode {
+                            .child(if self.export.reencode {
                                 "Re-encoding with NVENC. This can take a moment…"
                             } else {
                                 "Stream-copying segments. Just a moment…"
@@ -1044,7 +1092,7 @@ impl RekaptrWorkspace {
     // ── Stage: Done ──────────────────────────────────────────────────────
     fn render_export_done(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let path = self.export_result_path.clone();
+        let path = self.export.result_path.clone();
         let filename = path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -1083,7 +1131,7 @@ impl RekaptrWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.tokens.muted_foreground)
-                            .child(format!("{} · {:.1} MB", fmt_duration(self.export_clip_duration as f32), self.export_result_size_mb.unwrap_or_else(|| self.estimated_size_mb()))),
+                            .child(format!("{} · {:.1} MB", fmt_duration(self.export.clip_duration as f32), self.export.result_size_mb.unwrap_or_else(|| self.estimated_size_mb()))),
                     ),
             )
             .child(
@@ -1122,7 +1170,7 @@ impl RekaptrWorkspace {
                             .icon(IconSource::Named("folder".into()))
                             .variant(ButtonVariant::Outline)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(p) = this.export_result_path.clone() {
+                                if let Some(p) = this.export.result_path.clone() {
                                     let _ = std::process::Command::new("explorer")
                                         .arg("/select,")
                                         .arg(&p)
@@ -1139,23 +1187,23 @@ impl RekaptrWorkspace {
     }
 
     fn estimated_size_mb(&self) -> f32 {
-        let kbps = if self.export_reencode {
-            self.export_bitrate as f32
+        let kbps = if self.export.reencode {
+            self.export.bitrate as f32
         } else {
             // Approximate source bitrate from the configured recording bitrate.
             AppConfig::load().global_video.bitrate_kbps as f32
         };
-        self.export_clip_duration as f32 * kbps / 8000.0
+        self.export.clip_duration as f32 * kbps / 8000.0
     }
 }
 
 // Reset re-encode config back to defaults after an export attempt completes.
 fn self_reset_encoder(this: &mut RekaptrWorkspace) {
-    this.export_reencode = false;
-    this.export_encoder = "h264_nvenc".to_string();
-    this.export_bitrate = 50000;
-    this.export_preset = "p4".to_string();
-    this.export_container = "mp4".to_string();
+    this.export.reencode = false;
+    this.export.encoder = "h264_nvenc".to_string();
+    this.export.bitrate = 50000;
+    this.export.preset = "p4".to_string();
+    this.export.container = "mp4".to_string();
 }
 
 fn section_label(text: &str, theme: &Theme) -> impl IntoElement {

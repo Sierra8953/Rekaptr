@@ -29,8 +29,8 @@ pub struct RekaptrWorkspace {
     pub app_state: Arc<AppState>,
     pub video_source: Option<Video>,
     pub selected_source: Option<String>,
-    pub show_add_source_modal: bool,
-    pub advanced_settings_source: Option<String>,
+    /// Add/Edit-Source dialog state, grouped (see [`crate::ui::add_source::AddSourceForm`]).
+    pub add_source: crate::ui::add_source::AddSourceForm,
     pub session_to_delete: Option<i32>,
     pub clip_to_delete: Option<crate::state::Clip>,
     pub clip_to_preview: Option<crate::state::Clip>,
@@ -51,36 +51,8 @@ pub struct RekaptrWorkspace {
     pub toast_manager: Entity<adabraka_ui::overlays::toast::ToastManager>,
     /// Clip-export dialog state, grouped (see [`crate::ui::export::ExportForm`]).
     pub export: crate::ui::export::ExportForm,
-    // Add Source Form State
-    pub form_title: String,
-    pub form_hwnd: Option<u64>,
-    pub form_active_tab: usize,
-    pub form_editing_track_index: Option<usize>,
-    pub form_encoder: String,
-    pub form_rate_control: i32, // 0: CQP, 1: VBR, 2: CBR
-    pub form_bitrate: i32,
-    pub form_cq: i32,
-    pub form_retention: i32,
-    pub form_resolution: String,
-    pub form_fps: i32,
-    pub form_gop: i32,
-    pub form_bframes: i32,
-    pub form_preset: String,
-    pub form_zero_latency: bool,
-    pub form_lookahead: bool,
-    pub form_lookahead_frames: i32,
-    pub form_spatial_aq: bool,
-    pub form_temporal_aq: bool,
-    pub form_audio_tracks: Vec<AudioRouting>,
-    pub form_auto_record: bool,
-    /// Per-game overlay override in the source dialog: None = default, Some(b) = forced.
-    pub form_overlay_enabled: Option<bool>,
-    pub form_target_process: Option<String>,
-    pub add_source_search_input: Entity<adabraka_ui::components::input_state::InputState>,
-    pub add_source_title_input: Entity<adabraka_ui::components::input_state::InputState>,
     /// Dashboard Sources-list state, grouped (see [`crate::ui::dashboard::SourcesState`]).
     pub sources: crate::ui::dashboard::SourcesState,
-    pub add_source_show_overrides: bool,
     /// Playback audio-mixer state, grouped (see [`crate::ui::dashboard::MixerState`]).
     pub mixer: crate::ui::dashboard::MixerState,
     pub last_notified_position: f64,
@@ -361,8 +333,7 @@ impl RekaptrWorkspace {
             app_state,
             video_source: None,
             selected_source: None,
-            show_add_source_modal: false,
-            advanced_settings_source: None,
+            add_source: crate::ui::add_source::AddSourceForm::new(&config, cx),
             session_to_delete: None,
             clip_to_delete: None,
             clip_to_preview: None,
@@ -378,33 +349,7 @@ impl RekaptrWorkspace {
             preview_bar_bounds: Bounds::default(),
             toast_manager,
             export: crate::ui::export::ExportForm::new(cx),
-            form_title: "New Source".to_string(),
-            form_hwnd: None,
-            form_active_tab: 0,
-            form_editing_track_index: Option::None,
-            form_encoder: config.global_video.encoder.clone(),
-            form_rate_control: config.global_video.rate_control_index,
-            form_bitrate: config.global_video.bitrate_kbps,
-            form_cq: config.global_video.cq_level,
-            form_retention: config.global_video.retention_minutes,
-            form_resolution: config.global_video.resolution.clone(),
-            form_fps: config.global_video.fps,
-            form_gop: config.global_video.gop_size,
-            form_bframes: config.global_video.bframes,
-            form_preset: config.global_video.preset.clone(),
-            form_zero_latency: config.global_video.zero_latency,
-            form_lookahead: config.global_video.lookahead,
-            form_lookahead_frames: config.global_video.lookahead_frames,
-            form_spatial_aq: config.global_video.spatial_aq,
-            form_temporal_aq: config.global_video.temporal_aq,
-            form_audio_tracks: config.global_audio_tracks.clone(),
-            form_auto_record: false,
-            form_overlay_enabled: None,
-            form_target_process: None,
-            add_source_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            add_source_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             sources: crate::ui::dashboard::SourcesState::new(cx),
-            add_source_show_overrides: false,
             mixer: crate::ui::dashboard::MixerState::new(),
             last_notified_position: 0.0,
             is_refreshing_windows: false,
@@ -1223,11 +1168,11 @@ impl RekaptrWorkspace {
             root = root.child(self.render_setup_wizard(window, cx));
         }
 
-        if self.show_add_source_modal {
+        if self.add_source.modal_open {
             root = root.child(self.render_add_source_modal(window, cx));
         }
 
-        if let Some(source) = &self.advanced_settings_source {
+        if let Some(source) = &self.add_source.advanced_source {
             root = root.child(self.render_advanced_settings_dialog(&source, window, cx));
         }
 

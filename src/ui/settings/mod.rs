@@ -404,7 +404,7 @@ impl RekaptrWorkspace {
         let theme = use_theme();
         let source_name = source.to_string();
         let is_monitor = source_name == "monitor";
-        let active_tab = self.form_active_tab;
+        let active_tab = self.add_source.active_tab;
         let windows = self.app_state.available_windows.lock().clone();
 
         // ── Tab body ────────────────────────────────────────────────
@@ -413,56 +413,56 @@ impl RekaptrWorkspace {
             0 => {
                 let mut quality = VStack::new().child(ss_segmented_row(
                     &theme, cx, "rc", "Rate control",
-                    if self.form_rate_control == 0 { "0" } else { "1" },
+                    if self.add_source.rate_control == 0 { "0" } else { "1" },
                     &[("CQP", "0"), ("VBR", "1")],
-                    |this, v| { this.form_rate_control = if v == "1" { 1 } else { 0 }; },
+                    |this, v| { this.add_source.rate_control = if v == "1" { 1 } else { 0 }; },
                 ));
-                if self.form_rate_control == 0 {
+                if self.add_source.rate_control == 0 {
                     quality = quality.child(ss_stepper_row(
                         &theme, cx, "cq", "Quality (CQ)",
                         Some("Lower is sharper. 18–24 is the sweet spot."),
-                        self.form_cq, 0, 51, 1, |this, v| this.form_cq = v));
+                        self.add_source.cq, 0, 51, 1, |this, v| this.add_source.cq = v));
                 } else {
                     quality = quality.child(ss_stepper_row(
                         &theme, cx, "br", "Bitrate (kbps)", None,
-                        self.form_bitrate, 1000, 100_000, 1000, |this, v| this.form_bitrate = v));
+                        self.add_source.bitrate, 1000, 100_000, 1000, |this, v| this.add_source.bitrate = v));
                 }
 
                 VStack::new()
                     .gap_4()
                     .child(ss_card(&theme, "Output", VStack::new()
-                        .child(ss_segmented_row(&theme, cx, "enc", "Encoder", &self.form_encoder,
+                        .child(ss_segmented_row(&theme, cx, "enc", "Encoder", &self.add_source.encoder,
                             &[("HEVC", "nvh265enc"), ("AV1", "nvav1enc"), ("H.264", "nvh264enc")],
                             |this, v| {
-                                this.form_encoder = v;
-                                if this.form_encoder != "nvav1enc" { this.form_cq = this.form_cq.min(51); }
+                                this.add_source.encoder = v;
+                                if this.add_source.encoder != "nvav1enc" { this.add_source.cq = this.add_source.cq.min(51); }
                             }))
-                        .child(ss_segmented_row(&theme, cx, "res", "Resolution", &self.form_resolution,
+                        .child(ss_segmented_row(&theme, cx, "res", "Resolution", &self.add_source.resolution,
                             &[("4K", "3840x2160"), ("1440p", "2560x1440"), ("1080p", "1920x1080"), ("720p", "1280x720")],
-                            |this, v| this.form_resolution = v))
-                        .child(ss_segmented_row(&theme, cx, "fps", "Frame rate", &self.form_fps.to_string(),
+                            |this, v| this.add_source.resolution = v))
+                        .child(ss_segmented_row(&theme, cx, "fps", "Frame rate", &self.add_source.fps.to_string(),
                             &[("30", "30"), ("60", "60"), ("120", "120"), ("144", "144")],
-                            |this, v| { if let Ok(n) = v.parse::<i32>() { this.form_fps = n; } }))))
+                            |this, v| { if let Ok(n) = v.parse::<i32>() { this.add_source.fps = n; } }))))
                     .child(ss_card(&theme, "Quality", quality))
                     .child(ss_card(&theme, "Replay buffer", VStack::new().child(ss_stepper_row(
                         &theme, cx, "ret", "Retention", Some("minutes kept in memory"),
-                        self.form_retention, 1, 600, 1, |this, v| this.form_retention = v))))
+                        self.add_source.retention, 1, 600, 1, |this, v| this.add_source.retention = v))))
                     .into_any_element()
             }
 
             // Audio
             1 => {
-                if let Some(track_idx) = self.form_editing_track_index {
-                    let track_name = self.form_audio_tracks[track_idx].name.clone();
+                if let Some(track_idx) = self.add_source.editing_track_index {
+                    let track_name = self.add_source.audio_tracks[track_idx].name.clone();
                     ss_card(&theme, "App routing", VStack::new()
                         .gap_3()
                         .child(
                             HStack::new().justify_between().items_center()
                                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(theme.tokens.foreground).child(format!("Select apps for {}", track_name)))
-                                .child(Button::new("back-to-tracks", "Back").variant(ButtonVariant::Ghost).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.form_editing_track_index = None; cx.notify(); })))
+                                .child(Button::new("back-to-tracks", "Back").variant(ButtonVariant::Ghost).size(ButtonSize::Sm).on_click(cx.listener(|this, _, _, cx| { this.add_source.editing_track_index = None; cx.notify(); })))
                         )
                         .child({
-                            let selected_apps = self.form_audio_tracks[track_idx].app_targets.clone();
+                            let selected_apps = self.add_source.audio_tracks[track_idx].app_targets.clone();
                             if selected_apps.is_empty() {
                                 div().text_xs().text_color(theme.tokens.muted_foreground)
                                     .child("No apps selected yet. Pick from the list below.")
@@ -478,7 +478,7 @@ impl RekaptrWorkspace {
                                             .text_color(theme.tokens.muted_foreground)
                                             .hover(|s| s.text_color(theme.tokens.foreground))
                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
-                                                this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
+                                                this.add_source.audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
                                                 cx.notify();
                                             }))
                                             .child(Icon::new(IconSource::Named("x".into())).size(px(12.0)).color(theme.tokens.muted_foreground.into())))
@@ -490,7 +490,7 @@ impl RekaptrWorkspace {
                                 VStack::new().gap_1().children(
                                     windows.iter().map(|win| {
                                         let proc_name = win.process_name.clone();
-                                        let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
+                                        let is_selected = self.add_source.audio_tracks[track_idx].app_targets.contains(&proc_name);
                                         let proc_for_click = proc_name.clone();
                                         HStack::new().justify_between().items_center().px_2().py_1p5().rounded_md()
                                             .bg(if is_selected { theme.tokens.accent } else { theme.tokens.card })
@@ -501,8 +501,8 @@ impl RekaptrWorkspace {
                                                 .variant(if is_selected { ButtonVariant::Destructive } else { ButtonVariant::Outline })
                                                 .size(ButtonSize::Sm)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    if is_selected { this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click); }
-                                                    else { this.form_audio_tracks[track_idx].app_targets.push(proc_for_click.clone()); }
+                                                    if is_selected { this.add_source.audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click); }
+                                                    else { this.add_source.audio_tracks[track_idx].app_targets.push(proc_for_click.clone()); }
                                                     cx.notify();
                                                 })))
                                     })
@@ -511,7 +511,7 @@ impl RekaptrWorkspace {
                         )).into_any_element()
                 } else {
                     let mut list = VStack::new().gap_2();
-                    for (i, track) in self.form_audio_tracks.iter().enumerate() {
+                    for (i, track) in self.add_source.audio_tracks.iter().enumerate() {
                         let enabled = track.enabled;
                         let source_type = track.source_type.clone();
 
@@ -522,7 +522,7 @@ impl RekaptrWorkspace {
                                     .gap_3()
                                     .items_center()
                                     .child(ss_switch(&theme, cx, SharedString::from(format!("trk-en-{}", i)), enabled, move |this| {
-                                        this.form_audio_tracks[i].enabled = !this.form_audio_tracks[i].enabled;
+                                        this.add_source.audio_tracks[i].enabled = !this.add_source.audio_tracks[i].enabled;
                                     }))
                                     .child(div().w(px(64.0)).text_sm().font_weight(FontWeight::SEMIBOLD)
                                         .text_color(if enabled { theme.tokens.foreground } else { theme.tokens.muted_foreground })
@@ -557,7 +557,7 @@ impl RekaptrWorkspace {
                                                 .on_click(move |_, _, cx| {
                                                     let id_clone = id_clone.clone();
                                                     let _ = view_handle.update(cx, move |this, cx| {
-                                                        this.form_audio_tracks[i].device_name = id_clone;
+                                                        this.add_source.audio_tracks[i].device_name = id_clone;
                                                         cx.notify();
                                                     });
                                                 })
@@ -575,7 +575,7 @@ impl RekaptrWorkspace {
                                     .icon(IconSource::Named("chevron-right".into()))
                                     .variant(ButtonVariant::Outline)
                                     .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(move |this, _, _, cx| { this.form_editing_track_index = Some(i); cx.notify(); }))
+                                    .on_click(cx.listener(move |this, _, _, cx| { this.add_source.editing_track_index = Some(i); cx.notify(); }))
                             );
                         }
 
@@ -594,9 +594,9 @@ impl RekaptrWorkspace {
                     col = col.child(ss_card(&theme, "Automation", VStack::new().child(ss_toggle_row(
                         &theme, cx, "auto-rec", "Auto-record when detected",
                         Some("Automatically start recording when this game is detected."),
-                        self.form_auto_record, |this| this.form_auto_record = !this.form_auto_record))));
+                        self.add_source.auto_record, |this| this.add_source.auto_record = !this.add_source.auto_record))));
 
-                    let ov_key = match self.form_overlay_enabled {
+                    let ov_key = match self.add_source.overlay_enabled {
                         None => "def",
                         Some(true) => "on",
                         Some(false) => "off",
@@ -605,7 +605,7 @@ impl RekaptrWorkspace {
                         &theme, cx, "ov-game", "Overlay for this game",
                         ov_key,
                         &[("Default", "def"), ("On", "on"), ("Off", "off")],
-                        |this, v| this.form_overlay_enabled = match v.as_str() {
+                        |this, v| this.add_source.overlay_enabled = match v.as_str() {
                             "on" => Some(true),
                             "off" => Some(false),
                             _ => None,
@@ -615,22 +615,22 @@ impl RekaptrWorkspace {
                 }
                 col = col
                     .child(ss_card(&theme, "Encoder preset", VStack::new().child(ss_segmented_row(
-                        &theme, cx, "pre", "Preset", &self.form_preset,
+                        &theme, cx, "pre", "Preset", &self.add_source.preset,
                         &[("P1", "p1"), ("P4", "p4"), ("P5", "p5"), ("P7", "p7")],
-                        |this, v| this.form_preset = v))))
+                        |this, v| this.add_source.preset = v))))
                     .child(ss_card(&theme, "Quality suite", VStack::new()
                         .child(Tooltip::new("Disables B-frames and reduces latency. Essential for real-time monitoring.").placement(TooltipPlacement::Left)
                             .child(ss_toggle_row(&theme, cx, "opt-zl", "Zero latency", None,
-                                self.form_zero_latency, |this| this.form_zero_latency = !this.form_zero_latency)))
+                                self.add_source.zero_latency, |this| this.add_source.zero_latency = !this.add_source.zero_latency)))
                         .child(Tooltip::new("Enables frame lookahead. Improves compression efficiency at the cost of some latency.").placement(TooltipPlacement::Left)
                             .child(ss_toggle_row(&theme, cx, "opt-la", "Lookahead", None,
-                                self.form_lookahead, |this| this.form_lookahead = !this.form_lookahead)))
+                                self.add_source.lookahead, |this| this.add_source.lookahead = !this.add_source.lookahead)))
                         .child(Tooltip::new("Spatial Adaptive Quantization. Improves quality in low-detail areas by redistributing bitrate.").placement(TooltipPlacement::Left)
                             .child(ss_toggle_row(&theme, cx, "opt-saq", "Spatial AQ", None,
-                                self.form_spatial_aq, |this| this.form_spatial_aq = !this.form_spatial_aq)))
+                                self.add_source.spatial_aq, |this| this.add_source.spatial_aq = !this.add_source.spatial_aq)))
                         .child(Tooltip::new("Temporal Adaptive Quantization. Improves quality in complex moving scenes.").placement(TooltipPlacement::Left)
                             .child(ss_toggle_row(&theme, cx, "opt-taq", "Temporal AQ", None,
-                                self.form_temporal_aq, |this| this.form_temporal_aq = !this.form_temporal_aq)))));
+                                self.add_source.temporal_aq, |this| this.add_source.temporal_aq = !this.add_source.temporal_aq)))));
                 col.into_any_element()
             }
 
@@ -647,7 +647,7 @@ impl RekaptrWorkspace {
             .items_center()
             .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                this.advanced_settings_source = None;
+                this.add_source.advanced_source = None;
                 cx.notify();
             }))
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -704,7 +704,7 @@ impl RekaptrWorkspace {
                                     .icon(IconSource::Named("x".into()))
                                     .variant(ButtonVariant::Ghost)
                                     .size(ButtonSize::Sm)
-                                    .on_click(cx.listener(|this, _, _, cx| { this.advanced_settings_source = None; cx.notify(); })),
+                                    .on_click(cx.listener(|this, _, _, cx| { this.add_source.advanced_source = None; cx.notify(); })),
                             ),
                     )
                     // Tabs
@@ -753,7 +753,7 @@ impl RekaptrWorkspace {
                                             }
                                             if let Some(id) = session_id_to_remove {
                                                 this.session_to_delete = Some(id);
-                                                this.advanced_settings_source = None;
+                                                this.add_source.advanced_source = None;
                                                 cx.notify();
                                             }
                                         }))
@@ -768,7 +768,7 @@ impl RekaptrWorkspace {
                                     .child(
                                         Button::new("cancel-settings", "Cancel")
                                             .variant(ButtonVariant::Ghost)
-                                            .on_click(cx.listener(|this, _, _, cx| { this.advanced_settings_source = None; cx.notify(); })),
+                                            .on_click(cx.listener(|this, _, _, cx| { this.add_source.advanced_source = None; cx.notify(); })),
                                     )
                                     .child(
                                         Button::new("save-settings", "Save changes")
@@ -777,52 +777,52 @@ impl RekaptrWorkspace {
                                                 let mut config = crate::config::AppConfig::load();
                                                 if source_name == "monitor" {
                                                     config.global_video = VideoSettings {
-                                                        encoder: this.form_encoder.clone(),
-                                                        rate_control_index: this.form_rate_control,
-                                                        bitrate_kbps: this.form_bitrate,
-                                                        cq_level: this.form_cq,
-                                                        resolution: this.form_resolution.clone(),
-                                                        fps: this.form_fps,
-                                                        retention_minutes: this.form_retention,
-                                                        gop_size: this.form_gop,
-                                                        bframes: this.form_bframes,
-                                                        preset: this.form_preset.clone(),
-                                                        zero_latency: this.form_zero_latency,
-                                                        lookahead: this.form_lookahead,
-                                                        lookahead_frames: this.form_lookahead_frames,
-                                                        spatial_aq: this.form_spatial_aq,
-                                                        temporal_aq: this.form_temporal_aq,
+                                                        encoder: this.add_source.encoder.clone(),
+                                                        rate_control_index: this.add_source.rate_control,
+                                                        bitrate_kbps: this.add_source.bitrate,
+                                                        cq_level: this.add_source.cq,
+                                                        resolution: this.add_source.resolution.clone(),
+                                                        fps: this.add_source.fps,
+                                                        retention_minutes: this.add_source.retention,
+                                                        gop_size: this.add_source.gop,
+                                                        bframes: this.add_source.bframes,
+                                                        preset: this.add_source.preset.clone(),
+                                                        zero_latency: this.add_source.zero_latency,
+                                                        lookahead: this.add_source.lookahead,
+                                                        lookahead_frames: this.add_source.lookahead_frames,
+                                                        spatial_aq: this.add_source.spatial_aq,
+                                                        temporal_aq: this.add_source.temporal_aq,
                                                         artwork_path: None,
                                                     };
-                                                    config.global_audio_tracks = this.form_audio_tracks.clone();
+                                                    config.global_audio_tracks = this.add_source.audio_tracks.clone();
                                                 } else {
                                                     if let Some(settings) = config.game_registry.get_mut(&source_name) {
                                                         settings.video_overrides = Some(VideoSettings {
-                                                            encoder: this.form_encoder.clone(),
-                                                            rate_control_index: this.form_rate_control,
-                                                            bitrate_kbps: this.form_bitrate,
-                                                            cq_level: this.form_cq,
-                                                            resolution: this.form_resolution.clone(),
-                                                            fps: this.form_fps,
-                                                            retention_minutes: this.form_retention,
-                                                            gop_size: this.form_gop,
-                                                            bframes: this.form_bframes,
-                                                            preset: this.form_preset.clone(),
-                                                            zero_latency: this.form_zero_latency,
-                                                            lookahead: this.form_lookahead,
-                                                            lookahead_frames: this.form_lookahead_frames,
-                                                            spatial_aq: this.form_spatial_aq,
-                                                            temporal_aq: this.form_temporal_aq,
+                                                            encoder: this.add_source.encoder.clone(),
+                                                            rate_control_index: this.add_source.rate_control,
+                                                            bitrate_kbps: this.add_source.bitrate,
+                                                            cq_level: this.add_source.cq,
+                                                            resolution: this.add_source.resolution.clone(),
+                                                            fps: this.add_source.fps,
+                                                            retention_minutes: this.add_source.retention,
+                                                            gop_size: this.add_source.gop,
+                                                            bframes: this.add_source.bframes,
+                                                            preset: this.add_source.preset.clone(),
+                                                            zero_latency: this.add_source.zero_latency,
+                                                            lookahead: this.add_source.lookahead,
+                                                            lookahead_frames: this.add_source.lookahead_frames,
+                                                            spatial_aq: this.add_source.spatial_aq,
+                                                            temporal_aq: this.add_source.temporal_aq,
                                                             artwork_path: None,
                                                         });
-                                                        settings.audio_routing = Some(this.form_audio_tracks.clone());
-                                                        settings.retention_minutes = this.form_retention;
-                                                        settings.auto_record = this.form_auto_record;
-                                                        settings.overlay_enabled = this.form_overlay_enabled;
+                                                        settings.audio_routing = Some(this.add_source.audio_tracks.clone());
+                                                        settings.retention_minutes = this.add_source.retention;
+                                                        settings.auto_record = this.add_source.auto_record;
+                                                        settings.overlay_enabled = this.add_source.overlay_enabled;
                                                     }
                                                 }
                                                 config.save();
-                                                this.advanced_settings_source = None;
+                                                this.add_source.advanced_source = None;
                                                 this.show_toast("Settings Saved", Some("Source overrides have been updated."), adabraka_ui::overlays::toast::ToastVariant::Success, window, cx);
                                                 cx.notify();
                                             })),
@@ -1150,8 +1150,8 @@ fn ss_tab(
         .border_b_2()
         .border_color(if active { theme.tokens.primary } else { gpui::transparent_black() })
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.form_active_tab = index;
-            this.form_editing_track_index = None;
+            this.add_source.active_tab = index;
+            this.add_source.editing_track_index = None;
             cx.notify();
         }))
         .child(Icon::new(IconSource::Named(icon.into()))
@@ -1329,7 +1329,7 @@ fn ss_source_pill(
         .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
         .hover(|s| s.text_color(theme.tokens.foreground))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.form_audio_tracks[idx].source_type = label.to_string();
+            this.add_source.audio_tracks[idx].source_type = label.to_string();
             cx.notify();
         }))
         .child(label)

@@ -7,6 +7,78 @@ use crate::ui::RekaptrWorkspace;
 use crate::state::GameSession;
 use crate::config::{AudioRouting, GameSettings};
 
+/// Add/Edit-Source dialog state, grouped out of the `RekaptrWorkspace`
+/// god-object: the per-source capture settings being edited plus the dialog's
+/// own widgets (search/title inputs, tab, overrides toggle).
+pub struct AddSourceForm {
+    /// Whether the Add Source modal is open.
+    pub modal_open: bool,
+    /// The source whose advanced settings are being edited (`None` = new source).
+    pub advanced_source: Option<String>,
+    pub title: String,
+    pub hwnd: Option<u64>,
+    pub active_tab: usize,
+    pub editing_track_index: Option<usize>,
+    pub encoder: String,
+    pub rate_control: i32, // 0: CQP, 1: VBR, 2: CBR
+    pub bitrate: i32,
+    pub cq: i32,
+    pub retention: i32,
+    pub resolution: String,
+    pub fps: i32,
+    pub gop: i32,
+    pub bframes: i32,
+    pub preset: String,
+    pub zero_latency: bool,
+    pub lookahead: bool,
+    pub lookahead_frames: i32,
+    pub spatial_aq: bool,
+    pub temporal_aq: bool,
+    pub audio_tracks: Vec<AudioRouting>,
+    pub auto_record: bool,
+    /// Per-game overlay override: None = default, Some(b) = forced.
+    pub overlay_enabled: Option<bool>,
+    pub target_process: Option<String>,
+    pub search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub title_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub show_overrides: bool,
+}
+
+impl AddSourceForm {
+    pub fn new(config: &crate::config::AppConfig, cx: &mut Context<RekaptrWorkspace>) -> Self {
+        Self {
+            modal_open: false,
+            advanced_source: None,
+            title: "New Source".to_string(),
+            hwnd: None,
+            active_tab: 0,
+            editing_track_index: None,
+            encoder: config.global_video.encoder.clone(),
+            rate_control: config.global_video.rate_control_index,
+            bitrate: config.global_video.bitrate_kbps,
+            cq: config.global_video.cq_level,
+            retention: config.global_video.retention_minutes,
+            resolution: config.global_video.resolution.clone(),
+            fps: config.global_video.fps,
+            gop: config.global_video.gop_size,
+            bframes: config.global_video.bframes,
+            preset: config.global_video.preset.clone(),
+            zero_latency: config.global_video.zero_latency,
+            lookahead: config.global_video.lookahead,
+            lookahead_frames: config.global_video.lookahead_frames,
+            spatial_aq: config.global_video.spatial_aq,
+            temporal_aq: config.global_video.temporal_aq,
+            audio_tracks: config.global_audio_tracks.clone(),
+            auto_record: false,
+            overlay_enabled: None,
+            target_process: None,
+            search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            show_overrides: false,
+        }
+    }
+}
+
 impl RekaptrWorkspace {
     pub fn render_add_source_modal(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
@@ -114,7 +186,7 @@ impl RekaptrWorkspace {
 
     // ── Section 1: Source picker ────────────────────────────────────
     fn render_source_section(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let q = self.add_source_search_input.read(cx).content().to_lowercase();
+        let q = self.add_source.search_input.read(cx).content().to_lowercase();
         let windows = self.app_state.available_windows.lock().clone();
         let filtered: Vec<_> = windows
             .into_iter()
@@ -169,7 +241,7 @@ impl RekaptrWorkspace {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().child(
-                        Input::new(&self.add_source_search_input).placeholder("Search windows..."),
+                        Input::new(&self.add_source.search_input).placeholder("Search windows..."),
                     ))
                     .child(
                         Button::new("refresh-wins", "")
@@ -200,7 +272,7 @@ impl RekaptrWorkspace {
         process: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let selected = self.form_hwnd == Some(hwnd);
+        let selected = self.add_source.hwnd == Some(hwnd);
         let title_owned = title.to_string();
         let process_owned = process.to_string();
         let title_for_click = title_owned.clone();
@@ -221,11 +293,11 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
-                    this.form_hwnd = Some(hwnd);
-                    this.form_title = title_for_click.clone();
-                    this.form_target_process = Some(process_for_click.clone());
+                    this.add_source.hwnd = Some(hwnd);
+                    this.add_source.title = title_for_click.clone();
+                    this.add_source.target_process = Some(process_for_click.clone());
                     let new_title = title_for_click.clone();
-                    this.add_source_title_input.update(cx, |input, cx| {
+                    this.add_source.title_input.update(cx, |input, cx| {
                         input.set_value(SharedString::from(new_title), window, cx);
                     });
                     cx.notify();
@@ -275,7 +347,7 @@ impl RekaptrWorkspace {
 
     // ── Section 2: Details ──────────────────────────────────────────
     fn render_details_section(&self, theme: &Theme, _cx: &mut Context<Self>) -> impl IntoElement {
-        if self.form_hwnd.is_none() {
+        if self.add_source.hwnd.is_none() {
             return VStack::new()
                 .gap_2()
                 .child(section_label(theme, "DETAILS"))
@@ -294,7 +366,7 @@ impl RekaptrWorkspace {
                 .into_any_element();
         }
 
-        let process_label = self.form_target_process.clone().unwrap_or_default();
+        let process_label = self.add_source.target_process.clone().unwrap_or_default();
 
         VStack::new()
             .gap_2()
@@ -333,7 +405,7 @@ impl RekaptrWorkspace {
                                     .text_color(theme.tokens.muted_foreground)
                                     .child("TITLE"),
                             )
-                            .child(Input::new(&self.add_source_title_input).placeholder("Title"))
+                            .child(Input::new(&self.add_source.title_input).placeholder("Title"))
                             .child(
                                 div()
                                     .text_xs()
@@ -360,7 +432,7 @@ impl RekaptrWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.tokens.muted_foreground)
-                            .child(if self.add_source_show_overrides { "Overriding globals" } else { "Inheriting globals" }),
+                            .child(if self.add_source.show_overrides { "Overriding globals" } else { "Inheriting globals" }),
                     ),
             )
             .child(
@@ -375,7 +447,7 @@ impl RekaptrWorkspace {
                     .bg(theme.tokens.background)
                     .child(
                         Icon::new(IconSource::Named(
-                            if self.add_source_show_overrides { "sliders-horizontal" } else { "check-circle" }.into(),
+                            if self.add_source.show_overrides { "sliders-horizontal" } else { "check-circle" }.into(),
                         ))
                         .size(px(16.0))
                         .color(theme.tokens.muted_foreground.into()),
@@ -391,31 +463,31 @@ impl RekaptrWorkspace {
                     .child(
                         Button::new(
                             "toggle-override",
-                            if self.add_source_show_overrides { "Use defaults" } else { "Override defaults" },
+                            if self.add_source.show_overrides { "Use defaults" } else { "Override defaults" },
                         )
-                        .variant(if self.add_source_show_overrides { ButtonVariant::Ghost } else { ButtonVariant::Outline })
+                        .variant(if self.add_source.show_overrides { ButtonVariant::Ghost } else { ButtonVariant::Outline })
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                            this.add_source_show_overrides = !this.add_source_show_overrides;
+                            this.add_source.show_overrides = !this.add_source.show_overrides;
                             cx.notify();
                         })),
                     ),
             );
 
-        if self.add_source_show_overrides {
+        if self.add_source.show_overrides {
             body = body.child(self.render_override_form(theme, cx));
         }
         body
     }
 
     fn settings_summary(&self) -> String {
-        let res = self.form_resolution.replace('x', "×");
-        let quality = if self.form_rate_control == 0 {
-            format!("CQ {}", self.form_cq)
+        let res = self.add_source.resolution.replace('x', "×");
+        let quality = if self.add_source.rate_control == 0 {
+            format!("CQ {}", self.add_source.cq)
         } else {
-            format!("{} kbps", self.form_bitrate)
+            format!("{} kbps", self.add_source.bitrate)
         };
-        let encoder = match self.form_encoder.as_str() {
+        let encoder = match self.add_source.encoder.as_str() {
             "nvh265enc" => "HEVC",
             "nvh264enc" => "H.264",
             "nvav1enc" => "AV1",
@@ -423,7 +495,7 @@ impl RekaptrWorkspace {
         };
         format!(
             "{} · {} fps · {} · {} · {} min",
-            res, self.form_fps, encoder, quality, self.form_retention
+            res, self.add_source.fps, encoder, quality, self.add_source.retention
         )
     }
 
@@ -434,9 +506,9 @@ impl RekaptrWorkspace {
                 .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
                 .size(ButtonSize::Sm)
                 .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                    this.form_encoder = value_owned.clone();
-                    if this.form_encoder != "nvav1enc" {
-                        this.form_cq = this.form_cq.min(51);
+                    this.add_source.encoder = value_owned.clone();
+                    if this.add_source.encoder != "nvav1enc" {
+                        this.add_source.cq = this.add_source.cq.min(51);
                     }
                     cx.notify();
                 }))
@@ -447,7 +519,7 @@ impl RekaptrWorkspace {
                 .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
                 .size(ButtonSize::Sm)
                 .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                    this.form_resolution = value_owned.clone();
+                    this.add_source.resolution = value_owned.clone();
                     cx.notify();
                 }))
         };
@@ -456,7 +528,7 @@ impl RekaptrWorkspace {
                 .variant(if current == value { ButtonVariant::Default } else { ButtonVariant::Outline })
                 .size(ButtonSize::Sm)
                 .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                    this.form_fps = value;
+                    this.add_source.fps = value;
                     cx.notify();
                 }))
         };
@@ -470,61 +542,61 @@ impl RekaptrWorkspace {
             .border_color(theme.tokens.border)
             .child(field_row(theme, "Encoder",
                 HStack::new().gap_2()
-                    .child(enc_btn("enc-hevc", "HEVC", "nvh265enc", &self.form_encoder, cx))
-                    .child(enc_btn("enc-av1",  "AV1",  "nvav1enc",  &self.form_encoder, cx))
-                    .child(enc_btn("enc-h264", "H.264","nvh264enc", &self.form_encoder, cx))
+                    .child(enc_btn("enc-hevc", "HEVC", "nvh265enc", &self.add_source.encoder, cx))
+                    .child(enc_btn("enc-av1",  "AV1",  "nvav1enc",  &self.add_source.encoder, cx))
+                    .child(enc_btn("enc-h264", "H.264","nvh264enc", &self.add_source.encoder, cx))
                     .into_any_element()
             ))
             .child(field_row(theme, "Resolution",
                 HStack::new().gap_2()
-                    .child(res_btn("res-4k",    "4K",    "3840x2160", &self.form_resolution, cx))
-                    .child(res_btn("res-1440p", "1440p", "2560x1440", &self.form_resolution, cx))
-                    .child(res_btn("res-1080p", "1080p", "1920x1080", &self.form_resolution, cx))
-                    .child(res_btn("res-720p",  "720p",  "1280x720",  &self.form_resolution, cx))
+                    .child(res_btn("res-4k",    "4K",    "3840x2160", &self.add_source.resolution, cx))
+                    .child(res_btn("res-1440p", "1440p", "2560x1440", &self.add_source.resolution, cx))
+                    .child(res_btn("res-1080p", "1080p", "1920x1080", &self.add_source.resolution, cx))
+                    .child(res_btn("res-720p",  "720p",  "1280x720",  &self.add_source.resolution, cx))
                     .into_any_element()
             ))
             .child(field_row(theme, "Frame rate",
                 HStack::new().gap_2()
-                    .child(fps_btn("fps-30",  30,  self.form_fps, cx))
-                    .child(fps_btn("fps-60",  60,  self.form_fps, cx))
-                    .child(fps_btn("fps-120", 120, self.form_fps, cx))
+                    .child(fps_btn("fps-30",  30,  self.add_source.fps, cx))
+                    .child(fps_btn("fps-60",  60,  self.add_source.fps, cx))
+                    .child(fps_btn("fps-120", 120, self.add_source.fps, cx))
                     .into_any_element()
             ))
             .child(field_row(theme, "Rate control",
                 HStack::new().gap_2()
                     .child(
                         Button::new("rc-cqp", "CQP")
-                            .variant(if self.form_rate_control == 0 { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .variant(if self.add_source.rate_control == 0 { ButtonVariant::Default } else { ButtonVariant::Outline })
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                this.form_rate_control = 0;
+                                this.add_source.rate_control = 0;
                                 cx.notify();
                             }))
                     )
                     .child(
                         Button::new("rc-vbr", "VBR")
-                            .variant(if self.form_rate_control == 1 { ButtonVariant::Default } else { ButtonVariant::Outline })
+                            .variant(if self.add_source.rate_control == 1 { ButtonVariant::Default } else { ButtonVariant::Outline })
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                this.form_rate_control = 1;
+                                this.add_source.rate_control = 1;
                                 cx.notify();
                             }))
                     )
                     .into_any_element()
             ))
             .child({
-                let (label, value, suffix, min, max, step) = if self.form_rate_control == 0 {
-                    ("Quality (CQ)", self.form_cq, "", 0, 51, 1)
+                let (label, value, suffix, min, max, step) = if self.add_source.rate_control == 0 {
+                    ("Quality (CQ)", self.add_source.cq, "", 0, 51, 1)
                 } else {
-                    ("Bitrate", self.form_bitrate, "kbps", 1000, 100_000, 1000)
+                    ("Bitrate", self.add_source.bitrate, "kbps", 1000, 100_000, 1000)
                 };
                 field_row(theme, label, stepper_inline(theme, "qty", value, min, max, step, suffix, cx, |this, v| {
-                    if this.form_rate_control == 0 { this.form_cq = v; } else { this.form_bitrate = v; }
+                    if this.add_source.rate_control == 0 { this.add_source.cq = v; } else { this.add_source.bitrate = v; }
                 }))
             })
             .child(field_row(theme, "Retention",
-                stepper_inline(theme, "ret", self.form_retention, 1, 600, 1, "min", cx, |this, v| {
-                    this.form_retention = v;
+                stepper_inline(theme, "ret", self.add_source.retention, 1, 600, 1, "min", cx, |this, v| {
+                    this.add_source.retention = v;
                 })
             ))
     }
@@ -532,12 +604,12 @@ impl RekaptrWorkspace {
     // ── Section 4: Audio tracks (always visible) ────────────────────
     fn render_audio_section(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         // If a track is being configured for app routing, show the picker instead.
-        if let Some(track_idx) = self.form_editing_track_index {
+        if let Some(track_idx) = self.add_source.editing_track_index {
             return self.render_audio_app_picker(theme, track_idx, cx);
         }
 
-        let active_count = self.form_audio_tracks.iter().filter(|t| t.enabled).count();
-        let total = self.form_audio_tracks.len();
+        let active_count = self.add_source.audio_tracks.iter().filter(|t| t.enabled).count();
+        let total = self.add_source.audio_tracks.len();
 
         let mut list = VStack::new()
             .gap_2()
@@ -547,7 +619,7 @@ impl RekaptrWorkspace {
             .border_1()
             .border_color(theme.tokens.border);
 
-        for (i, track) in self.form_audio_tracks.iter().enumerate() {
+        for (i, track) in self.add_source.audio_tracks.iter().enumerate() {
             list = list.child(self.render_audio_track_row(theme, i, track, cx));
         }
 
@@ -570,9 +642,9 @@ impl RekaptrWorkspace {
     }
 
     fn render_audio_app_picker(&self, theme: &Theme, track_idx: usize, cx: &mut Context<Self>) -> AnyElement {
-        let track_name = self.form_audio_tracks[track_idx].name.clone();
+        let track_name = self.add_source.audio_tracks[track_idx].name.clone();
         let windows = self.app_state.available_windows.lock().clone();
-        let selected_apps = self.form_audio_tracks[track_idx].app_targets.clone();
+        let selected_apps = self.add_source.audio_tracks[track_idx].app_targets.clone();
 
         VStack::new()
             .gap_2()
@@ -586,7 +658,7 @@ impl RekaptrWorkspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this: &mut Self, _, _, cx| {
-                                this.form_editing_track_index = None;
+                                this.add_source.editing_track_index = None;
                                 cx.notify();
                             })),
                     ),
@@ -626,7 +698,7 @@ impl RekaptrWorkspace {
                                     .gap_1()
                                     .children(windows.iter().map(|win| {
                                         let proc_name = win.process_name.clone();
-                                        let is_selected = self.form_audio_tracks[track_idx].app_targets.contains(&proc_name);
+                                        let is_selected = self.add_source.audio_tracks[track_idx].app_targets.contains(&proc_name);
                                         let proc_for_click = proc_name.clone();
                                         HStack::new()
                                             .justify_between()
@@ -661,9 +733,9 @@ impl RekaptrWorkspace {
                                                 .size(ButtonSize::Sm)
                                                 .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
                                                     if is_selected {
-                                                        this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click);
+                                                        this.add_source.audio_tracks[track_idx].app_targets.retain(|t| t != &proc_for_click);
                                                     } else {
-                                                        this.form_audio_tracks[track_idx].app_targets.push(proc_for_click.clone());
+                                                        this.add_source.audio_tracks[track_idx].app_targets.push(proc_for_click.clone());
                                                     }
                                                     cx.notify();
                                                 }))
@@ -724,7 +796,7 @@ impl RekaptrWorkspace {
                             .text_color(theme.tokens.muted_foreground)
                             .hover(|s| s.text_color(theme.tokens.foreground))
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Self, _, _, cx| {
-                                this.form_audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
+                                this.add_source.audio_tracks[track_idx].app_targets.retain(|t| t != &app_owned);
                                 cx.notify();
                             }))
                             .child(
@@ -767,7 +839,7 @@ impl RekaptrWorkspace {
                 enabled,
                 true,
                 move |this| {
-                    this.form_audio_tracks[idx].enabled = !this.form_audio_tracks[idx].enabled;
+                    this.add_source.audio_tracks[idx].enabled = !this.add_source.audio_tracks[idx].enabled;
                 },
             ))
             .child(
@@ -795,7 +867,7 @@ impl RekaptrWorkspace {
                 .size(ButtonSize::Sm)
                 .icon(IconSource::Named("chevron-right".into()))
                 .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
-                    this.form_editing_track_index = Some(idx);
+                    this.add_source.editing_track_index = Some(idx);
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -809,7 +881,7 @@ impl RekaptrWorkspace {
 
     // ── Section 5: Auto-record ──────────────────────────────────────
     fn render_auto_record(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let on = self.form_auto_record;
+        let on = self.add_source.auto_record;
         div()
             .id("auto-rec")
             .flex()
@@ -824,7 +896,7 @@ impl RekaptrWorkspace {
             .bg(theme.tokens.background)
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                this.form_auto_record = !this.form_auto_record;
+                this.add_source.auto_record = !this.add_source.auto_record;
                 cx.notify();
             }))
             .child(
@@ -866,7 +938,7 @@ impl RekaptrWorkspace {
 
     // ── Footer ──────────────────────────────────────────────────────
     fn render_modal_footer(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_sel = self.form_hwnd.is_some();
+        let has_sel = self.add_source.hwnd.is_some();
         HStack::new()
             .px_6()
             .py_4()
@@ -901,48 +973,48 @@ impl RekaptrWorkspace {
     }
 
     fn submit_add_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(_hwnd) = self.form_hwnd else { return; };
+        let Some(_hwnd) = self.add_source.hwnd else { return; };
 
         // Pull edited title from the input; fall back to the auto-filled form_title.
-        let edited = self.add_source_title_input.read(cx).content().to_string();
-        let title = if edited.trim().is_empty() { self.form_title.clone() } else { edited };
+        let edited = self.add_source.title_input.read(cx).content().to_string();
+        let title = if edited.trim().is_empty() { self.add_source.title.clone() } else { edited };
         if title.trim().is_empty() {
             return;
         }
-        self.form_title = title.clone();
+        self.add_source.title = title.clone();
 
-        let target_process = self.form_target_process.clone();
+        let target_process = self.add_source.target_process.clone();
         log::info!("[UI] Adding new game source: '{}' (process: {:?})", title, target_process);
 
         let mut config = crate::config::AppConfig::load();
         let settings = GameSettings {
             title: title.clone(),
             target_process: target_process.clone(),
-            auto_record: self.form_auto_record,
-            retention_minutes: self.form_retention,
-            video_overrides: if self.add_source_show_overrides {
+            auto_record: self.add_source.auto_record,
+            retention_minutes: self.add_source.retention,
+            video_overrides: if self.add_source.show_overrides {
                 Some(crate::config::VideoSettings {
-                    encoder: self.form_encoder.clone(),
-                    rate_control_index: self.form_rate_control,
-                    bitrate_kbps: self.form_bitrate,
-                    cq_level: self.form_cq,
-                    resolution: self.form_resolution.clone(),
-                    fps: self.form_fps,
-                    retention_minutes: self.form_retention,
-                    gop_size: self.form_gop,
-                    bframes: self.form_bframes,
-                    preset: self.form_preset.clone(),
-                    zero_latency: self.form_zero_latency,
-                    lookahead: self.form_lookahead,
-                    lookahead_frames: self.form_lookahead_frames,
-                    spatial_aq: self.form_spatial_aq,
-                    temporal_aq: self.form_temporal_aq,
+                    encoder: self.add_source.encoder.clone(),
+                    rate_control_index: self.add_source.rate_control,
+                    bitrate_kbps: self.add_source.bitrate,
+                    cq_level: self.add_source.cq,
+                    resolution: self.add_source.resolution.clone(),
+                    fps: self.add_source.fps,
+                    retention_minutes: self.add_source.retention,
+                    gop_size: self.add_source.gop,
+                    bframes: self.add_source.bframes,
+                    preset: self.add_source.preset.clone(),
+                    zero_latency: self.add_source.zero_latency,
+                    lookahead: self.add_source.lookahead,
+                    lookahead_frames: self.add_source.lookahead_frames,
+                    spatial_aq: self.add_source.spatial_aq,
+                    temporal_aq: self.add_source.temporal_aq,
                     artwork_path: None,
                 })
             } else {
                 None
             },
-            audio_routing: Some(self.form_audio_tracks.clone()),
+            audio_routing: Some(self.add_source.audio_tracks.clone()),
             record_focus_only: true,
             artwork_path: None,
             overlay_enabled: None,
@@ -956,10 +1028,10 @@ impl RekaptrWorkspace {
         self.app_state.manual_sessions.insert(next_id, GameSession {
             id: next_id,
             title: title.clone(),
-            auto_record: self.form_auto_record,
-            retention: self.form_retention,
-            bitrate: self.form_bitrate,
-            cq: self.form_cq,
+            auto_record: self.add_source.auto_record,
+            retention: self.add_source.retention,
+            bitrate: self.add_source.bitrate,
+            cq: self.add_source.cq,
         });
         log::info!("[UI] Successfully updated state for '{}'", title);
 
@@ -976,16 +1048,16 @@ impl RekaptrWorkspace {
     }
 
     fn close_add_source_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_add_source_modal = false;
-        self.form_hwnd = None;
-        self.form_title = String::new();
-        self.form_target_process = None;
-        self.form_active_tab = 0;
-        self.form_editing_track_index = None;
-        self.add_source_show_overrides = false;
+        self.add_source.modal_open = false;
+        self.add_source.hwnd = None;
+        self.add_source.title = String::new();
+        self.add_source.target_process = None;
+        self.add_source.active_tab = 0;
+        self.add_source.editing_track_index = None;
+        self.add_source.show_overrides = false;
         // Reset the search/title inputs so a reopen starts clean.
-        self.add_source_search_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
-        self.add_source_title_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
+        self.add_source.search_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
+        self.add_source.title_input.update(cx, |input, cx| input.set_value(SharedString::from(""), window, cx));
         cx.notify();
     }
 }
@@ -1038,7 +1110,7 @@ fn track_source_pill(
         .text_color(if active { theme.tokens.foreground } else { theme.tokens.muted_foreground })
         .hover(|s| s.text_color(theme.tokens.foreground))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut RekaptrWorkspace, _, _, cx| {
-            this.form_audio_tracks[idx].source_type = label_owned.clone();
+            this.add_source.audio_tracks[idx].source_type = label_owned.clone();
             cx.notify();
         }))
         .child(label)

@@ -1043,7 +1043,7 @@ impl RekaptrWorkspace {
                     .border_color(theme.tokens.border)
                     .hover(|s| s.border_color(theme.tokens.primary).bg(theme.tokens.accent))
                     .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                        this.show_add_source_modal = true;
+                        this.add_source.modal_open = true;
                         this.refresh_available_windows(cx);
                         cx.notify();
                     }))
@@ -1286,57 +1286,57 @@ impl RekaptrWorkspace {
     /// Load the advanced-settings form state for a source and open the dialog.
     /// Shared by the mixer header/footer and the source-row settings button.
     pub fn open_source_settings(&mut self, source: &str, cx: &mut Context<Self>) {
-        self.advanced_settings_source = Some(source.to_string());
+        self.add_source.advanced_source = Some(source.to_string());
         self.refresh_available_windows(cx);
-        self.form_overlay_enabled = None;
+        self.add_source.overlay_enabled = None;
 
         let config = crate::config::AppConfig::load();
         if source == "monitor" {
             let v = &config.global_video;
-            self.form_encoder = v.encoder.clone();
-            self.form_rate_control = v.rate_control_index;
-            self.form_bitrate = v.bitrate_kbps;
-            self.form_cq = v.cq_level;
-            self.form_retention = v.retention_minutes;
-            self.form_resolution = v.resolution.clone();
-            self.form_fps = v.fps;
-            self.form_gop = v.gop_size;
-            self.form_bframes = v.bframes;
-            self.form_preset = v.preset.clone();
-            self.form_zero_latency = v.zero_latency;
-            self.form_lookahead = v.lookahead;
-            self.form_lookahead_frames = v.lookahead_frames;
-            self.form_spatial_aq = v.spatial_aq;
-            self.form_temporal_aq = v.temporal_aq;
-            self.form_audio_tracks = config.global_audio_tracks.clone();
+            self.add_source.encoder = v.encoder.clone();
+            self.add_source.rate_control = v.rate_control_index;
+            self.add_source.bitrate = v.bitrate_kbps;
+            self.add_source.cq = v.cq_level;
+            self.add_source.retention = v.retention_minutes;
+            self.add_source.resolution = v.resolution.clone();
+            self.add_source.fps = v.fps;
+            self.add_source.gop = v.gop_size;
+            self.add_source.bframes = v.bframes;
+            self.add_source.preset = v.preset.clone();
+            self.add_source.zero_latency = v.zero_latency;
+            self.add_source.lookahead = v.lookahead;
+            self.add_source.lookahead_frames = v.lookahead_frames;
+            self.add_source.spatial_aq = v.spatial_aq;
+            self.add_source.temporal_aq = v.temporal_aq;
+            self.add_source.audio_tracks = config.global_audio_tracks.clone();
         } else if let Some(settings) = config.game_registry.get(source) {
             if let Some(video) = &settings.video_overrides {
-                self.form_encoder = video.encoder.clone();
-                self.form_rate_control = video.rate_control_index;
-                self.form_bitrate = video.bitrate_kbps;
-                self.form_cq = video.cq_level;
-                self.form_resolution = video.resolution.clone();
-                self.form_fps = video.fps;
-                self.form_retention = video.retention_minutes;
-                self.form_gop = video.gop_size;
-                self.form_bframes = video.bframes;
-                self.form_preset = video.preset.clone();
-                self.form_zero_latency = video.zero_latency;
-                self.form_lookahead = video.lookahead;
-                self.form_lookahead_frames = video.lookahead_frames;
-                self.form_spatial_aq = video.spatial_aq;
-                self.form_temporal_aq = video.temporal_aq;
+                self.add_source.encoder = video.encoder.clone();
+                self.add_source.rate_control = video.rate_control_index;
+                self.add_source.bitrate = video.bitrate_kbps;
+                self.add_source.cq = video.cq_level;
+                self.add_source.resolution = video.resolution.clone();
+                self.add_source.fps = video.fps;
+                self.add_source.retention = video.retention_minutes;
+                self.add_source.gop = video.gop_size;
+                self.add_source.bframes = video.bframes;
+                self.add_source.preset = video.preset.clone();
+                self.add_source.zero_latency = video.zero_latency;
+                self.add_source.lookahead = video.lookahead;
+                self.add_source.lookahead_frames = video.lookahead_frames;
+                self.add_source.spatial_aq = video.spatial_aq;
+                self.add_source.temporal_aq = video.temporal_aq;
             }
             if let Some(audio) = &settings.audio_routing {
-                self.form_audio_tracks = audio.clone();
+                self.add_source.audio_tracks = audio.clone();
             } else {
-                self.form_audio_tracks = config.global_audio_tracks.clone();
+                self.add_source.audio_tracks = config.global_audio_tracks.clone();
             }
-            self.form_auto_record = settings.auto_record;
-            self.form_overlay_enabled = settings.overlay_enabled;
+            self.add_source.auto_record = settings.auto_record;
+            self.add_source.overlay_enabled = settings.overlay_enabled;
         }
-        self.form_active_tab = 0;
-        self.form_editing_track_index = None;
+        self.add_source.active_tab = 0;
+        self.add_source.editing_track_index = None;
         cx.notify();
     }
 }

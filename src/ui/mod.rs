@@ -78,17 +78,8 @@ pub struct RekaptrWorkspace {
     pub form_target_process: Option<String>,
     pub add_source_search_input: Entity<adabraka_ui::components::input_state::InputState>,
     pub add_source_title_input: Entity<adabraka_ui::components::input_state::InputState>,
-    /// Filter query for the dashboard Sources table.
-    pub sources_search_input: Entity<adabraka_ui::components::input_state::InputState>,
-    /// Persistent scroll position + scrollbar state for the Sources table. These
-    /// must outlive a single frame or the scroll offset resets every render.
-    pub sources_scroll_handle: ScrollHandle,
-    /// Custom Sources scrollbar: the thumb pops up while the box is hovered (or
-    /// being dragged); `track_bounds` is the scroll area's window-space rect,
-    /// captured each frame so a drag can map cursor-Y to a scroll offset.
-    pub sources_box_hovered: bool,
-    pub sources_scrollbar_dragging: bool,
-    pub sources_track_bounds: Bounds<Pixels>,
+    /// Dashboard Sources-list state, grouped (see [`crate::ui::dashboard::SourcesState`]).
+    pub sources: crate::ui::dashboard::SourcesState,
     pub add_source_show_overrides: bool,
     /// Playback audio-mixer state, grouped (see [`crate::ui::dashboard::MixerState`]).
     pub mixer: crate::ui::dashboard::MixerState,
@@ -412,11 +403,7 @@ impl RekaptrWorkspace {
             form_target_process: None,
             add_source_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
             add_source_title_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            sources_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            sources_scroll_handle: ScrollHandle::new(),
-            sources_box_hovered: false,
-            sources_scrollbar_dragging: false,
-            sources_track_bounds: Bounds::default(),
+            sources: crate::ui::dashboard::SourcesState::new(cx),
             add_source_show_overrides: false,
             mixer: crate::ui::dashboard::MixerState::new(),
             last_notified_position: 0.0,
@@ -555,7 +542,7 @@ impl RekaptrWorkspace {
         // Re-render (and thus re-filter the Sources list) whenever the search
         // box changes — the idle poll loop above doesn't notify when no video is
         // playing, so without this typing wouldn't update the filtered rows.
-        cx.observe(&workspace.sources_search_input, |_, _, cx| cx.notify()).detach();
+        cx.observe(&workspace.sources.search_input, |_, _, cx| cx.notify()).detach();
 
         workspace
     }

@@ -23,6 +23,34 @@ pub struct MixerState {
     pub master_slider: Option<gpui::Entity<crate::ui::volume_slider::VolumeSlider>>,
 }
 
+/// Dashboard Sources-list state, grouped out of the `RekaptrWorkspace`
+/// god-object: the filter box plus the custom scrollbar's persistent
+/// scroll/drag/geometry state.
+pub struct SourcesState {
+    /// Filter query for the Sources table.
+    pub search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    /// Persistent scroll position + scrollbar state (must outlive a frame).
+    pub scroll_handle: ScrollHandle,
+    /// The thumb pops up while the box is hovered or being dragged.
+    pub box_hovered: bool,
+    pub scrollbar_dragging: bool,
+    /// Scroll area's window-space rect, captured each frame so a drag can map
+    /// cursor-Y to a scroll offset.
+    pub track_bounds: Bounds<Pixels>,
+}
+
+impl SourcesState {
+    pub fn new(cx: &mut Context<RekaptrWorkspace>) -> Self {
+        Self {
+            search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            scroll_handle: ScrollHandle::new(),
+            box_hovered: false,
+            scrollbar_dragging: false,
+            track_bounds: Bounds::default(),
+        }
+    }
+}
+
 impl MixerState {
     pub fn new() -> Self {
         Self {
@@ -870,7 +898,7 @@ impl RekaptrWorkspace {
 
         // Build row data (monitor, then sessions), filtered by the search query
         // and resolving icon + stats.
-        let query = self.sources_search_input.read(cx).content().trim().to_lowercase();
+        let query = self.sources.search_input.read(cx).content().trim().to_lowercase();
         let matches = |title: &str| query.is_empty() || title.to_lowercase().contains(&query);
 
         let mut data: Vec<SrcRow> = Vec::with_capacity(total);
@@ -922,12 +950,12 @@ impl RekaptrWorkspace {
         let track_len = (rows_h - TRACK_INSET * 2.0).max(0.0);
         let thumb_len = (rows_h / content_h * track_len)
             .clamp(MIN_THUMB.min(track_len), MAX_THUMB.min(track_len));
-        let scroll = (-self.sources_scroll_handle.offset().y.0).clamp(0.0, max_off);
+        let scroll = (-self.sources.scroll_handle.offset().y.0).clamp(0.0, max_off);
         let frac = if max_off > 0.0 { scroll / max_off } else { 0.0 };
         let thumb_top = TRACK_INSET + frac * (track_len - thumb_len);
-        let show_thumb = self.sources_box_hovered || self.sources_scrollbar_dragging;
+        let show_thumb = self.sources.box_hovered || self.sources.scrollbar_dragging;
         // dim purple; brighter while dragging, hidden when the box isn't hovered
-        let thumb_alpha = if self.sources_scrollbar_dragging { 0.85 } else { 0.55 };
+        let thumb_alpha = if self.sources.scrollbar_dragging { 0.85 } else { 0.55 };
         let thumb_color = hsla(258.0 / 360.0, 0.5, 0.62, thumb_alpha);
 
         let view = cx.entity().downgrade();
@@ -938,7 +966,7 @@ impl RekaptrWorkspace {
             .child(
                 div()
                     .id("sources-scroll")
-                    .track_scroll(&self.sources_scroll_handle)
+                    .track_scroll(&self.sources.scroll_handle)
                     .overflow_y_scroll()
                     .relative()
                     .size_full()
@@ -951,7 +979,7 @@ impl RekaptrWorkspace {
                         canvas(
                             move |_, _, _| {},
                             move |bounds, _, _, cx| {
-                                let _ = view.update(cx, |this, _| this.sources_track_bounds = bounds);
+                                let _ = view.update(cx, |this, _| this.sources.track_bounds = bounds);
                             },
                         )
                         .absolute()
@@ -971,7 +999,7 @@ impl RekaptrWorkspace {
                                 .bg(thumb_color)
                                 .cursor_pointer()
                                 .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                                    this.sources_scrollbar_dragging = true;
+                                    this.sources.scrollbar_dragging = true;
                                     cx.stop_propagation();
                                     cx.notify();
                                 })),
@@ -996,7 +1024,7 @@ impl RekaptrWorkspace {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .child(Input::new(&self.sources_search_input).placeholder("Search sources")),
+                    .child(Input::new(&self.sources.search_input).placeholder("Search sources")),
             )
             // add source (functional)
             .child(
@@ -1036,7 +1064,7 @@ impl RekaptrWorkspace {
             .child(scroll_area);
 
         // Drag geometry snapshot for mapping cursor-Y → scroll offset.
-        let drag_handle = self.sources_scroll_handle.clone();
+        let drag_handle = self.sources.scroll_handle.clone();
         let (drag_track_len, drag_thumb_len, drag_max_off) = (track_len, thumb_len, max_off);
 
         div()
@@ -1047,25 +1075,25 @@ impl RekaptrWorkspace {
             .flex_col()
             // Pop the thumb up whenever the cursor is anywhere over the box.
             .on_hover(cx.listener(|this: &mut Self, hovered: &bool, _, cx| {
-                if this.sources_box_hovered != *hovered {
-                    this.sources_box_hovered = *hovered;
+                if this.sources.box_hovered != *hovered {
+                    this.sources.box_hovered = *hovered;
                     cx.notify();
                 }
             }))
             // Continue/finish a thumb drag from anywhere within the box.
             .on_mouse_move(cx.listener(move |this: &mut Self, ev: &MouseMoveEvent, _, cx| {
-                if !this.sources_scrollbar_dragging || drag_max_off <= 0.0 {
+                if !this.sources.scrollbar_dragging || drag_max_off <= 0.0 {
                     return;
                 }
-                let track_top = this.sources_track_bounds.origin.y.0 + TRACK_INSET;
+                let track_top = this.sources.track_bounds.origin.y.0 + TRACK_INSET;
                 let usable = (drag_track_len - drag_thumb_len).max(1.0);
                 let frac = ((ev.position.y.0 - track_top - drag_thumb_len / 2.0) / usable).clamp(0.0, 1.0);
                 drag_handle.set_offset(gpui::point(px(0.0), px(-(frac * drag_max_off))));
                 cx.notify();
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Self, _, _, cx| {
-                if this.sources_scrollbar_dragging {
-                    this.sources_scrollbar_dragging = false;
+                if this.sources.scrollbar_dragging {
+                    this.sources.scrollbar_dragging = false;
                     cx.notify();
                 }
             }))

@@ -3,6 +3,7 @@
 mod audio;
 mod cloud;
 mod config;
+mod core;
 mod db;
 mod engine;
 mod game_catalog;

@@ -260,12 +260,20 @@ impl RekaptrWorkspace {
         *self.app_state.export.phase.lock() = crate::state::ExportPhase::Exporting;
         *self.app_state.export.progress.lock() = 0.0;
 
-        let encoder = self.export.encoder.clone();
-        let bitrate = self.export.bitrate;
-        let preset = self.export.preset.clone();
-        let export_reencode = self.export.reencode;
-        let audio_tracks = self.export.audio_tracks.clone();
-        let track_stream_idx = self.export.track_stream_idx.clone();
+        let export_params = crate::core::export::ExportParams {
+            ffmpeg_path,
+            concat_path,
+            in_offset,
+            out_offset,
+            output_path,
+            reencode: self.export.reencode,
+            encoder: self.export.encoder.clone(),
+            bitrate: self.export.bitrate,
+            preset: self.export.preset.clone(),
+            container: self.export.container.clone(),
+            audio_tracks: self.export.audio_tracks.clone(),
+            track_stream_idx: self.export.track_stream_idx.clone(),
+        };
 
         self.export.stage = ExportStage::Exporting;
         cx.notify();
@@ -287,163 +295,8 @@ impl RekaptrWorkspace {
             }
         }).detach();
 
-        let total_dur_secs = (out_offset - in_offset).max(0.001);
-
         let ffmpeg_task = cx.background_spawn(async move {
-            use std::os::windows::process::CommandExt;
-            use std::process::{Command, Stdio};
-
-            // Physical stream indices for the tracks the user kept enabled, using
-            // each track's frozen record-time mapping (None = no stream existed).
-            let enabled_streams: Vec<usize> = audio_tracks
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| {
-                    if t.enabled {
-                        track_stream_idx.get(i).copied().flatten()
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let build_cmd = |hwaccel: bool| {
-                let mut cmd = Command::new(ffmpeg_path.clone());
-                cmd.creation_flags(0x08000000);
-                cmd.arg("-y");
-                // Emit machine-readable progress on stdout; ffmpeg's normal logs
-                // stay on stderr, so the two never collide.
-                cmd.arg("-progress").arg("pipe:1").arg("-nostats");
-                if hwaccel {
-                    cmd.arg("-hwaccel").arg("cuda")
-                       .arg("-hwaccel_output_format").arg("cuda");
-                }
-                cmd.arg("-f").arg("concat")
-                   .arg("-safe").arg("0")
-                   .arg("-i").arg(concat_path.clone())
-                   .arg("-ss").arg(format!("{:.3}", in_offset))
-                   .arg("-to").arg(format!("{:.3}", out_offset))
-                   .arg("-map").arg("0:v:0");
-
-                // Combine the enabled audio tracks into a single output track:
-                // one stream maps straight through; several are mixed with `amix`
-                // (normalize=0 preserves each source's level instead of dividing
-                // the volume by the input count).
-                match enabled_streams.as_slice() {
-                    [] => {}
-                    [phys] => {
-                        // Trailing `?` makes the map optional: if this track's
-                        // stream isn't actually present in the spanned segments
-                        // (e.g. an older clip recorded before the track existed),
-                        // ffmpeg drops it instead of aborting the whole export.
-                        cmd.arg("-map").arg(format!("0:a:{}?", phys));
-                    }
-                    streams => {
-                        let mut filter = String::new();
-                        for &phys in streams {
-                            filter.push_str(&format!("[0:a:{}]", phys));
-                        }
-                        filter.push_str(&format!(
-                            "amix=inputs={}:normalize=0:duration=longest[aout]",
-                            streams.len()
-                        ));
-                        cmd.arg("-filter_complex").arg(filter).arg("-map").arg("[aout]");
-                    }
-                }
-
-                if export_reencode {
-                    cmd.arg("-c:v")
-                        .arg(&encoder)
-                        .arg("-preset")
-                        .arg(&preset)
-                        .arg("-b:v")
-                        .arg(format!("{}k", bitrate));
-                } else {
-                    cmd.arg("-c:v").arg("copy");
-                }
-
-                cmd.arg("-c:a").arg("aac")
-                    .arg("-b:a").arg("320k")
-                    .arg("-ar").arg("48000");
-                if container == "mp4" || container == "mov" {
-                    cmd.arg("-movflags").arg("+faststart");
-                }
-                cmd.arg(&output_path);
-                cmd
-            };
-
-            // Spawn ffmpeg, stream `-progress` from stdout to drive the real
-            // progress bar, and collect stderr for error reporting. Mirrors
-            // `Command::output()` semantics but with live progress.
-            let run = |mut cmd: Command| -> std::io::Result<std::process::Output> {
-                cmd.stdout(Stdio::piped());
-                cmd.stderr(Stdio::piped());
-                let mut child = cmd.spawn()?;
-
-                let reader = child.stdout.take().map(|stdout| {
-                    let progress_state = app_state_for_ffmpeg.clone();
-                    std::thread::spawn(move || {
-                        use std::io::{BufRead, BufReader};
-                        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                            // ffmpeg reports position as out_time_us (newer) or
-                            // out_time_ms (older builds emit microseconds here too).
-                            let micros = line.strip_prefix("out_time_us=")
-                                .or_else(|| line.strip_prefix("out_time_ms="))
-                                .and_then(|v| v.trim().parse::<i64>().ok());
-                            if let Some(us) = micros {
-                                let secs = us as f64 / 1_000_000.0;
-                                let p = (secs / total_dur_secs).clamp(0.0, 0.99) as f32;
-                                *progress_state.export.progress.lock() = p;
-                            }
-                        }
-                    })
-                });
-
-                let output = child.wait_with_output()?;
-                if let Some(t) = reader { let _ = t.join(); }
-                Ok(output)
-            };
-
-            // Try with CUDA hardware decoding first, fall back to software
-            let cmd = build_cmd(true);
-            log::info!("[Export] Running FFmpeg (hwaccel cuda): {:?}", cmd);
-            let clip_output = match run(cmd) {
-                Ok(out) if out.status.success() => Ok(out),
-                _ => {
-                    log::warn!("[Export] CUDA decode failed, retrying with software decoder");
-                    *app_state_for_ffmpeg.export.progress.lock() = 0.0;
-                    let cmd = build_cmd(false);
-                    log::info!("[Export] Running FFmpeg (software): {:?}", cmd);
-                    run(cmd)
-                }
-            };
-
-            // Extract a thumbnail from the middle of the clip
-            let thumb_time = (out_offset - in_offset) / 2.0;
-            let mut thumb_path = output_path.clone();
-            thumb_path.set_extension("jpg");
-
-            if clip_output.as_ref().map_or(false, |o| o.status.success()) {
-                let mut thumb_cmd = Command::new(&ffmpeg_path);
-                thumb_cmd.creation_flags(0x08000000);
-                thumb_cmd.arg("-y")
-                         .arg("-ss").arg(format!("{:.3}", thumb_time))
-                         .arg("-i").arg(&output_path)
-                         .arg("-vframes").arg("1")
-                         .arg("-q:v").arg("2")
-                         .arg(&thumb_path);
-
-                log::info!("[Export] Generating thumbnail: {:?}", thumb_cmd);
-                if let Ok(out) = thumb_cmd.output() {
-                    if !out.status.success() {
-                        log::warn!("[Export] Thumbnail generation failed: {}", String::from_utf8_lossy(&out.stderr));
-                    }
-                }
-            }
-
-            let _ = std::fs::remove_file(&concat_path);
-
-            (clip_output, output_path)
+            crate::core::export::run_export(export_params, app_state_for_ffmpeg)
         });
 
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {

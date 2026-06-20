@@ -4,13 +4,34 @@ use adabraka_ui::charts::pie_chart::{PieChart, PieChartSegment, PieChartSize, Pi
 use crate::ui::RekaptrWorkspace;
 use super::{settings_card, settings_row, settings_toggle};
 
+/// Storage-usage state, grouped out of the `RekaptrWorkspace` god-object: the
+/// computed clip/session disk totals for the Storage settings tab plus the
+/// editable global buffer-size cap.
+pub struct StorageState {
+    pub clips_mb: u64,
+    pub sessions_mb: u64,
+    pub is_calculating: bool,
+    pub max_buffer_size_gb: i32,
+}
+
+impl StorageState {
+    pub fn new(config: &crate::config::AppConfig) -> Self {
+        Self {
+            clips_mb: 0,
+            sessions_mb: 0,
+            is_calculating: false,
+            max_buffer_size_gb: config.max_buffer_size_gb,
+        }
+    }
+}
+
 impl RekaptrWorkspace {
     pub(crate) fn render_settings_storage(&self, theme: &Theme, view_handle: &WeakEntity<Self>, _cx: &mut Context<Self>) -> impl IntoElement {
         let vh = view_handle.clone();
         let config = crate::config::AppConfig::load();
 
-        let clips_gb = self.storage_clips_mb as f64 / 1024.0;
-        let sessions_gb = self.storage_sessions_mb as f64 / 1024.0;
+        let clips_gb = self.storage.clips_mb as f64 / 1024.0;
+        let sessions_gb = self.storage.sessions_mb as f64 / 1024.0;
         let total_gb = clips_gb + sessions_gb;
 
         VStack::new()
@@ -54,7 +75,7 @@ impl RekaptrWorkspace {
                             })
                     ))
                     .child(settings_row(theme, "Buffer size limit",
-                        Some(format!("{} GB", self.form_max_buffer_size_gb)),
+                        Some(format!("{} GB", self.storage.max_buffer_size_gb)),
                         HStack::new().gap_2()
                             .child(
                                 Button::new("buf-dec", "-")
@@ -64,9 +85,9 @@ impl RekaptrWorkspace {
                                         let vh = vh.clone();
                                         move |_, _, cx| {
                                             let _ = vh.update(cx, |this, cx| {
-                                                this.form_max_buffer_size_gb = (this.form_max_buffer_size_gb - 5).max(10);
+                                                this.storage.max_buffer_size_gb = (this.storage.max_buffer_size_gb - 5).max(10);
                                                 let mut config = crate::config::AppConfig::load();
-                                                config.max_buffer_size_gb = this.form_max_buffer_size_gb;
+                                                config.max_buffer_size_gb = this.storage.max_buffer_size_gb;
                                                 config.save();
                                                 cx.notify();
                                             });
@@ -81,9 +102,9 @@ impl RekaptrWorkspace {
                                         let vh = vh.clone();
                                         move |_, _, cx| {
                                             let _ = vh.update(cx, |this, cx| {
-                                                this.form_max_buffer_size_gb = (this.form_max_buffer_size_gb + 5).min(500);
+                                                this.storage.max_buffer_size_gb = (this.storage.max_buffer_size_gb + 5).min(500);
                                                 let mut config = crate::config::AppConfig::load();
-                                                config.max_buffer_size_gb = this.form_max_buffer_size_gb;
+                                                config.max_buffer_size_gb = this.storage.max_buffer_size_gb;
                                                 config.save();
                                                 cx.notify();
                                             });

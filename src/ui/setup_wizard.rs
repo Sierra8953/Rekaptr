@@ -9,6 +9,34 @@ pub struct DetectedEncoder {
     pub label: String,
 }
 
+/// First-run setup-wizard state, grouped out of the `RekaptrWorkspace`
+/// god-object.
+pub struct SetupWizardState {
+    /// Whether the wizard overlay is shown (true on first run).
+    pub open: bool,
+    pub step: usize,
+    pub storage_path: String,
+    pub selected_encoder: String,
+    pub detected_encoders: Vec<DetectedEncoder>,
+}
+
+impl SetupWizardState {
+    pub fn new(config: &crate::config::AppConfig) -> Self {
+        let detected_encoders = detect_available_encoders();
+        let selected_encoder = detected_encoders
+            .first()
+            .map(|e| e.id.clone())
+            .unwrap_or_else(|| config.global_video.encoder.clone());
+        Self {
+            open: config.is_first_run(),
+            step: 0,
+            storage_path: config.storage_path.clone(),
+            selected_encoder,
+            detected_encoders,
+        }
+    }
+}
+
 pub fn detect_available_encoders() -> Vec<DetectedEncoder> {
     let _ = gst::init();
     let candidates = [
@@ -33,10 +61,10 @@ impl RekaptrWorkspace {
         let theme = use_theme();
         let view = cx.entity().downgrade();
 
-        let step = self.setup_wizard_step;
-        let storage_path = self.setup_storage_path.clone();
-        let encoders = self.setup_detected_encoders.clone();
-        let selected_encoder = self.setup_selected_encoder.clone();
+        let step = self.setup.step;
+        let storage_path = self.setup.storage_path.clone();
+        let encoders = self.setup.detected_encoders.clone();
+        let selected_encoder = self.setup.selected_encoder.clone();
 
         div()
             .absolute()
@@ -205,7 +233,7 @@ impl RekaptrWorkspace {
                                                     {
                                                         let path_str = path.path().to_string_lossy().to_string();
                                                         let _ = view.update(&mut cx, |this, cx| {
-                                                            this.setup_storage_path = path_str;
+                                                            this.setup.storage_path = path_str;
                                                             cx.notify();
                                                         });
                                                     }
@@ -262,7 +290,7 @@ impl RekaptrWorkspace {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let enc_id = enc_id.clone();
                         let _ = view.update(cx, |this, cx| {
-                            this.setup_selected_encoder = enc_id;
+                            this.setup.selected_encoder = enc_id;
                             cx.notify();
                         });
                     })
@@ -311,8 +339,8 @@ impl RekaptrWorkspace {
     }
 
     fn render_wizard_finish(&self, theme: &Theme) -> impl IntoElement {
-        let encoder_label = self.setup_detected_encoders.iter()
-            .find(|e| e.id == self.setup_selected_encoder)
+        let encoder_label = self.setup.detected_encoders.iter()
+            .find(|e| e.id == self.setup.selected_encoder)
             .map(|e| e.label.as_str())
             .unwrap_or("Unknown");
 
@@ -341,7 +369,7 @@ impl RekaptrWorkspace {
                         HStack::new()
                             .justify_between()
                             .child(div().text_sm().text_color(theme.tokens.muted_foreground).child("Storage"))
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.foreground).child(self.setup_storage_path.clone()))
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.tokens.foreground).child(self.setup.storage_path.clone()))
                     )
                     .child(
                         HStack::new()
@@ -370,7 +398,7 @@ impl RekaptrWorkspace {
                         .variant(ButtonVariant::Ghost)
                         .on_click(move |_, _, cx| {
                             let _ = view_back.update(cx, |this, cx| {
-                                this.setup_wizard_step = this.setup_wizard_step.saturating_sub(1);
+                                this.setup.step = this.setup.step.saturating_sub(1);
                                 cx.notify();
                             });
                         })
@@ -385,7 +413,7 @@ impl RekaptrWorkspace {
                         .variant(ButtonVariant::Default)
                         .on_click(move |_, _, cx| {
                             let _ = view_next.update(cx, |this, cx| {
-                                this.setup_wizard_step += 1;
+                                this.setup.step += 1;
                                 cx.notify();
                             });
                         })
@@ -406,15 +434,15 @@ impl RekaptrWorkspace {
     pub fn finish_setup_wizard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut config = crate::config::AppConfig::load();
 
-        config.storage_path = self.setup_storage_path.clone();
-        config.global_video.encoder = self.setup_selected_encoder.clone();
+        config.storage_path = self.setup.storage_path.clone();
+        config.global_video.encoder = self.setup.selected_encoder.clone();
         config.first_run_completed = true;
         config.save();
 
         // Ensure storage directory exists
         let _ = std::fs::create_dir_all(&config.storage_path);
 
-        self.show_setup_wizard = false;
+        self.setup.open = false;
 
         self.show_toast(
             "Setup Complete",

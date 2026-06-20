@@ -57,20 +57,14 @@ pub struct RekaptrWorkspace {
     pub is_refreshing_windows: bool,
     pub is_loading_video: bool,
     pub last_volume_update_at: std::time::Instant,
-    pub storage_clips_mb: u64,
-    pub storage_sessions_mb: u64,
-    pub is_calculating_storage: bool,
-    pub form_max_buffer_size_gb: i32,
+    /// Storage-usage state, grouped (see [`crate::ui::settings::StorageState`]).
+    pub storage: crate::ui::settings::StorageState,
     /// Teams view state, grouped (see [`crate::ui::teams::TeamsState`]).
     pub teams: crate::ui::teams::TeamsState,
     pub recording_start_time: Option<std::time::Instant>,
     pub recording_session_id: Option<u64>,
-    // Setup wizard state
-    pub show_setup_wizard: bool,
-    pub setup_wizard_step: usize,
-    pub setup_storage_path: String,
-    pub setup_selected_encoder: String,
-    pub setup_detected_encoders: Vec<setup_wizard::DetectedEncoder>,
+    /// First-run setup-wizard state, grouped (see [`crate::ui::setup_wizard::SetupWizardState`]).
+    pub setup: crate::ui::setup_wizard::SetupWizardState,
     /// Which hotkey slot is currently listening for a new binding (None = not editing)
     /// Slots: 0=toggle recording, 1=save clip, 2=toggle mic, 3=push-to-talk,
     /// 4=marker flag, 5=marker kill, 6=marker death, 7=marker highlight
@@ -337,23 +331,12 @@ impl RekaptrWorkspace {
             is_refreshing_windows: false,
             is_loading_video: false,
             last_volume_update_at: std::time::Instant::now(),
-            storage_clips_mb: 0,
-            storage_sessions_mb: 0,
-            is_calculating_storage: false,
-            form_max_buffer_size_gb: config.max_buffer_size_gb,
+            storage: crate::ui::settings::StorageState::new(&config),
             teams: crate::ui::teams::TeamsState::new(teams_signed_in, cx),
             recording_start_time: None,
             recording_session_id: None,
             // Setup wizard
-            show_setup_wizard: config.is_first_run(),
-            setup_wizard_step: 0,
-            setup_storage_path: config.storage_path.clone(),
-            setup_selected_encoder: {
-                let detected = setup_wizard::detect_available_encoders();
-                let default_enc = detected.first().map(|e| e.id.clone()).unwrap_or_else(|| config.global_video.encoder.clone());
-                default_enc
-            },
-            setup_detected_encoders: setup_wizard::detect_available_encoders(),
+            setup: crate::ui::setup_wizard::SetupWizardState::new(&config),
             hotkey_listening: None,
             hotkey_focus_handle: cx.focus_handle(),
             settings: crate::ui::settings::SettingsForm::new(&config, cx),
@@ -632,11 +615,11 @@ impl RekaptrWorkspace {
 
         if view == ActiveView::Settings {
             let config = AppConfig::load();
-            self.form_max_buffer_size_gb = config.max_buffer_size_gb;
+            self.storage.max_buffer_size_gb = config.max_buffer_size_gb;
             self.sync_settings_form_from_config(&config);
             
-            if !self.is_calculating_storage {
-                self.is_calculating_storage = true;
+            if !self.storage.is_calculating {
+                self.storage.is_calculating = true;
                 let task = cx.background_spawn(async move {
                     let root = crate::utils::get_storage_root();
                     let clips_dir = root.join("Clips");
@@ -668,9 +651,9 @@ impl RekaptrWorkspace {
                     async move {
                         let (clips_bytes, sessions_bytes) = task.await;
                         let _ = this.update(&mut cx, |this, cx| {
-                            this.storage_clips_mb = clips_bytes / (1024 * 1024);
-                            this.storage_sessions_mb = sessions_bytes / (1024 * 1024);
-                            this.is_calculating_storage = false;
+                            this.storage.clips_mb = clips_bytes / (1024 * 1024);
+                            this.storage.sessions_mb = sessions_bytes / (1024 * 1024);
+                            this.storage.is_calculating = false;
                             cx.notify();
                         });
                     }
@@ -1138,7 +1121,7 @@ impl RekaptrWorkspace {
                     })
             );
 
-        if self.show_setup_wizard {
+        if self.setup.open {
             root = root.child(self.render_setup_wizard(window, cx));
         }
 

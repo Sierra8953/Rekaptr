@@ -8,6 +8,8 @@ mod storage;
 mod export;
 mod about;
 
+pub use storage::StorageState;
+
 use gpui::*;
 use adabraka_ui::prelude::*;
 use adabraka_ui::components::tooltip::{Tooltip, TooltipPlacement};

@@ -35,9 +35,9 @@ Recommended execution order was **0 → 1 → 3 → 2 → 4 → 5**.
 | 0 | Safety-net branch + clean baseline | ✅ done (`2bf9396`) |
 | 1 | Split `utils.rs` into focused submodules | ✅ done (`92dc992`) |
 | 3 | Group god-object fields into per-feature structs | ✅ done (9 commits) |
-| 5 (partial) | Document new architecture in `CLAUDE.md` | ✅ done (`a835bcf`) |
-| **2** | **Move export/recording logic into `core/`** | ⏳ **not started — do next** |
-| **4** | **Split the largest render files** | ⏳ not started |
+| 5 (partial) | Document new architecture in `CLAUDE.md` | ✅ done (`a835bcf`, `core/` added) |
+| **2** | **Move export/recording logic into `core/`** | ✅ done (`ae96f5c`, `771c7db`) |
+| **4** | **Split the largest render files** | ⏳ **not started — do next** |
 | **5 (rest)** | Module-doc comments, final tidy | ⏳ not started |
 
 ### Commits on this branch (newest first)
@@ -178,25 +178,31 @@ fix it by hand.
 
 ## What's left to do
 
-### Phase 2 — move export/recording *logic* into a new `core/` (DO NEXT, highest risk)
+### Phase 2 — move export/recording *logic* into `core/` ✅ DONE
 **Goal:** separate "what the app does" from "what it shows", mirroring how the
 already-clean `cloud/` module is layered.
 
-- `core/export.rs`: the ffmpeg command building + spawn/run/progress thread
-  currently inside `RekaptrWorkspace::perform_export` (`ui/export.rs`). Make it
-  take plain inputs (paths, marks, frozen track→stream mapping, options) and
-  report progress/result via `AppState`. The UI's `perform_export` becomes a thin
-  wrapper that gathers state and calls it.
-- `core/recording.rs`: `toggle_recording_internal`, pipeline start/stop, and the
-  tray/overlay sync from `ui/recording.rs`. UI keeps only the button wiring.
+- `core/export.rs` ✅ (`ae96f5c`): `run_export(ExportParams, AppState)` — the
+  ffmpeg command building + run/progress/thumbnail/concat-cleanup, moved verbatim
+  out of `RekaptrWorkspace::perform_export`. The UI freezes inputs into
+  `ExportParams` and calls it from the same `background_spawn`; progress still
+  publishes to `AppState::export.progress`, result flows back as the return value.
+  UI keeps mark validation, toasts, output-path derivation, result/state handling.
+- `core/recording.rs` ✅ (`771c7db`): the **AppState-only** halves —
+  `clear_mic_subscribers`, `emergency_stop` (the `toggle_recording_internal`
+  body), `begin_graceful_teardown` (the `stop_recording` teardown thread +
+  no-pipeline fallback), and `notify_recording_state` (tray + overlay sync,
+  consolidated from three byte-identical sites). **The pipeline *launch* in
+  `start_recording` was deliberately left in `ui/recording.rs`** — it's entangled
+  with per-step toasts and `spawn_bus_monitor` (needs `cx`), so threading it
+  through a `Result` would be a refactor, not a verbatim move. A future pass could
+  extract it by returning a launch result and letting the UI render the toasts.
 
-**⚠️ Risk:** these are the exact hot paths we just fixed 3 bugs in, and
-`cargo test` covers **none** of the ffmpeg/GStreamer behavior. Strategy: move
-code *verbatim* first, change only call sites, keep behavior identical — then
-**ask the user to re-run and verify** record→clip→export and emergency-stop
-before moving on. Do not refactor logic and move it in the same commit.
+Both verified: `cargo check` clean (no new warnings), `cargo test` → 19 passed.
+**Still owed: user re-verify** record start/stop, emergency/error stop, and
+export end-to-end (export was confirmed after `ae96f5c`).
 
-### Phase 4 — split the largest render files (low risk)
+### Phase 4 — split the largest render files (low risk, DO NEXT)
 Pure file moves now that state is grouped:
 - `ui/teams.rs` (~2,050 lines) → `teams/data.rs` (fetch/reconcile) + `teams/view.rs` (render) + `teams/mod.rs` (types/`TeamsState`).
 - `ui/dashboard.rs` (~1,600) → preview / mixer / sources-list render submodules.

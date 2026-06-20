@@ -250,8 +250,9 @@ visually). After that the branch is ready to merge to `main`.
 - Extract `start_recording`'s pipeline *launch* into `core/recording.rs` by
   returning a launch result and letting the UI render the per-step toasts (left
   in `ui/recording.rs` because it needs `cx`/`window` for `spawn_bus_monitor`
-  and toasts).
-- Delete the dead `AVATAR_TINTS` const and `team_initials` fn (pre-existing).
+  and toasts). **Deliberately not done** — it's a real refactor on the untested
+  recording hot path, low payoff for the regression risk.
+- ~~Delete the dead `AVATAR_TINTS` const and `team_initials` fn~~ ✅ done.
 
 ---
 

@@ -15,9 +15,6 @@ use gpui::*;
 const REACT: u32 = 0xf2647e;
 const ONLINE: u32 = 0x34d399;
 
-// Distinct, vivid avatar colors so members read as individual profiles.
-const AVATAR_TINTS: [u32; 6] = [0x8b5cf6, 0x3b82f6, 0xec4899, 0xf59e0b, 0x14b8a6, 0x22c55e];
-
 #[derive(Clone)]
 pub struct Member {
     pub user_id: String,

@@ -1212,16 +1212,6 @@ impl RekaptrWorkspace {
 }
 
 // ── Small shared pieces ─────────────────────────────────────────────
-fn team_initials(name: &str) -> String {
-    let initials: String = name
-        .split_whitespace()
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
-    if initials.is_empty() { "T".to_string() } else { initials }
-}
-
 fn team_badge(initials: &str, tint: u32, size: f32) -> impl IntoElement {
     let theme = use_theme();
     div()

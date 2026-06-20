@@ -1,3 +1,7 @@
+//! Dashboard view shell: the grouped MixerState/SourcesState and the
+//! render_dashboard layout that composes the preview, mixer and sources panes
+//! (each in its own submodule).
+
 use gpui::*;
 use crate::video_player::video;
 use adabraka_ui::prelude::*;

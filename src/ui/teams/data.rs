@@ -1,3 +1,6 @@
+//! Teams data layer: cloud fetch/reconcile and actions (sign-in/out, reload,
+//! load/share/react, presence heartbeat) plus the API->UI mapping helpers.
+
 use super::*;
 use crate::cloud::api;
 use crate::ui::RekaptrWorkspace;

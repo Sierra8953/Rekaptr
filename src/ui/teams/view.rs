@@ -1,3 +1,6 @@
+//! Teams view layer: all render_* methods for the Teams tab and the small
+//! view helpers (badges, avatars, member stack, labels).
+
 use super::*;
 use crate::ui::RekaptrWorkspace;
 use adabraka_ui::components::input::Input;

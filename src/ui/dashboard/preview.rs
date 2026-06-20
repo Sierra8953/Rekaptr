@@ -1,3 +1,6 @@
+//! Dashboard preview pane: the video preview, scrub handling, and the
+//! playback transport strip (timeline + scrubber).
+
 use super::*;
 use crate::ui::RekaptrWorkspace;
 

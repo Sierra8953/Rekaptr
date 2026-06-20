@@ -1,3 +1,6 @@
+//! Dashboard audio mixer pane: per-track volume/mute/solo controls shown to
+//! the right of the preview.
+
 use super::*;
 use crate::ui::RekaptrWorkspace;
 

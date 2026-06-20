@@ -1,3 +1,6 @@
+//! Dashboard sources list: the dense source table, its row builders, per-source
+//! icon/stats lookups, and the card/format helpers.
+
 use super::*;
 use crate::ui::RekaptrWorkspace;
 

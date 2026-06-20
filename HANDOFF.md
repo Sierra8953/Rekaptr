@@ -3,7 +3,7 @@
 Status snapshot for the in-progress modularization refactor, so a fresh session
 (or a future you) can pick it up without re-deriving context.
 
-**Last updated:** 2026-06-20
+**Last updated:** 2026-06-20 (all phases complete)
 **Branch:** `refactor/modularize` (branched from `main`; `main` is untouched)
 **Build/test status:** `cargo check` clean (only the 3 pre-existing baseline
 warnings); `cargo test` → 19 passed. App has been **manually verified working**
@@ -19,10 +19,13 @@ headline problem — a 158-field "god object" (`RekaptrWorkspace`) and a
 
 - `utils.rs` → a `utils/` directory of 7 focused submodules (Phase 1 ✅)
 - `RekaptrWorkspace`: **158 fields → 34** via 9 per-feature state structs (Phase 3 ✅)
-- Architecture documented in `CLAUDE.md` (Phase 5 partial ✅)
+- export/recording *logic* moved into a new `core/` layer (Phase 2 ✅)
+- the big render files split into directories: `ui/teams/`, `ui/dashboard/`,
+  plus `ui/shared.rs` (Phase 4 ✅)
+- architecture documented in `CLAUDE.md`, `//!` docs on every new module (Phase 5 ✅)
 
-**Remaining:** Phase 2 (move export/recording *logic* into `core/`), Phase 4
-(split the big render files), Phase 5 (finish docs).
+**Remaining:** nothing — all phases complete. Pending a final visual pass over
+the Dashboard/Teams tabs, the branch is ready to merge to `main`.
 
 ---
 
@@ -37,8 +40,8 @@ Recommended execution order was **0 → 1 → 3 → 2 → 4 → 5**.
 | 3 | Group god-object fields into per-feature structs | ✅ done (9 commits) |
 | 5 (partial) | Document new architecture in `CLAUDE.md` | ✅ done (`a835bcf`, `core/` added) |
 | **2** | **Move export/recording logic into `core/`** | ✅ done (`ae96f5c`, `771c7db`) |
-| **4** | **Split the largest render files** | ⏳ **not started — do next** |
-| **5 (rest)** | Module-doc comments, final tidy | ⏳ not started |
+| **4** | **Split the largest render files** | ✅ done (`2c6b840`, `f6dd767`, `403fb68`) |
+| **5 (rest)** | Module-doc comments, final tidy | ✅ done |
 
 ### Commits on this branch (newest first)
 ```
@@ -202,19 +205,53 @@ Both verified: `cargo check` clean (no new warnings), `cargo test` → 19 passed
 **Still owed: user re-verify** record start/stop, emergency/error stop, and
 export end-to-end (export was confirmed after `ae96f5c`).
 
-### Phase 4 — split the largest render files (low risk, DO NEXT)
+### Phase 4 — split the largest render files ✅ DONE
 Pure file moves now that state is grouped:
-- `ui/teams.rs` (~2,050 lines) → `teams/data.rs` (fetch/reconcile) + `teams/view.rs` (render) + `teams/mod.rs` (types/`TeamsState`).
-- `ui/dashboard.rs` (~1,600) → preview / mixer / sources-list render submodules.
-- `ui/mod.rs` (~1,300) → move shared free helpers (`prettify_process_name`,
-  `track_color`, `toggle_switch`, the `ActiveView`/`SettingsTab` enums) into a
-  small `ui/shared.rs`; keep `mod.rs` to the workspace shell + `Render` impl.
+- `ui/mod.rs` ✅ (`2c6b840`): shared free helpers/enums (`prettify_process_name`,
+  `track_color`, `toggle_switch`, `audio_track_*`, `ActiveView`/`SettingsTab` +
+  impl, `SETTINGS_NAV`) → `ui/shared.rs`, re-exported `pub use shared::*`. mod.rs
+  is now the workspace shell + `Render` impl (1,309 → ~1,110 lines).
+- `ui/teams.rs` ✅ (`f6dd767`): 2,129-line file → `teams/{mod,data,view}.rs`
+  (types/`TeamsState` + `active_team`; fetch/reconcile + actions; render). The
+  two methods crossing the data/view boundary (`confirm_teams_panel`,
+  `close_team_player`) are `pub(super)`.
+- `ui/dashboard.rs` ✅ (`403fb68`): 1,646-line file → `dashboard/{mod,preview,
+  mixer,sources}.rs`. The pane renderers called from `render_dashboard` are
+  `pub(super)`.
 
-### Phase 5 — finish docs (trivial)
-- Add a one-line `//!` module-doc to each new module stating its single job
-  (most already have one; the Phase-3 structs have struct-level docs).
-- Re-check `CLAUDE.md`/`MEMORY.md` for any other stale `utils.rs`/`timeline.rs`
-  references.
+**Pattern used for the directory splits:** `git rm` the file, slice exact
+line-ranges with `sed -n 'A,Bp'` into the new files (wrapping moved methods in a
+fresh `impl RekaptrWorkspace {…}`), each submodule starts with `use super::*;`
+(which transitively provides the parent's glob imports — the compiler will flag
+any now-redundant explicit `use gpui::*`/prelude to delete). Watch the **true
+file length** (`git show HEAD:file | wc -l`) — an off-by-N at EOF truncates the
+last fn (hit once on teams/view.rs).
+
+### Phase 5 — finish docs ✅ DONE
+- `//!` module-docs added to every new split file; `CLAUDE.md` UI + Core-logic
+  sections updated to describe `core/`, `ui/shared.rs`, and the `dashboard/` and
+  `teams/` directories.
+
+---
+
+## Refactor complete
+
+All phases (0–5) are done. `cargo check` is clean (only the pre-existing baseline
+warnings: adabraka-gpui `PathBuf`/`BOOL`, `ui/mod.rs` `DropdownState`/`gst`/
+`DataTable`, `utils` `generate_master_playlist`, teams `AVATAR_TINTS`/
+`team_initials` — none introduced by the refactor), `cargo test` → 19 passed.
+Export and recording were re-verified by the user after the Phase 2 commits.
+
+**Still owed before merge:** a final visual pass over the Dashboard and Teams
+tabs (Phase 4 was pure file moves, compiler-checked, but the user verifies UI
+visually). After that the branch is ready to merge to `main`.
+
+### Optional future cleanups (out of scope, not blocking)
+- Extract `start_recording`'s pipeline *launch* into `core/recording.rs` by
+  returning a launch result and letting the UI render the per-step toasts (left
+  in `ui/recording.rs` because it needs `cx`/`window` for `spawn_bus_monitor`
+  and toasts).
+- Delete the dead `AVATAR_TINTS` const and `team_initials` fn (pre-existing).
 
 ---
 

@@ -1,10 +1,10 @@
-// Teams view — the app's one networked surface: create or join a team and
-// browse clips shared by teammates. Local-first everywhere else, this tab is
-// intended to be backed by the rekaptr.dev backend (accounts, membership, clip
-// hosting). That backend is not wired yet, so the data here is local/mock:
-// "Join a team" pulls in a populated demo team, "Create a team" makes a fresh
-// empty one. The rendering uses the app's theme tokens and component patterns,
-// mirroring the Clips view.
+//! Teams view — the app's one networked surface: create or join a team and
+//! browse clips shared by teammates. Local-first everywhere else, this tab is
+//! intended to be backed by the rekaptr.dev backend (accounts, membership, clip
+//! hosting). That backend is not wired yet, so the data here is local/mock:
+//! "Join a team" pulls in a populated demo team, "Create a team" makes a fresh
+//! empty one. The rendering uses the app's theme tokens and component patterns,
+//! mirroring the Clips view.
 
 use crate::ui::RekaptrWorkspace;
 use adabraka_ui::prelude::*;

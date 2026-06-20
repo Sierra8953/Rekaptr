@@ -32,12 +32,10 @@ pub struct RekaptrWorkspace {
     /// Add/Edit-Source dialog state, grouped (see [`crate::ui::add_source::AddSourceForm`]).
     pub add_source: crate::ui::add_source::AddSourceForm,
     pub session_to_delete: Option<i32>,
-    pub clip_to_delete: Option<crate::state::Clip>,
-    pub clip_to_preview: Option<crate::state::Clip>,
+    /// Clips-library view state, grouped (see [`crate::ui::clips::ClipsState`]).
+    pub clips: crate::ui::clips::ClipsState,
     /// Clips-page mini-player state, grouped (see [`crate::ui::clips::ClipPreviewState`]).
     pub clip_preview: crate::ui::clips::ClipPreviewState,
-    pub clip_popover: Option<(Point<Pixels>, crate::state::Clip)>,
-    pub clip_table: Entity<DataTable<crate::state::Clip>>,
     pub clip_start: f64,
     pub clip_end: f64,
     pub clip_start_mark: Option<crate::state::ClipMark>,
@@ -62,15 +60,7 @@ pub struct RekaptrWorkspace {
     pub storage_clips_mb: u64,
     pub storage_sessions_mb: u64,
     pub is_calculating_storage: bool,
-    pub is_loading_clips: bool,
-    pub cached_clips: Vec<crate::state::Clip>,
     pub form_max_buffer_size_gb: i32,
-    pub clips_search_input: Entity<adabraka_ui::components::input_state::InputState>,
-    pub clips_search_expanded: bool,
-    pub favorite_clips: std::collections::HashSet<String>,
-    pub selected_clips: std::collections::HashSet<String>,
-    pub selected_clip_for_details: Option<crate::state::Clip>,
-    pub clips_filter: crate::ui::clips::ClipsFilter,
     /// Teams view state, grouped (see [`crate::ui::teams::TeamsState`]).
     pub teams: crate::ui::teams::TeamsState,
     pub recording_start_time: Option<std::time::Instant>,
@@ -293,11 +283,6 @@ impl RekaptrWorkspace {
         let toast_manager = cx.new(|cx| adabraka_ui::overlays::toast::ToastManager::new(cx));
         let config = AppConfig::load();
 
-        // Initialize empty DataTable for clips
-        let clip_table = cx.new(|cx| {
-            DataTable::new(Vec::new(), Self::create_clip_columns(), cx)
-        });
-
         // Populate app_state with saved games from config
         if app_state.game_registry.is_empty() {
             for (title, settings) in &config.game_registry {
@@ -335,11 +320,8 @@ impl RekaptrWorkspace {
             selected_source: None,
             add_source: crate::ui::add_source::AddSourceForm::new(&config, cx),
             session_to_delete: None,
-            clip_to_delete: None,
-            clip_to_preview: None,
+            clips: crate::ui::clips::ClipsState::new(cx),
             clip_preview: crate::ui::clips::ClipPreviewState::new(cx),
-            clip_popover: None,
-            clip_table,
             clip_start: -1.0,
             clip_end: -1.0,
             clip_start_mark: None,
@@ -358,15 +340,7 @@ impl RekaptrWorkspace {
             storage_clips_mb: 0,
             storage_sessions_mb: 0,
             is_calculating_storage: false,
-            is_loading_clips: false,
-            cached_clips: Vec::new(),
             form_max_buffer_size_gb: config.max_buffer_size_gb,
-            clips_search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
-            clips_search_expanded: false,
-            favorite_clips: crate::config::AppConfig::load_favorites(),
-            selected_clips: std::collections::HashSet::new(),
-            selected_clip_for_details: None,
-            clips_filter: crate::ui::clips::ClipsFilter::All,
             teams: crate::ui::teams::TeamsState::new(teams_signed_in, cx),
             recording_start_time: None,
             recording_session_id: None,
@@ -650,8 +624,8 @@ impl RekaptrWorkspace {
             self.refresh_clips(cx);
         } else {
             // Clear metadata when not in library to save RAM
-            self.cached_clips.clear();
-            self.clip_table.update(cx, |table, cx| {
+            self.clips.cached.clear();
+            self.clips.table.update(cx, |table, cx| {
                 table.set_data(Vec::new(), cx);
             });
         }
@@ -708,19 +682,19 @@ impl RekaptrWorkspace {
     }
 
     pub fn toggle_favorite(&mut self, clip_path: &str, cx: &mut Context<Self>) {
-        let is_fav = self.favorite_clips.contains(clip_path);
+        let is_fav = self.clips.favorites.contains(clip_path);
         if is_fav {
-            self.favorite_clips.remove(clip_path);
+            self.clips.favorites.remove(clip_path);
         } else {
-            self.favorite_clips.insert(clip_path.to_string());
+            self.clips.favorites.insert(clip_path.to_string());
         }
         crate::config::AppConfig::set_favorite(clip_path, !is_fav);
         cx.notify();
     }
 
     pub fn refresh_clips(&mut self, cx: &mut Context<Self>) {
-        if self.is_loading_clips { return; }
-        self.is_loading_clips = true;
+        if self.clips.is_loading { return; }
+        self.clips.is_loading = true;
 
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
@@ -730,11 +704,11 @@ impl RekaptrWorkspace {
                 }).await;
 
                 let _ = this.update(&mut cx, |this, cx| {
-                    this.cached_clips = clips.clone();
-                    this.is_loading_clips = false;
+                    this.clips.cached = clips.clone();
+                    this.clips.is_loading = false;
 
                     // Keep the table in sync if it's ever shown.
-                    this.clip_table.update(cx, |table, cx| {
+                    this.clips.table.update(cx, |table, cx| {
                         table.set_data(clips, cx);
                     });
 
@@ -1136,7 +1110,7 @@ impl RekaptrWorkspace {
             let _ = std::fs::remove_file(thumb);
         }
         self.show_toast("Clip Deleted", Some("The file has been removed from disk."), adabraka_ui::overlays::toast::ToastVariant::Default, window, cx);
-        self.clip_to_delete = None;
+        self.clips.to_delete = None;
         self.refresh_clips(cx);
         cx.notify();
     }
@@ -1231,7 +1205,7 @@ impl RekaptrWorkspace {
             );
         }
 
-        if let Some(clip) = self.clip_to_delete.clone() {
+        if let Some(clip) = self.clips.to_delete.clone() {
             let view = cx.entity().downgrade();
             root = root.child(
                 div()
@@ -1264,7 +1238,7 @@ impl RekaptrWorkspace {
                                                     .variant(ButtonVariant::Ghost)
                                                     .on_click({
                                                         let view = view.clone();
-                                                        move |_, _, cx| { let _ = view.update(cx, |this, cx| { this.clip_to_delete = None; cx.notify(); }); }
+                                                        move |_, _, cx| { let _ = view.update(cx, |this, cx| { this.clips.to_delete = None; cx.notify(); }); }
                                                     })
                                             )
                                             .child(
@@ -1282,9 +1256,9 @@ impl RekaptrWorkspace {
         }
 
         // Clip Popover Menu
-        if let Some((pos, clip)) = self.clip_popover.clone() {
+        if let Some((pos, clip)) = self.clips.popover.clone() {
             let clip_path_str = clip.path.to_string_lossy().to_string();
-            let is_favorited = self.favorite_clips.contains(&clip_path_str);
+            let is_favorited = self.clips.favorites.contains(&clip_path_str);
             let fav_label = if is_favorited { "Unfavorite" } else { "Favorite" };
             let items = vec![
                 PopoverMenuItem::new("favorite", fav_label)
@@ -1293,7 +1267,7 @@ impl RekaptrWorkspace {
                         let view = cx.entity().downgrade();
                         let path = clip_path_str.clone();
                         move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
+                            this.clips.popover = None;
                             this.toggle_favorite(&path.clone(), cx);
                         }); }
                     }),
@@ -1303,7 +1277,7 @@ impl RekaptrWorkspace {
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
                         move |window, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
+                            this.clips.popover = None;
                             this.set_active_view(ActiveView::Dashboard, cx);
                             this.load_video(&clip.path.to_string_lossy(), window, cx);
                         }); }
@@ -1314,7 +1288,7 @@ impl RekaptrWorkspace {
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
                         move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
+                            this.clips.popover = None;
                             let _ = std::process::Command::new("explorer").arg("/select,").arg(&clip.path).spawn();
                             cx.notify();
                         }); }
@@ -1325,8 +1299,8 @@ impl RekaptrWorkspace {
                         let view = cx.entity().downgrade();
                         let clip = clip.clone();
                         move |_, cx| { let _ = view.update(cx, |this, cx| {
-                            this.clip_popover = None;
-                            this.clip_to_delete = Some(clip.clone());
+                            this.clips.popover = None;
+                            this.clips.to_delete = Some(clip.clone());
                             cx.notify();
                         }); }
                     }),
@@ -1336,7 +1310,7 @@ impl RekaptrWorkspace {
                 PopoverMenu::new(pos, items)
                     .on_close({
                         let view = cx.entity().downgrade();
-                        move |_, cx| { let _ = view.update(cx, |this, cx| { this.clip_popover = None; cx.notify(); }); }
+                        move |_, cx| { let _ = view.update(cx, |this, cx| { this.clips.popover = None; cx.notify(); }); }
                     })
             );
         }

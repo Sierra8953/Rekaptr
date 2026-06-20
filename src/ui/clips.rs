@@ -2,8 +2,55 @@ use gpui::*;
 use adabraka_ui::prelude::*;
 use crate::ui::RekaptrWorkspace;
 use crate::state::Clip;
-use adabraka_ui::display::data_table::ColumnDef;
+use adabraka_ui::display::data_table::{ColumnDef, DataTable};
 use adabraka_ui::components::input::Input;
+
+/// Clips-library view state, grouped out of the `RekaptrWorkspace` god-object:
+/// the cached clip list + filter/search/selection UI and the pending
+/// delete/preview/popover interaction targets.
+pub struct ClipsState {
+    /// Clip pending deletion confirmation.
+    pub to_delete: Option<Clip>,
+    /// Clip open in the full mini-player overlay.
+    pub to_preview: Option<Clip>,
+    /// Right-click action popover: (anchor, clip).
+    pub popover: Option<(Point<Pixels>, Clip)>,
+    pub table: Entity<DataTable<Clip>>,
+    pub search_input: Entity<adabraka_ui::components::input_state::InputState>,
+    pub search_expanded: bool,
+    /// Paths of favorited clips (persisted in config).
+    pub favorites: std::collections::HashSet<String>,
+    /// Paths selected for batch actions.
+    pub selected: std::collections::HashSet<String>,
+    /// Clip shown in the details sidebar.
+    pub selected_for_details: Option<Clip>,
+    pub filter: ClipsFilter,
+    /// Last fetched clip library (rebuilt when the Clips view opens).
+    pub cached: Vec<Clip>,
+    pub is_loading: bool,
+}
+
+impl ClipsState {
+    pub fn new(cx: &mut Context<RekaptrWorkspace>) -> Self {
+        let table = cx.new(|cx| {
+            DataTable::new(Vec::new(), RekaptrWorkspace::create_clip_columns(), cx)
+        });
+        Self {
+            to_delete: None,
+            to_preview: None,
+            popover: None,
+            table,
+            search_input: cx.new(|cx| adabraka_ui::components::input_state::InputState::new(cx)),
+            search_expanded: false,
+            favorites: crate::config::AppConfig::load_favorites(),
+            selected: std::collections::HashSet::new(),
+            selected_for_details: None,
+            filter: ClipsFilter::All,
+            cached: Vec::new(),
+            is_loading: false,
+        }
+    }
+}
 
 /// Clips-page mini-player state, grouped out of the `RekaptrWorkspace`
 /// god-object: the libmpv `Video` streaming the selected clip plus its hover
@@ -59,7 +106,7 @@ pub enum ClipsFilter {
 
 impl RekaptrWorkspace {
     pub fn render_clips(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_selection = !self.selected_clips.is_empty();
+        let has_selection = !self.clips.selected.is_empty();
         let filtered = self.clips_filtered(cx);
         let filtered_count = filtered.len();
 
@@ -68,7 +115,7 @@ impl RekaptrWorkspace {
         // derive the inner content width from the window: viewport minus the
         // icon sidebar (72), the filter rail (240), the details panel when open
         // (320), and this view's horizontal padding (px_8 = 64).
-        let details_w = if self.selected_clip_for_details.is_some() { 320.0 } else { 0.0 };
+        let details_w = if self.clips.selected_for_details.is_some() { 320.0 } else { 0.0 };
         let content_w = (window.viewport_size().width.0 - 72.0 - 240.0 - details_w - 64.0).max(280.0);
 
         let mut root = div()
@@ -102,10 +149,10 @@ impl RekaptrWorkspace {
                             }),
                     ),
             )
-            .when_some(self.selected_clip_for_details.clone(), |this, clip| {
+            .when_some(self.clips.selected_for_details.clone(), |this, clip| {
                 this.child(self.render_clip_details_sidebar(clip, cx))
             })
-            .when(self.is_loading_clips, |this| {
+            .when(self.clips.is_loading, |this| {
                 this.child(
                     div()
                         .absolute()
@@ -118,7 +165,7 @@ impl RekaptrWorkspace {
                 )
             });
 
-        if let Some(clip) = self.clip_to_preview.clone() {
+        if let Some(clip) = self.clips.to_preview.clone() {
             root = root.child(self.render_mini_player(clip, window, cx));
         }
 
@@ -134,12 +181,12 @@ impl RekaptrWorkspace {
     }
 
     fn clips_filtered(&self, cx: &mut Context<Self>) -> Vec<Clip> {
-        let q = self.clips_search_input.read(cx).content.to_lowercase();
-        let favs = &self.favorite_clips;
+        let q = self.clips.search_input.read(cx).content.to_lowercase();
+        let favs = &self.clips.favorites;
         let mut clips: Vec<Clip> = self
-            .cached_clips
+            .clips.cached
             .iter()
-            .filter(|c| match &self.clips_filter {
+            .filter(|c| match &self.clips.filter {
                 ClipsFilter::All => true,
                 ClipsFilter::Favorites => favs.contains(&c.path_str),
                 ClipsFilter::Recent => true,
@@ -157,7 +204,7 @@ impl RekaptrWorkspace {
 
         clips.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-        if matches!(self.clips_filter, ClipsFilter::Recent) {
+        if matches!(self.clips.filter, ClipsFilter::Recent) {
             clips.truncate(12);
         }
 
@@ -184,15 +231,15 @@ impl RekaptrWorkspace {
 
     fn render_clips_filter_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let total = self.cached_clips.len();
+        let total = self.clips.cached.len();
 
         // Single pass: favorites count and per-game counts together, bucketing
         // games through a map (O(n)) instead of a linear find per clip (O(n²)).
         let mut fav_count = 0usize;
         let mut game_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut games: Vec<(String, usize)> = Vec::new();
-        for c in &self.cached_clips {
-            if self.favorite_clips.contains(&c.path_str) {
+        for c in &self.clips.cached {
+            if self.clips.favorites.contains(&c.path_str) {
                 fav_count += 1;
             }
             if let Some(&i) = game_index.get(c.title.as_str()) {
@@ -251,7 +298,7 @@ impl RekaptrWorkspace {
         filter: ClipsFilter,
     ) -> impl IntoElement {
         let theme = use_theme();
-        let active = self.clips_filter == filter;
+        let active = self.clips.filter == filter;
         let label_owned = label.to_string();
         let icon_owned = icon.to_string();
         let filter_clone = filter.clone();
@@ -271,7 +318,7 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.clips_filter = filter_clone.clone();
+                    this.clips.filter = filter_clone.clone();
                     cx.notify();
                 }),
             )
@@ -298,7 +345,7 @@ impl RekaptrWorkspace {
 
     fn render_clips_top_bar(&self, visible_count: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let title = match &self.clips_filter {
+        let title = match &self.clips.filter {
             ClipsFilter::All => "All Clips".to_string(),
             ClipsFilter::Favorites => "Favorites".to_string(),
             ClipsFilter::Recent => "Recent".to_string(),
@@ -334,14 +381,14 @@ impl RekaptrWorkspace {
 
     fn render_clips_search(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = use_theme();
-        if self.clips_search_expanded {
+        if self.clips.search_expanded {
             HStack::new()
                 .gap_1()
                 .items_center()
                 .child(
                     div()
                         .w(px(280.0))
-                        .child(Input::new(&self.clips_search_input).placeholder("Search clips...")),
+                        .child(Input::new(&self.clips.search_input).placeholder("Search clips...")),
                 )
                 .child(
                     Button::new("clips-search-collapse", "")
@@ -349,9 +396,9 @@ impl RekaptrWorkspace {
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.clips_search_input
+                            this.clips.search_input
                                 .update(cx, |s, cx| s.set_value("", window, cx));
-                            this.clips_search_expanded = false;
+                            this.clips.search_expanded = false;
                             cx.notify();
                         })),
                 )
@@ -369,7 +416,7 @@ impl RekaptrWorkspace {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.clips_search_expanded = true;
+                        this.clips.search_expanded = true;
                         cx.notify();
                     }),
                 )
@@ -392,10 +439,10 @@ impl RekaptrWorkspace {
         if filtered.is_empty() {
             // Still loading: render nothing here (the spinner overlay covers it)
             // so we never index into an empty `filtered` below.
-            if self.is_loading_clips {
+            if self.clips.is_loading {
                 return div().flex_1().into_any_element();
             }
-            let msg = if self.cached_clips.is_empty() {
+            let msg = if self.clips.cached.is_empty() {
                 "No clips found"
             } else {
                 "No clips match this filter"
@@ -428,7 +475,7 @@ impl RekaptrWorkspace {
 
         // Non-"All" filters (a drilled-into game, Favorites, Recent) show a flat
         // responsive grid of every matching clip rather than the landing layout.
-        if !matches!(self.clips_filter, ClipsFilter::All) {
+        if !matches!(self.clips.filter, ClipsFilter::All) {
             return self.render_clips_flat_grid(filtered, cx).into_any_element();
         }
 
@@ -462,8 +509,8 @@ impl RekaptrWorkspace {
                 .items_start()
                 .gap_3()
                 .children(clips.into_iter().map(|c| {
-                    let is_sel = self.selected_clips.contains(&c.path_str);
-                    let is_fav = self.favorite_clips.contains(&c.path_str);
+                    let is_sel = self.clips.selected.contains(&c.path_str);
+                    let is_fav = self.clips.favorites.contains(&c.path_str);
                     Self::render_clip_card_advanced(c, &view_handle, is_sel, is_fav, 280.0)
                         .into_any_element()
                 })),
@@ -493,8 +540,8 @@ impl RekaptrWorkspace {
                     .items_start()
                     .gap_3()
                     .children(clips.into_iter().map(|c| {
-                        let is_sel = self.selected_clips.contains(&c.path_str);
-                        let is_fav = self.favorite_clips.contains(&c.path_str);
+                        let is_sel = self.clips.selected.contains(&c.path_str);
+                        let is_fav = self.clips.favorites.contains(&c.path_str);
                         Self::render_clip_card_advanced(c, &view_handle, is_sel, is_fav, card_w)
                             .into_any_element()
                     })),
@@ -593,7 +640,7 @@ impl RekaptrWorkspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.clips_filter = ClipsFilter::Game(game_for_click.clone());
+                    this.clips.filter = ClipsFilter::Game(game_for_click.clone());
                     cx.notify();
                 }),
             )
@@ -676,7 +723,7 @@ impl RekaptrWorkspace {
     fn render_clips_hero(&self, clip: Clip, content_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
         let clip_path = clip.path_str.clone();
-        let is_fav = self.favorite_clips.contains(&clip_path);
+        let is_fav = self.clips.favorites.contains(&clip_path);
         let clip_for_play = clip.clone();
         let clip_for_more = clip.clone();
         let thumb = clip.thumbnail_path.clone();
@@ -811,7 +858,7 @@ impl RekaptrWorkspace {
                                         .size(ButtonSize::Lg)
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             let mouse_pos = window.mouse_position();
-                                            this.clip_popover = Some((mouse_pos, clip_for_more.clone()));
+                                            this.clips.popover = Some((mouse_pos, clip_for_more.clone()));
                                             cx.notify();
                                         })),
                                 ),
@@ -823,7 +870,7 @@ impl RekaptrWorkspace {
     /// Open a clip in the mini player overlay. Shared by the hero and card play buttons.
     pub fn open_clip_preview(&mut self, clip: Clip, window: &mut Window, cx: &mut Context<Self>) {
         let old = self.clip_preview.player.as_ref().map(|v| v.render_image());
-        self.clip_to_preview = Some(clip.clone());
+        self.clips.to_preview = Some(clip.clone());
         self.clip_preview.last_mouse_move = std::time::Instant::now();
         self.clip_preview.show_controls = true;
         let url = clip.path.to_string_lossy().to_string();
@@ -878,14 +925,14 @@ impl RekaptrWorkspace {
                     let clip = clip_for_mouse.clone();
                     let _ = view_handle_click.update(cx, |this, cx| {
                         if event.modifiers.control {
-                            if this.selected_clips.contains(&clip_path) {
-                                this.selected_clips.remove(&clip_path);
+                            if this.clips.selected.contains(&clip_path) {
+                                this.clips.selected.remove(&clip_path);
                             } else {
-                                this.selected_clips.insert(clip_path.clone());
+                                this.clips.selected.insert(clip_path.clone());
                             }
                         } else {
-                            this.selected_clips.clear();
-                            this.selected_clip_for_details = Some(clip.clone());
+                            this.clips.selected.clear();
+                            this.clips.selected_for_details = Some(clip.clone());
                         }
                         cx.notify();
                     });
@@ -941,7 +988,7 @@ impl RekaptrWorkspace {
                                             cx.stop_propagation();
                                             let old_ri = view_handle.update(cx, |this, cx| {
                                                 let old = this.clip_preview.player.as_ref().map(|v| v.render_image());
-                                                this.clip_to_preview = Some(clip.clone());
+                                                this.clips.to_preview = Some(clip.clone());
                                                 this.clip_preview.last_mouse_move = std::time::Instant::now();
                                                 this.clip_preview.show_controls = true;
                                                 let url = clip.path.to_string_lossy().to_string();
@@ -987,7 +1034,7 @@ impl RekaptrWorkspace {
                                                     let mouse_pos = window.mouse_position();
                                                     let clip = clip.clone();
                                                     let _ = view_handle.update(cx, |this, cx| {
-                                                        this.clip_popover = Some((mouse_pos, clip.clone()));
+                                                        this.clips.popover = Some((mouse_pos, clip.clone()));
                                                         cx.notify();
                                                     });
                                                 }
@@ -1051,7 +1098,7 @@ impl RekaptrWorkspace {
             .items_center()
             .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                this.clip_to_preview = None;
+                this.clips.to_preview = None;
                 if let Some(old) = this.clip_preview.player.take() {
                     window.drop_image(old.render_image()).ok();
                 }
@@ -1113,7 +1160,7 @@ impl RekaptrWorkspace {
                                 div()
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                                        this.clip_to_preview = None;
+                                        this.clips.to_preview = None;
                                         if let Some(old) = this.clip_preview.player.take() {
                                             window.drop_image(old.render_image()).ok();
                                         }
@@ -1304,7 +1351,7 @@ impl RekaptrWorkspace {
 
     fn render_batch_actions_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = use_theme();
-        let count = self.selected_clips.len();
+        let count = self.clips.selected.len();
         HStack::new()
             .w_full()
             .px_8()
@@ -1323,7 +1370,7 @@ impl RekaptrWorkspace {
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.selected_clips.clear();
+                                this.clips.selected.clear();
                                 cx.notify();
                               }))
                     )
@@ -1336,14 +1383,14 @@ impl RekaptrWorkspace {
                             .variant(ButtonVariant::Destructive)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                for path_str in this.selected_clips.clone() {
+                                for path_str in this.clips.selected.clone() {
                                     let path = std::path::PathBuf::from(path_str);
                                     let _ = std::fs::remove_file(&path);
                                     let mut thumb = path.clone();
                                     thumb.set_extension("jpg");
                                     let _ = std::fs::remove_file(thumb);
                                 }
-                                this.selected_clips.clear();
+                                this.clips.selected.clear();
                                 this.refresh_clips(cx);
                                 cx.notify();
                             }))
@@ -1372,7 +1419,7 @@ impl RekaptrWorkspace {
                                 div()
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                        this.selected_clip_for_details = None;
+                                        this.clips.selected_for_details = None;
                                         cx.notify();
                                     }))
                                     .child(Icon::new("x").size(px(24.0)).color(theme.tokens.muted_foreground))
@@ -1415,7 +1462,7 @@ impl RekaptrWorkspace {
                                             if let Some(old) = this.clip_preview.player.take() {
                                                 window.drop_image(old.render_image()).ok();
                                             }
-                                            this.clip_to_preview = Some(clip.clone());
+                                            this.clips.to_preview = Some(clip.clone());
                                             this.clip_preview.last_mouse_move = std::time::Instant::now();
                                             this.clip_preview.show_controls = true;
                                             let url = clip.path.to_string_lossy().to_string();

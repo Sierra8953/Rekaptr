@@ -7,3 +7,4 @@
 //! the result — mirroring how `cloud/` is layered.
 
 pub mod export;
+pub mod recording;

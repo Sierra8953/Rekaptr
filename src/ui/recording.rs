@@ -4,7 +4,6 @@ use adabraka_ui::prelude::*;
 use gpui::*;
 use gstreamer as gst;
 use gstreamer::prelude::*;
-use std::sync::Arc;
 
 impl RekaptrWorkspace {
     /// Toggle mute on the live recording's microphone by flipping the `mute`
@@ -43,41 +42,7 @@ impl RekaptrWorkspace {
 
     pub fn toggle_recording_internal(&mut self) {
         let source = self.selected_source.clone().unwrap_or_else(|| "monitor".to_string());
-        let game_dir = crate::utils::get_storage_root().join(crate::utils::clean_title(&source));
-
-        if let Some(pipeline) = self.app_state.recording.pipeline.lock().take() {
-            // Even on an emergency stop, give splitmuxsink a brief window to flush its
-            // current fragment via EOS so the final .m4s has a valid mfra/mdat. If EOS
-            // doesn't arrive within 500ms, fall through to forced Null and let
-            // fixup_eos_segments rename the partial file out of the playable set.
-            pipeline.send_event(gst::event::Eos::new());
-            if let Some(bus) = pipeline.bus() {
-                let _ = bus.timed_pop_filtered(
-                    gst::ClockTime::from_mseconds(500),
-                    &[gst::MessageType::Eos, gst::MessageType::Error],
-                );
-            }
-            let _ = pipeline.set_state(gst::State::Null);
-
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                crate::utils::fixup_eos_segments(&game_dir);
-            });
-        }
-        self.clear_mic_subscribers();
-        *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-        // Mirror stop_recording's tray reset: this emergency/error path also ends the
-        // recording, so the tray icon and tooltip must revert. Otherwise the tray stays
-        // stuck on "Recording" and the next stop press routes to start (phase is Idle),
-        // never re-sending the reset.
-        if let Some(tx) = self.app_state.tray_tx.lock().as_ref() {
-            let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(false));
-            let _ = tx.send(crate::state::TrayCommand::SetRecording(false));
-        }
-        crate::overlay::send(
-            &self.app_state,
-            crate::overlay::OverlayEvent::RecordingChanged { active: false, title: None },
-        );
+        crate::core::recording::emergency_stop(&self.app_state, &source);
     }
 
     pub fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -109,55 +74,16 @@ impl RekaptrWorkspace {
         }
     }
 
-    fn clear_mic_subscribers(&self) {
-        let keys: Vec<u64> = std::mem::take(
-            &mut *self.app_state.recording.mic_subscriber_keys.lock(),
-        );
-        if keys.is_empty() { return; }
-        if let Some(provider) = self.app_state.mic_provider.lock().as_ref() {
-            for key in keys {
-                provider.subscribers.remove(&key);
-            }
-        }
-    }
-
     fn stop_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let game_dir_for_fixup = crate::utils::get_storage_root()
             .join(crate::utils::clean_title(
                 &self.selected_source.clone().unwrap_or_else(|| "monitor".to_string()),
             ));
         *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Stopping;
-        self.clear_mic_subscribers();
-        if let Some(pipeline) = self.app_state.recording.pipeline.lock().take() {
-            let phase_handle = Arc::clone(&self.app_state.recording.phase);
-            let app_state_for_thread = Arc::clone(&self.app_state);
-            self.app_state.recording.teardown_in_progress.store(true, std::sync::atomic::Ordering::Release);
-            std::thread::spawn(move || {
-                pipeline.send_event(gst::event::Eos::new());
-                if let Some(bus) = pipeline.bus() {
-                    let _ = bus.timed_pop_filtered(
-                        gst::ClockTime::from_seconds(5),
-                        &[gst::MessageType::Eos],
-                    );
-                }
-                let _ = pipeline.set_state(gst::State::Null);
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                crate::utils::fixup_eos_segments(&game_dir_for_fixup);
-                *phase_handle.lock() = crate::state::RecordingPhase::Idle;
-                app_state_for_thread.recording.teardown_in_progress.store(false, std::sync::atomic::Ordering::Release);
-            });
-        } else {
-            *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
-        }
+        crate::core::recording::clear_mic_subscribers(&self.app_state);
+        crate::core::recording::begin_graceful_teardown(&self.app_state, game_dir_for_fixup);
         log::info!("[Recording] Stopped.");
-        if let Some(tx) = self.app_state.tray_tx.lock().as_ref() {
-            let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(false));
-            let _ = tx.send(crate::state::TrayCommand::SetRecording(false));
-        }
-        crate::overlay::send(
-            &self.app_state,
-            crate::overlay::OverlayEvent::RecordingChanged { active: false, title: None },
-        );
+        crate::core::recording::notify_recording_state(&self.app_state, false, None);
         self.show_toast(
             "Recording Stopped",
             None::<&str>,
@@ -302,7 +228,7 @@ impl RekaptrWorkspace {
                             _ => "Pipeline failed to start. Encoder may be in use or hardware unavailable.".to_string(),
                         };
                         let _ = pipeline.set_state(gst::State::Null);
-                        self.clear_mic_subscribers();
+                        crate::core::recording::clear_mic_subscribers(&self.app_state);
                         *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
                         log::error!("[Recording] set_state(Playing) failed: {}", msg);
                         self.show_toast(
@@ -323,16 +249,10 @@ impl RekaptrWorkspace {
                 *self.app_state.recording.pipeline.lock() = Some(pipeline);
                 *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Recording;
 
-                if let Some(tx) = self.app_state.tray_tx.lock().as_ref() {
-                    let _ = tx.send(crate::state::TrayCommand::SetStopEnabled(true));
-                    let _ = tx.send(crate::state::TrayCommand::SetRecording(true));
-                }
-                crate::overlay::send(
+                crate::core::recording::notify_recording_state(
                     &self.app_state,
-                    crate::overlay::OverlayEvent::RecordingChanged {
-                        active: true,
-                        title: Some(source_name.clone()),
-                    },
+                    true,
+                    Some(source_name.clone()),
                 );
 
                 self.app_state.recording.reset_stats();
@@ -354,7 +274,7 @@ impl RekaptrWorkspace {
                 cx.notify();
             }
             Err(e) => {
-                self.clear_mic_subscribers();
+                crate::core::recording::clear_mic_subscribers(&self.app_state);
                 *self.app_state.recording.phase.lock() = crate::state::RecordingPhase::Idle;
                 log::error!("[Recording] Failed to launch pipeline: {:?}", e);
                 crate::engine::diagnose_pipeline_failure(&pipeline_str, &e);

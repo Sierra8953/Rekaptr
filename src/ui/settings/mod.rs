@@ -111,13 +111,13 @@ impl SettingsForm {
                             ("h264_nvenc", "H.264 (NVENC)"),
                             ("hevc_nvenc", "HEVC (NVENC)"),
                             ("av1_nvenc", "AV1 (NVENC)"),
-                            ("x264", "H.264 (x264)"),
+                            ("x264enc", "H.264 (x264)"),
                         ])
                         .selected_index(match config.global_video.encoder.as_str() {
                             "h264_nvenc" => 0,
                             "hevc_nvenc" => 1,
                             "av1_nvenc" => 2,
-                            "x264" => 3,
+                            "x264enc" => 3,
                             _ => 0,
                         })
                         .on_change(move |val, _, cx| {
@@ -434,7 +434,7 @@ impl RekaptrWorkspace {
                     .gap_4()
                     .child(ss_card(&theme, "Output", VStack::new()
                         .child(ss_segmented_row(&theme, cx, "enc", "Encoder", &self.add_source.encoder,
-                            &[("HEVC", "nvh265enc"), ("AV1", "nvav1enc"), ("H.264", "nvh264enc")],
+                            &[("HEVC", "nvh265enc"), ("AV1", "nvav1enc"), ("H.264", "nvh264enc"), ("x264", "x264enc")],
                             |this, v| {
                                 this.add_source.encoder = v;
                                 if this.add_source.encoder != "nvav1enc" { this.add_source.cq = this.add_source.cq.min(51); }

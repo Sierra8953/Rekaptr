@@ -31,6 +31,21 @@ if ($MissingBins) {
           "Place them in runtime\ (same FFmpeg build for both) before packaging."
 }
 
+# Visual C++ runtime DLLs. GStreamer's MSVC plugins (e.g. gstd3d11.dll) link
+# against these; a clean Windows install without the VC++ Redistributable lacks
+# vcruntime140_1.dll, so the plugin fails to load and ALL its elements vanish
+# (d3d11screencapturesrc/convert/download "missing"). We deploy them app-local
+# next to the exe rather than requiring the redist installer.
+$RequiredVcRuntime = @(
+    "runtime\vcruntime140.dll", "runtime\vcruntime140_1.dll", "runtime\msvcp140.dll",
+    "runtime\msvcp140_1.dll", "runtime\msvcp140_2.dll", "runtime\concrt140.dll"
+)
+$MissingVc = $RequiredVcRuntime | Where-Object { -not (Test-Path $_) }
+if ($MissingVc) {
+    throw "Missing bundled VC++ runtime DLLs: $($MissingVc -join ', '). " +
+          "Copy them from C:\Windows\System32 into runtime\ before packaging."
+}
+
 # Mirror assets into runtime\ (what gets bundled) so dev and release can't drift.
 Write-Host "==> sync assets -> runtime\assets"
 robocopy "assets" "runtime\assets" /MIR /NJH /NJS /NDL /NFL /NP | Out-Null

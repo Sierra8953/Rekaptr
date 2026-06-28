@@ -491,6 +491,7 @@ impl RekaptrWorkspace {
             "nvh265enc" => "HEVC",
             "nvh264enc" => "H.264",
             "nvav1enc" => "AV1",
+            "x264enc" => "x264",
             other => other,
         };
         format!(
@@ -545,6 +546,7 @@ impl RekaptrWorkspace {
                     .child(enc_btn("enc-hevc", "HEVC", "nvh265enc", &self.add_source.encoder, cx))
                     .child(enc_btn("enc-av1",  "AV1",  "nvav1enc",  &self.add_source.encoder, cx))
                     .child(enc_btn("enc-h264", "H.264","nvh264enc", &self.add_source.encoder, cx))
+                    .child(enc_btn("enc-x264", "x264", "x264enc",   &self.add_source.encoder, cx))
                     .into_any_element()
             ))
             .child(field_row(theme, "Resolution",

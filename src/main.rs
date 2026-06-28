@@ -305,33 +305,53 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // --- Portable Path Configuration ---
-    if let Ok(mut exe_path) = std::env::current_exe() {
-        exe_path.pop(); // Root directory (next to rekaptr.exe)
+    // --- GStreamer plugin isolation (all builds) ---
+    // Load ONLY our curated plugin set so the system install's plugins can't
+    // leak in and cause element-name collisions (e.g. two `isofmp4mux`
+    // providers — gstfmp4.dll vs gstisobmff.dll — where GStreamer blacklists
+    // one and the wrong one wins, breaking audio muxing).
+    //
+    // Release/portable: plugins live in <exe>/lib/gstreamer-1.0. Dev
+    // (`cargo run`): fall back to the repo's curated runtime/ bundle. Note that
+    // in dev the GStreamer *core* DLLs still load from the system install via
+    // PATH (load-time imports resolve before main runs), so the curated plugins
+    // must come from the same GStreamer version that is installed.
+    let exe_dir = std::env::current_exe().ok().and_then(|mut p| {
+        p.pop();
+        Some(p)
+    });
+    let plugin_dir = exe_dir
+        .as_ref()
+        .map(|d| d.join("lib").join("gstreamer-1.0"))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime")
+                .join("lib")
+                .join("gstreamer-1.0");
+            dev.exists().then_some(dev)
+        });
+    if let Some(plugin_dir) = plugin_dir {
+        std::env::set_var("GST_PLUGIN_PATH", &plugin_dir);
+        // Setting the system path to empty (but *set*) disables scanning the
+        // system plugin directory entirely, so only GST_PLUGIN_PATH is used.
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
 
-        // Isolate GStreamer to only use bundled plugins. Windows resolves
-        // top-level DLL imports from the EXE's own directory, so the support
-        // DLLs alongside rekaptr.exe are picked up automatically — no PATH
-        // manipulation is needed (and wouldn't help anyway, since imports
-        // resolve before main() runs).
-        let plugin_path = exe_path.join("lib").join("gstreamer-1.0");
-        if plugin_path.exists() {
-            let path_str = plugin_path.display().to_string();
-            std::env::set_var("GST_PLUGIN_PATH", &path_str);
-            // Block the system install to avoid the "already registered" error.
-            // std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &path_str);
-
-            // Persist the plugin registry per-user (writable, survives launches).
-            let registry_dir = std::env::var_os("LOCALAPPDATA")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| exe_path.clone())
-                .join("Rekaptr");
-            let _ = std::fs::create_dir_all(&registry_dir);
-            std::env::set_var(
-                "GST_REGISTRY",
-                registry_dir.join("gst-registry.bin").display().to_string(),
-            );
-        }
+        // Per-user writable registry, versioned by package version so a stale
+        // plugin blacklist can't survive a plugin-set change between releases.
+        let registry_dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .or_else(|| exe_dir.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Rekaptr");
+        let _ = std::fs::create_dir_all(&registry_dir);
+        std::env::set_var(
+            "GST_REGISTRY",
+            registry_dir
+                .join(format!("gst-registry-{}.bin", env!("CARGO_PKG_VERSION")))
+                .display()
+                .to_string(),
+        );
     }
 
     init_logging();

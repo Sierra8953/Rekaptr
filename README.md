@@ -59,8 +59,6 @@ cd Rekaptr
 cargo run --release
 ```
 
-To produce installer artifacts, see [`RELEASING.md`](RELEASING.md).
-
 ## Architecture
 
 - **UI** — [GPUI](https://github.com/zed-industries/zed) (Adabraka fork), GPU-accelerated, single-threaded render with async background work.

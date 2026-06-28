@@ -366,8 +366,13 @@ async fn main() -> Result<()> {
         let mut theme = adabraka_ui::theme::Theme::dark();
         theme.tokens.primary = gpui::hsla(258.0/360.0, 0.90, 0.66, 1.0); // Violet 500 (#8b5cf6)
         theme.tokens.background = gpui::rgb(0x09090b).into(); // Zinc 950
+        theme.tokens.foreground = gpui::rgb(0xe4e4e7).into(); // Zinc 200 — soft off-white (default #f5f5f5 was glaring)
         theme.tokens.card = gpui::rgb(0x18181b).into(); // Zinc 900
-        theme.tokens.border = gpui::rgb(0x3f3f46).into(); // Zinc 700
+        theme.tokens.border = gpui::rgb(0x27272a).into(); // Zinc 800 — subtle, recedes
+        theme.tokens.input = gpui::rgb(0x27272a).into(); // match border (was a lighter default)
+        // Focus ring: brand violet, not the theme's default stark white (which
+        // read as a chrome/white outline around focused buttons/inputs).
+        theme.tokens.ring = gpui::hsla(258.0/360.0, 0.90, 0.66, 1.0); // Violet 500
 
         adabraka_ui::theme::install_theme(cx, theme);
 

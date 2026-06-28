@@ -16,10 +16,10 @@ impl RekaptrWorkspace {
             .pt(px(12.0))
             .px(px(8.0))
             .gap_2()
-            .child(self.render_nav_item("nav-dash", "layout-dashboard", ActiveView::Dashboard, active, cx))
-            .child(self.render_nav_item("nav-clips", "video", ActiveView::Clips, active, cx))
-            .child(self.render_nav_item("nav-teams", "users", ActiveView::Teams, active, cx))
-            .child(self.render_nav_item("nav-settings", "settings", ActiveView::Settings, active, cx))
+            .child(self.render_nav_item("nav-dash", "layout-dashboard", ActiveView::Dashboard, active, 0, cx))
+            .child(self.render_nav_item("nav-clips", "video", ActiveView::Clips, active, 0, cx))
+            .child(self.render_nav_item("nav-teams", "users", ActiveView::Teams, active, self.unread_team_count(), cx))
+            .child(self.render_nav_item("nav-settings", "settings", ActiveView::Settings, active, 0, cx))
             .child(Spacer::new())
             .child(
                 div()
@@ -44,6 +44,7 @@ impl RekaptrWorkspace {
         icon_name: &'static str,
         view: ActiveView,
         active: ActiveView,
+        badge: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = use_theme();
@@ -83,6 +84,29 @@ impl RekaptrWorkspace {
                         .h(px(24.0))
                         .rounded_r_sm()
                         .bg(theme.tokens.primary)
+                )
+            })
+            // Unread badge (top-right): count of teams with new activity.
+            .when(badge > 0, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(8.0))
+                        .right(px(8.0))
+                        .min_w(px(18.0))
+                        .h(px(18.0))
+                        .px(px(5.0))
+                        .rounded_full()
+                        .bg(theme.tokens.primary)
+                        .border_2()
+                        .border_color(theme.tokens.card)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.tokens.primary_foreground)
+                        .child(if badge > 9 { "9+".to_string() } else { badge.to_string() }),
                 )
             })
     }

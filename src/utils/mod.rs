@@ -18,7 +18,9 @@ mod segments;
 mod startup;
 mod steam_assets;
 
-pub use clips_index::{fetch_all_clips, scan_session_titles, source_stats, SourceStats};
+pub use clips_index::{
+    ensure_thumbnail, fetch_all_clips, scan_session_titles, source_stats, SourceStats,
+};
 pub use paths::{clean_title, get_dir_size, get_ffmpeg_path, get_storage_root};
 pub use playlist::{
     build_clip_concat_list_from_marks, clip_duration_from_marks, compute_total_duration,

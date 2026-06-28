@@ -3,7 +3,7 @@
 //! The desktop app is local-first; this module is the one networked surface.
 //! `auth` handles signing in to the cloud account (Clerk OAuth + PKCE) and
 //! caching the per-user token; a future `api` module will wrap the team/clip
-//! endpoints. See `docs/teams-auth-flow.md`.
+//! endpoints. See `dev/docs/teams-auth-flow.md`.
 
 pub mod api;
 pub mod auth;

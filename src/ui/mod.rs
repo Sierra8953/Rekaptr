@@ -254,6 +254,28 @@ impl RekaptrWorkspace {
         // playing, so without this typing wouldn't update the filtered rows.
         cx.observe(&workspace.sources.search_input, |_, _, cx| cx.notify()).detach();
 
+        if teams_signed_in {
+            // Tier 2 — paint the Teams tab instantly from the last fetch on disk;
+            // the prefetch below revalidates and replaces it.
+            workspace.seed_teams_from_cache();
+
+            // Tier 3 — warm the OAuth token on a background thread so the first
+            // cloud call doesn't pay a refresh round trip (single-flight, so it
+            // can't race the prefetch below).
+            let auth = workspace.app_state.cloud_auth.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = auth.access_token();
+                })
+                .detach();
+
+            // Tier 1 — prefetch the user's teams (list + default team's detail +
+            // feed over one connection) now, so the Teams tab is already warm by
+            // the time it's opened. The `listed`/`busy` guards in set_active_view
+            // dedupe with this.
+            workspace.reload_teams(cx);
+        }
+
         workspace
     }
 
@@ -393,16 +415,21 @@ impl RekaptrWorkspace {
         self.active_view = view;
         self.hotkey_listening = None;
 
-        // Load the user's teams the first time the signed-in Teams tab opens.
-        if view == ActiveView::Teams
-            && self.teams.signed_in
-            && !self.teams.listed
-            && !self.teams.busy
-        {
-            self.reload_teams(cx);
-        }
         if view == ActiveView::Teams && self.teams.signed_in {
+            if !self.teams.listed && !self.teams.busy {
+                // First open: cold-load the team list (and the active team's feed).
+                self.reload_teams(cx);
+            } else if self.teams.active.is_some() {
+                // Re-open: revalidate the active team's feed so clips removed
+                // server-side (e.g. expired past retention) drop out instead of
+                // lingering from the last fetch.
+                self.refresh_active_feed(cx);
+            }
             self.start_presence_heartbeat(cx);
+            // Opening the tab counts as seeing the active team — clear its badge.
+            if let Some(id) = self.active_team_id() {
+                self.mark_team_seen(&id);
+            }
         }
         // Leaving Teams: tear down any open clip player so its audio/mpv stops.
         if view != ActiveView::Teams {
@@ -412,13 +439,10 @@ impl RekaptrWorkspace {
         }
 
         if view == ActiveView::Clips {
+            // The cached list (lightweight metadata, not the decoded images) is
+            // kept across navigation, so re-entry paints the library instantly
+            // from cache while this background refresh picks up new clips.
             self.refresh_clips(cx);
-        } else {
-            // Clear metadata when not in library to save RAM
-            self.clips.cached.clear();
-            self.clips.table.update(cx, |table, cx| {
-                table.set_data(Vec::new(), cx);
-            });
         }
 
         if view == ActiveView::Settings {
@@ -484,26 +508,88 @@ impl RekaptrWorkspace {
     }
 
     pub fn refresh_clips(&mut self, cx: &mut Context<Self>) {
-        if self.clips.is_loading { return; }
+        // Don't overlap a metadata fetch or a still-running thumbnail backfill —
+        // two concurrent backfills could race writing the same .jpg.
+        if self.clips.is_loading || self.clips.thumbs_backfilling { return; }
         self.clips.is_loading = true;
 
         cx.spawn(|this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
+                // Phase 1 — metadata only. `fetch_all_clips` no longer spawns
+                // ffmpeg, so the library list is ready almost instantly and the
+                // view paints with whatever thumbnails are already cached.
                 let clips = cx.background_executor().spawn(async move {
                     crate::utils::fetch_all_clips()
                 }).await;
 
-                let _ = this.update(&mut cx, |this, cx| {
-                    this.clips.cached = clips.clone();
-                    this.clips.is_loading = false;
+                // Clips still missing an on-disk thumbnail, to backfill below.
+                let pending: Vec<(String, std::path::PathBuf)> = clips
+                    .iter()
+                    .filter(|c| c.thumbnail_path.is_none())
+                    .map(|c| (c.path_str.clone(), c.path.clone()))
+                    .collect();
 
+                if this.update(&mut cx, |this, cx| {
+                    this.clips.cached = clips.clone();
+                    // List is up: drop the spinner, hand off to the backfill.
+                    this.clips.is_loading = false;
+                    this.clips.thumbs_backfilling = true;
                     // Keep the table in sync if it's ever shown.
                     this.clips.table.update(cx, |table, cx| {
                         table.set_data(clips, cx);
                     });
-
                     cx.notify();
+                }).is_err() {
+                    return; // workspace dropped
+                }
+
+                // Phase 2 — generate the missing thumbnails off the critical
+                // path, a bounded number in parallel, patching each into the
+                // cached list as it lands so they pop in progressively instead
+                // of blocking the whole library on a serial ffmpeg run.
+                const PARALLELISM: usize = 4;
+                for chunk in pending.chunks(PARALLELISM) {
+                    let tasks: Vec<_> = chunk
+                        .iter()
+                        .cloned()
+                        .map(|(key, video)| {
+                            cx.background_executor().spawn(async move {
+                                crate::utils::ensure_thumbnail(&video).map(|t| (key, t))
+                            })
+                        })
+                        .collect();
+
+                    let mut done = Vec::new();
+                    for task in tasks {
+                        if let Some(result) = task.await {
+                            done.push(result);
+                        }
+                    }
+                    if done.is_empty() {
+                        continue;
+                    }
+
+                    if this.update(&mut cx, |this, cx| {
+                        for (key, thumb) in &done {
+                            if let Some(clip) =
+                                this.clips.cached.iter_mut().find(|c| &c.path_str == key)
+                            {
+                                clip.thumbnail_path = Some(thumb.clone());
+                            }
+                        }
+                        let snapshot = this.clips.cached.clone();
+                        this.clips.table.update(cx, |table, cx| {
+                            table.set_data(snapshot, cx);
+                        });
+                        cx.notify();
+                    }).is_err() {
+                        return; // workspace dropped mid-backfill
+                    }
+                }
+
+                let _ = this.update(&mut cx, |this, _| {
+                    this.clips.thumbs_backfilling = false;
                 });
             }
         }).detach();
@@ -921,11 +1007,29 @@ impl RekaptrWorkspace {
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
-                    .child(match self.active_view {
-                        ActiveView::Dashboard => self.render_dashboard(window, cx).into_any_element(),
-                        ActiveView::Settings => self.render_settings_view(window, cx).into_any_element(),
-                        ActiveView::Clips => self.render_clips(window, cx).into_any_element(),
-                        ActiveView::Teams => self.render_teams(window, cx).into_any_element(),
+                    .child({
+                        let page = match self.active_view {
+                            ActiveView::Dashboard => self.render_dashboard(window, cx).into_any_element(),
+                            ActiveView::Settings => self.render_settings_view(window, cx).into_any_element(),
+                            ActiveView::Clips => self.render_clips(window, cx).into_any_element(),
+                            ActiveView::Teams => self.render_teams(window, cx).into_any_element(),
+                        };
+                        // Cross-page fade: keying the animation id to the active
+                        // view means switching tabs creates a "fresh" animated
+                        // element, so GPUI restarts the fade and the new page
+                        // fades in. A stable id across frames plays once, then
+                        // settles at full opacity.
+                        div()
+                            .size_full()
+                            .child(page)
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "page-fade-{}",
+                                    self.active_view as usize
+                                )),
+                                adabraka_ui::animations::presets::fade_in_normal(),
+                                |el, delta| el.opacity(delta),
+                            )
                     })
             );
 

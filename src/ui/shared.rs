@@ -5,6 +5,7 @@
 
 use super::RekaptrWorkspace;
 use adabraka_ui::prelude::*;
+use gpui::{Corners, Hsla, ObjectFit, StyledImage};
 
 /// Canonical icon name for an audio track's source type. Shared across the
 /// timeline, export dialog and source settings so the same track type always
@@ -127,6 +128,62 @@ pub(crate) fn toggle_switch(
                 .rounded_full()
                 .bg(fg),
         )
+}
+
+/// A rounded image tile whose image can never spill past the corners.
+///
+/// The image paints with `ObjectFit::Fill` at exactly the tile bounds and is
+/// rounded to the same `radius`, so its rounded corners always coincide with the
+/// tile's. This is the reliable way to round-clip an image in this GPUI fork:
+/// the content mask is a plain rectangle (it can't round-clip children), and
+/// `ObjectFit::Cover` paints an *oversized* quad whose rounded corners fall
+/// outside the tile — leaving the tile's rounded corners filled by the square
+/// part of the image (the classic corner "spill"). `Fill` keeps the painted quad
+/// equal to the tile, so the rounding lands on the visible corners.
+///
+/// Caveat: `Fill` stretches to the tile, so the source should roughly match the
+/// tile's aspect ratio (true for clip thumbnails and Steam covers) or it will
+/// distort. Fills its parent (`size_full`); the caller sizes the wrapper and
+/// layers any overlays (scrims, chips, action buttons) on as children.
+///
+/// `radius` is per-corner so a tile used as a card *header* (image only at the
+/// top, a footer below) can round its top corners and leave the bottom square —
+/// rounding corners that don't sit on a card edge would cut visible notches.
+///
+/// `placeholder` fills the tile until/unless an image is present (a muted card
+/// color, a per-item tint, etc.). It must live on the rounded element so the
+/// placeholder itself can't spill the corners.
+pub fn thumbnail(
+    image: Option<SharedString>,
+    radius: Corners<Pixels>,
+    placeholder: Hsla,
+) -> Div {
+    // Apply the same radii to the frame and the image so the (Fill-sized) image
+    // quad's rounded corners land exactly on the tile's.
+    let round = |el: Div| {
+        el.rounded_tl(radius.top_left)
+            .rounded_tr(radius.top_right)
+            .rounded_bl(radius.bottom_left)
+            .rounded_br(radius.bottom_right)
+    };
+    round(div())
+        .relative()
+        .size_full()
+        .overflow_hidden()
+        .bg(placeholder)
+        .when_some(image, |this, src| {
+            this.child(
+                img(src)
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .rounded_tl(radius.top_left)
+                    .rounded_tr(radius.top_right)
+                    .rounded_bl(radius.bottom_left)
+                    .rounded_br(radius.bottom_right)
+                    .object_fit(ObjectFit::Fill),
+            )
+        })
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]

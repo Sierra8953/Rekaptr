@@ -23,7 +23,7 @@ Prerequisites (the build links against them — there is no pure-Rust fallback):
 
 ## Releasing
 
-`pwsh scripts/build-release.ps1` produces the portable zip (`dist build`), the Inno Setup installer (`iscc installer.iss`), and the bootstrap `rekaptr-installer.ps1`. Full procedure — version bump, `runtime/` refresh, GitHub Release tag conventions (`v<version>`, hardcoded in installer URLs) — is in `RELEASING.md`. Version is read from `CARGO_PKG_VERSION`; bumping `Cargo.toml` is the only code change needed.
+`pwsh scripts/build-release.ps1` produces the portable zip (`dist build`), the Inno Setup installer (`iscc installer.iss`), and the bootstrap `rekaptr-installer.ps1`. Full procedure — version bump, `runtime/` refresh, GitHub Release tag conventions (`v<version>`, hardcoded in installer URLs) — is in `dev/RELEASING.md`. Version is read from `CARGO_PKG_VERSION`; bumping `Cargo.toml` is the only code change needed.
 
 ## Architecture
 
@@ -67,7 +67,7 @@ Single root entity `RekaptrWorkspace` with an `active_view` switch (dashboard, c
 
 Feature view-state is **grouped into per-feature structs** rather than living as flat fields on `RekaptrWorkspace`: `add_source: AddSourceForm`, `clips: ClipsState`, `clip_preview: ClipPreviewState` (`ui/clips.rs`), `export: ExportForm` (`ui/export.rs`), `sources: SourcesState` + `mixer: MixerState` (`ui/dashboard/mod.rs`), `settings: SettingsForm` + `storage: StorageState` (`ui/settings/`), `teams: TeamsState` (`ui/teams/mod.rs`), `setup: SetupWizardState` (`ui/setup_wizard.rs`). Each struct lives in the module that renders it and has a `new(..)` constructor called from the workspace initializer; access is `self.<group>.<field>` (e.g. `self.settings.mic_gain`, `self.teams.signed_in`). Methods stay on `RekaptrWorkspace` (they need `&mut Context<Self>`); only the state is grouped. Genuinely cross-cutting fields (`app_state`, `video_source`, `selected_source`, the `clip_start`/`clip_end` export marks, recording timing) remain directly on the workspace. **Note:** `crate::state::ExportState` (shared cross-thread export phase on `AppState`) is distinct from the UI's `ExportForm`.
 
-**Before debugging GPUI layout/spacing/positioning, read [`docs/gpui-layout.md`](docs/gpui-layout.md)** — verified flexbox defaults for this fork (`div()` is `display: Block`, the `min-width: auto` shrink gotcha, what the `Styled`/`VStack`/`HStack` helpers actually set) plus taffy traps. For layout bugs, tint suspect containers with `.bg()` and screenshot early rather than reasoning about taffy blind.
+**Before debugging GPUI layout/spacing/positioning, read [`dev/docs/gpui-layout.md`](dev/docs/gpui-layout.md)** — verified flexbox defaults for this fork (`div()` is `display: Block`, the `min-width: auto` shrink gotcha, what the `Styled`/`VStack`/`HStack` helpers actually set) plus taffy traps. For layout bugs, tint suspect containers with `.bg()` and screenshot early rather than reasoning about taffy blind.
 
 ## Config & data locations
 

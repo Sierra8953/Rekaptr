@@ -2156,9 +2156,17 @@ impl Image {
             ImageFormat::Svg => {
                 let pixmap = svg_renderer.render_pixmap(&self.bytes, SvgSize::ScaleFactor(1.0))?;
 
-                let buffer =
+                let mut buffer =
                     image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
                         .unwrap();
+
+                // resvg/tiny-skia hand back premultiplied RGBA; GPUI's renderer
+                // expects un-premultiplied BGRA. The raster branches above swap
+                // R/B; the SVG branch must do the same (matching the `img.rs`
+                // resource path), or colors come out R/B-swapped (violet→red).
+                for pixel in buffer.chunks_exact_mut(4) {
+                    crate::swap_rgba_pa_to_bgra(pixel);
+                }
 
                 SmallVec::from_elem(Frame::new(buffer), 1)
             }

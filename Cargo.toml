@@ -1,6 +1,6 @@
 [package]
 name = "rekaptr"
-version = "0.1.4"
+version = "1.0.0-beta.1"
 edition = "2021"
 repository = "https://github.com/Sierra8953/Rekaptr"
 authors = ["Sierra8953"]
@@ -26,7 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Graphics_Dxgi", "Win32_Graphics", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_OpenGL", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_System_Kernel", "Win32_System_Memory", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "gzip"] }
 base64 = "0.22"
 image = "0.25"
 ico = "0.4"
@@ -50,50 +50,8 @@ winapi = "0.3.9"
 env_logger = "0.11.9"
 rfd = "0.15"
 axoupdater = { version = "0.10", features = ["blocking"] }
-
-[[example]]
-name = "dashboard_mockup"
-path = "mockups/dashboard.rs"
-
-[[example]]
-name = "dashboard_refined_mockup"
-path = "mockups/dashboard_refined.rs"
-
-[[example]]
-name = "dashboard_slate_mockup"
-path = "mockups/dashboard_slate.rs"
-
-[[example]]
-name = "dashboard_cinematic_mockup"
-path = "mockups/dashboard_cinematic.rs"
-
-[[example]]
-name = "dashboard_command_mockup"
-path = "mockups/dashboard_command.rs"
-
-[[example]]
-name = "dashboard_timeline_mockup"
-path = "mockups/dashboard_timeline.rs"
-
-[[example]]
-name = "game_settings_mockup"
-path = "mockups/game_settings_mockup.rs"
-
-[[example]]
-name = "export_redesign_mockup"
-path = "mockups/export_redesign_mockup.rs"
-
-[[example]]
-name = "overlay_mockup"
-path = "mockups/overlay_mockup.rs"
-
-[[example]]
-name = "teams_mockup"
-path = "mockups/teams_mockup.rs"
-
-[dev-dependencies]
-# Local JSX-flavored macro, used only by the rsx! UI mockups in `mockups/`.
-rekaptr-rsx = { path = "crates/rekaptr-rsx" }
+dicebear-core = "10.3.0"
+dicebear-styles = { version = "10.2.0", features = ["identicon"] }
 
 [build-dependencies]
 winresource = "0.1"

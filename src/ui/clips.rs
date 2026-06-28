@@ -25,9 +25,15 @@ pub struct ClipsState {
     /// Clip shown in the details sidebar.
     pub selected_for_details: Option<Clip>,
     pub filter: ClipsFilter,
-    /// Last fetched clip library (rebuilt when the Clips view opens).
+    /// Last fetched clip library (rebuilt when the Clips view opens). Kept
+    /// across navigation so re-entry paints from cache instantly.
     pub cached: Vec<Clip>,
+    /// Phase 1 (metadata fetch) in flight — drives the full-screen spinner.
     pub is_loading: bool,
+    /// Phase 2 (background thumbnail backfill) in flight. Guards against
+    /// overlapping refreshes without showing the spinner — the list is already
+    /// up while thumbnails fill in.
+    pub thumbs_backfilling: bool,
 }
 
 impl ClipsState {
@@ -48,6 +54,7 @@ impl ClipsState {
             filter: ClipsFilter::All,
             cached: Vec::new(),
             is_loading: false,
+            thumbs_backfilling: false,
         }
     }
 }
@@ -644,22 +651,24 @@ impl RekaptrWorkspace {
                     cx.notify();
                 }),
             )
-            // Portrait 2:3 cover area.
+            // Portrait 2:3 cover area. Uses the shared `thumbnail` tile (Fill +
+            // matching radius) so the cover can't spill the card's rounded
+            // corners — test site for the component before any wider rollout.
             .child(
-                div()
-                    .relative()
+                crate::ui::thumbnail(
+                    cached_cover.map(SharedString::from),
+                    // Top-only: the cover is the card header; its bottom meets
+                    // the title/count footer, so those corners stay square.
+                    gpui::Corners {
+                        top_left: px(12.0),
+                        top_right: px(12.0),
+                        bottom_left: px(0.0),
+                        bottom_right: px(0.0),
+                    },
+                    theme.tokens.muted,
+                )
                     .w_full()
                     .h(px(255.0))
-                    .bg(theme.tokens.muted)
-                    .when_some(cached_cover, |this, path| {
-                        this.child(
-                            img(path)
-                                .absolute()
-                                .inset_0()
-                                .size_full()
-                                .object_fit(ObjectFit::Cover),
-                        )
-                    })
                     // Folder/count chip over a bottom scrim.
                     .child(
                         div()

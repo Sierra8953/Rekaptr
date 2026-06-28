@@ -1,6 +1,6 @@
 //! Desktop sign-in to the rekaptr.dev cloud via Clerk as an OAuth Identity
 //! Provider: Authorization Code + PKCE with a loopback (127.0.0.1) callback
-//! (RFC 8252). Implements the flow designed in `docs/teams-auth-flow.md`.
+//! (RFC 8252). Implements the flow designed in `dev/docs/teams-auth-flow.md`.
 //!
 //! **Threading:** every method here is blocking (blocking `reqwest`, a blocking
 //! loopback `TcpListener`, blocking keychain I/O). Call it from a background
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 // ── Configuration ───────────────────────────────────────────────────
-// Fill these from the Clerk OAuth Application (docs/teams-auth-flow.md §2).
+// Fill these from the Clerk OAuth Application (dev/docs/teams-auth-flow.md §2).
 // All are public, non-secret values. Each can be overridden at runtime via the
 // matching env var, so dev/staging don't need a recompile.
 const DEFAULT_ISSUER: &str = "https://clerk.rekaptr.dev"; // confirmed via OIDC discovery
@@ -91,6 +91,11 @@ pub struct CloudAuth {
     client_id: String,
     api_base: String,
     cached: Mutex<Option<TokenSet>>,
+    /// Serializes token refreshes so concurrent callers (parallel feed fetches,
+    /// the startup prefetch overlapping presence, etc.) don't each POST the
+    /// refresh token — a rotating IdP would invalidate all but one, spuriously
+    /// signing the user out. Whoever loses the race reuses the winner's token.
+    refresh_lock: Mutex<()>,
 }
 
 /// A fresh blocking HTTP client. **Must** be created (and dropped) on a
@@ -112,6 +117,7 @@ impl CloudAuth {
             client_id: env_or("REKAPTR_OAUTH_CLIENT_ID", DEFAULT_CLIENT_ID),
             api_base: env_or("REKAPTR_API_BASE", DEFAULT_API_BASE),
             cached: Mutex::new(cached),
+            refresh_lock: Mutex::new(()),
         }
     }
 
@@ -152,6 +158,15 @@ impl CloudAuth {
     /// Force a token refresh using the stored refresh token, regardless of
     /// expiry. Used to recover from a `401` on an otherwise-fresh token.
     pub fn force_refresh(&self) -> Result<String> {
+        // Snapshot the token that just failed; if another caller refreshes while
+        // we wait on the lock, we'll see it change and reuse theirs.
+        let stale = self.cached.lock().as_ref().map(|t| t.access_token.clone());
+        let _guard = self.refresh_lock.lock();
+        if let Some(current) = self.cached.lock().clone() {
+            if Some(&current.access_token) != stale.as_ref() {
+                return Ok(current.access_token); // someone else already refreshed
+            }
+        }
         let refresh = match self.cached.lock().as_ref().and_then(|t| t.refresh_token.clone()) {
             Some(r) => r,
             None => {
@@ -176,11 +191,23 @@ impl CloudAuth {
 
     /// Return a valid access token, refreshing if it is missing/near expiry.
     pub fn access_token(&self) -> Result<String> {
-        if let Some(ts) = self.cached.lock().clone() {
-            if ts.is_fresh() {
-                return Ok(ts.access_token);
+        let ts = match self.cached.lock().clone() {
+            Some(ts) => ts,
+            None => return Err(CloudAuthError::NotSignedIn),
+        };
+        if ts.is_fresh() {
+            return Ok(ts.access_token);
+        }
+        // Stale — serialize the refresh so concurrent callers coalesce onto one
+        // network round trip instead of each rotating the refresh token.
+        let stale = ts.access_token.clone();
+        let _guard = self.refresh_lock.lock();
+        if let Some(current) = self.cached.lock().clone() {
+            // Another caller may have refreshed while we waited on the lock.
+            if current.is_fresh() || current.access_token != stale {
+                return Ok(current.access_token);
             }
-            if let Some(refresh) = ts.refresh_token.clone() {
+            if let Some(refresh) = current.refresh_token.clone() {
                 return match self.refresh(&refresh) {
                     Ok(refreshed) => {
                         let token = refreshed.access_token.clone();
@@ -196,9 +223,9 @@ impl CloudAuth {
                     }
                 };
             }
-            // Expired and no refresh token: the session is unrecoverable.
-            self.clear();
         }
+        // Expired and no refresh token: the session is unrecoverable.
+        self.clear();
         Err(CloudAuthError::NotSignedIn)
     }
 
@@ -366,6 +393,15 @@ fn write_browser_response(stream: &mut std::net::TcpStream, message: &str) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
+}
+
+/// Open an arbitrary URL in the user's default browser (best-effort). Public
+/// so UI code (e.g. the Teams account menu) can deep-link to rekaptr.dev pages
+/// without duplicating the Windows-native launch incantation.
+pub fn open_url(url: &str) {
+    if let Err(e) = open_in_browser(url) {
+        log::warn!("[Cloud] failed to open url {url}: {e:?}");
+    }
 }
 
 /// Open a URL in the default browser without going through a shell (so query

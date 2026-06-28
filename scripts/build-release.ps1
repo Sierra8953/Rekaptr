@@ -31,6 +31,13 @@ if ($MissingBins) {
           "Place them in runtime\ (same FFmpeg build for both) before packaging."
 }
 
+# Mirror assets into runtime\ (what gets bundled) so dev and release can't drift.
+Write-Host "==> sync assets -> runtime\assets"
+robocopy "assets" "runtime\assets" /MIR /NJH /NJS /NDL /NFL /NP | Out-Null
+# robocopy: exit codes < 8 are success; only >= 8 is a real failure.
+if ($LASTEXITCODE -ge 8) { throw "asset sync (robocopy) failed with code $LASTEXITCODE" }
+$global:LASTEXITCODE = 0
+
 if (-not $SkipBuild) {
     Write-Host "==> dist build"
     & dist build

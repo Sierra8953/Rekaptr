@@ -69,16 +69,14 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
                                     .format("%Y-%m-%d %H:%M")
                                     .to_string();
 
+                                // Thumbnails are resolved lazily off the load
+                                // path (see `ui::refresh_clips`): attach one here
+                                // only if it's already cached on disk, so listing
+                                // the library returns immediately instead of
+                                // blocking on N serial ffmpeg spawns.
                                 let mut thumb_path = clip_path.clone();
                                 thumb_path.set_extension("jpg");
-                                if !thumb_path.exists() {
-                                    generate_thumbnail(&clip_path, &thumb_path);
-                                }
-                                let thumbnail_path = if thumb_path.exists() {
-                                    Some(thumb_path)
-                                } else {
-                                    None
-                                };
+                                let thumbnail_path = thumb_path.exists().then_some(thumb_path);
 
                                 clips.push(crate::state::Clip {
                                     title: game_title.clone(),
@@ -99,6 +97,20 @@ pub fn fetch_all_clips() -> Vec<crate::state::Clip> {
     }
     clips.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     clips
+}
+
+/// Ensure a thumbnail exists for `video_path`, generating it (CUDA→software)
+/// only when it's missing. Returns the thumbnail path if one is available
+/// afterward. Blocking (spawns ffmpeg) and safe to run concurrently across
+/// clips — call from a background task. The library load path uses this to
+/// fill thumbnails in parallel *after* the metadata list is already on screen.
+pub fn ensure_thumbnail(video_path: &Path) -> Option<std::path::PathBuf> {
+    let mut thumb_path = video_path.to_path_buf();
+    thumb_path.set_extension("jpg");
+    if !thumb_path.exists() {
+        generate_thumbnail(video_path, &thumb_path);
+    }
+    thumb_path.exists().then_some(thumb_path)
 }
 
 /// Generate a thumbnail for a video file by extracting a frame near the start.
